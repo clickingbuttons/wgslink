@@ -82,6 +82,7 @@ fn parameterizeTemplates(p: *Parser) !void {
             .k_texture_storage_2d,
             .k_texture_storage_2d_array,
             .k_texture_storage_3d,
+            .k_texture_multisampled_2d,
             => if (p.tokens.items(.tag)[i + 1] == .angle_bracket_left) {
                 discovered_tmpls.append(.{
                     .token_tag = &p.tokens.items(.tag)[i + 1],
@@ -175,9 +176,10 @@ fn expectGlobalDeclRecoverable(p: *Parser) !?NodeIndex {
 fn expectGlobalDecl(p: *Parser) !NodeIndex {
     while (p.eatToken(.semicolon)) |_| {}
 
-    const attrs = try p.attributeList();
+    if (try p.comment()) |node| return node;
 
-    if (try p.structDecl() orelse try p.fnDecl(attrs) orelse try p.comment()) |node| return node;
+    const attrs = try p.attributeList();
+    if (try p.structDecl() orelse try p.fnDecl(attrs)) |node| return node;
 
     if (try p.constDecl() orelse
         try p.typeAliasDecl() orelse
@@ -704,6 +706,8 @@ fn statementRecoverable(p: *Parser) !?NodeIndex {
 
 fn statement(p: *Parser) !?NodeIndex {
     while (p.eatToken(.semicolon)) |_| {}
+
+    if (try p.comment()) |node| return node;
 
     if (try p.breakStatement() orelse
         try p.breakIfStatement() orelse
@@ -1335,8 +1339,10 @@ fn typeSpecifierWithoutIdent(p: *Parser) !?NodeIndex {
             const addr_space = try p.expectAddressSpace();
             _ = try p.expectToken(.comma);
             const elem_type = try p.expectTypeSpecifier();
-            _ = try p.expectToken(.comma);
-            const access_mode = try p.expectAccessMode();
+            var access_mode = TokenIndex.none;
+            if (p.eatToken(.comma)) |_| {
+                access_mode = try p.expectAccessMode();
+            }
             _ = try p.expectToken(.template_right);
 
             const extra = try p.addExtra(Node.PtrType{
@@ -2048,10 +2054,11 @@ fn expectToken(p: *Parser, tag: Token.Tag) !TokenIndex {
     const token = p.advanceToken();
     if (p.getToken(.tag, token) == tag) return token;
 
+    const actual = p.getToken(.tag, token);
     try p.errors.add(
         p.getToken(.loc, token),
-        "expected '{s}', but found '{s}'",
-        .{ tag.symbol(), p.getToken(.tag, token).symbol() },
+        "expected '{s}' ({s}), but found '{s}' ({s})",
+        .{ tag.symbol(), @tagName(tag), actual.symbol(), @tagName(actual) },
         null,
     );
     return error.Parsing;

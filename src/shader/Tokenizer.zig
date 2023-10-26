@@ -217,7 +217,7 @@ pub fn peek(self: *Tokenizer) Token {
                 },
                 else => {
                     state = .block_comment;
-                }
+                },
             },
             .ampersand => switch (c) {
                 '&' => {

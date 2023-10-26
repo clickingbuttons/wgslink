@@ -655,7 +655,7 @@ pub const Node = struct {
     pub const PtrType = struct {
         /// Token(AddressSpace)
         addr_space: TokenIndex,
-        /// Token(AccessMode)
+        /// Token(AccessMode)?
         access_mode: TokenIndex,
     };
 
@@ -722,6 +722,7 @@ pub const AddressSpace = enum {
     workgroup,
     uniform,
     storage,
+    handle,
 };
 
 pub const AccessMode = enum {
