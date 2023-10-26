@@ -174,6 +174,9 @@ pub const Tag = enum {
     template_left,
     template_right,
 
+    line_comment,
+    block_comment,
+
     pub fn symbol(self: Tag) []const u8 {
         return switch (self) {
             .eof => "EOF",
@@ -294,6 +297,8 @@ pub const Tag = enum {
             .k_true => "true",
             .template_left => "<",
             .template_right => ">",
+            .line_comment => "//",
+            .block_comment => "/*",
         };
     }
 };

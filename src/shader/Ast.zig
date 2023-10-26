@@ -614,6 +614,11 @@ pub const Node = struct {
         /// LHS : --
         /// RHS : --
         number,
+
+        /// TOK: comment
+        /// LHS : --
+        /// RHS : --
+        comment,
     };
 
     pub const GlobalVar = struct {

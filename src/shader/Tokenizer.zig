@@ -15,7 +15,9 @@ const State = union(enum) {
         allow_leading_sign: bool = false,
         has_dot: bool = false,
     },
+    line_comment,
     block_comment,
+    block_comment_ending,
     ampersand,
     bang,
     equal,
@@ -193,13 +195,29 @@ pub fn peek(self: *Tokenizer) Token {
                     else => break,
                 }
             },
-            .block_comment => switch (c) {
+            .line_comment => switch (c) {
                 0 => break,
                 '\n' => {
-                    state = .start;
-                    result.loc.start = index + 1;
+                    result.tag = .line_comment;
+                    break;
                 },
                 else => {},
+            },
+            .block_comment => switch (c) {
+                '*' => {
+                    state = .block_comment_ending;
+                },
+                else => {},
+            },
+            .block_comment_ending => switch (c) {
+                '/' => {
+                    result.tag = .block_comment;
+                    index += 1;
+                    break;
+                },
+                else => {
+                    state = .block_comment;
+                }
             },
             .ampersand => switch (c) {
                 '&' => {
@@ -374,7 +392,8 @@ pub fn peek(self: *Tokenizer) Token {
                 },
             },
             .slash => switch (c) {
-                '/' => state = .block_comment,
+                '/' => state = .line_comment,
+                '*' => state = .block_comment,
                 '=' => {
                     result.tag = .slash_equal;
                     index += 1;
@@ -420,18 +439,35 @@ pub fn next(self: *Tokenizer) Token {
     return tok;
 }
 
-// test "tokenize identifier and numbers" {
-//     const str =
-//         \\_ __ _iden iden -100i 100.8i // cc
-//         \\// comment
-//         \\
-//     ;
-//     var tokenizer = Tokenizer.init(str);
-//     try std.testing.expect(tokenizer.next().tag == .underscore);
-//     try std.testing.expect(tokenizer.next().tag == .ident);
-//     try std.testing.expect(tokenizer.next().tag == .ident);
-//     try std.testing.expect(tokenizer.next().tag == .ident);
-//     try std.testing.expectEqualStrings("-100i", tokenizer.next().loc.slice(str));
-//     try std.testing.expect(tokenizer.next().tag == .number);
-//     try std.testing.expect(tokenizer.next().tag == .eof);
-// }
+test "tokenize identifier and numbers and comments" {
+    const str =
+        \\_ __ _iden iden -100i 100.8i // cc
+        \\// comment
+        \\/*
+        \\ block*comment
+        \\ */
+        \\
+    ;
+    var tokenizer = Tokenizer.init(str);
+    const Tag = Token.Tag;
+    try std.testing.expectEqual(Tag.underscore, tokenizer.next().tag);
+    try std.testing.expectEqual(Tag.ident, tokenizer.next().tag);
+    try std.testing.expectEqual(Tag.ident, tokenizer.next().tag);
+    try std.testing.expectEqual(Tag.ident, tokenizer.next().tag);
+    const int1 = tokenizer.next();
+    try std.testing.expectEqual(Tag.number, int1.tag);
+    try std.testing.expectEqualStrings("-100i", int1.loc.slice(str));
+    const int2 = tokenizer.next();
+    try std.testing.expectEqual(Tag.number, int2.tag);
+    try std.testing.expectEqualStrings("100.8i", int2.loc.slice(str));
+    const comment1 = tokenizer.next();
+    try std.testing.expectEqual(Tag.line_comment, comment1.tag);
+    try std.testing.expectEqualStrings("// cc", comment1.loc.slice(str));
+    const comment2 = tokenizer.next();
+    try std.testing.expectEqual(Tag.line_comment, comment2.tag);
+    try std.testing.expectEqualStrings("// comment", comment2.loc.slice(str));
+    const comment3 = tokenizer.next();
+    try std.testing.expectEqual(Tag.block_comment, comment3.tag);
+    try std.testing.expectEqualStrings("/*\n block*comment\n */", comment3.loc.slice(str));
+    try std.testing.expectEqual(Tag.eof, tokenizer.next().tag);
+}

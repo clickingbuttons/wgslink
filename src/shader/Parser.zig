@@ -177,11 +177,7 @@ fn expectGlobalDecl(p: *Parser) !NodeIndex {
 
     const attrs = try p.attributeList();
 
-    if (try p.structDecl() orelse
-        try p.fnDecl(attrs)) |node|
-    {
-        return node;
-    }
+    if (try p.structDecl() orelse try p.fnDecl(attrs) orelse try p.comment()) |node| return node;
 
     if (try p.constDecl() orelse
         try p.typeAliasDecl() orelse
@@ -528,6 +524,14 @@ fn typeAliasDecl(p: *Parser) !?NodeIndex {
         .tag = .type_alias,
         .main_token = type_token,
         .lhs = value,
+    });
+}
+
+fn comment(p: *Parser) !?NodeIndex {
+    const token = p.eatToken(.line_comment) orelse p.eatToken(.block_comment) orelse return null;
+    return try p.addNode(.{
+        .tag = .comment,
+        .main_token = token,
     });
 }
 
