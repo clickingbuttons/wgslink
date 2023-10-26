@@ -2160,9 +2160,9 @@ fn genCall(astgen: *AstGen, scope: *Scope, node: NodeIndex) !InstIndex {
             const value = try astgen.addValue(
                 Inst.Vector.Value,
                 if (cast == .none)
-                    .{ .literal = args }
+                    Inst.Vector.Value{ .literal = args }
                 else
-                    .{ .cast = .{ .type = cast, .value = args } },
+                    Inst.Vector.Value{ .cast = .{ .type = cast, .value = args } },
             );
 
             return astgen.addInst(.{
@@ -3872,7 +3872,7 @@ fn genArray(astgen: *AstGen, scope: *Scope, node: NodeIndex, args: ?RefIndex) !I
     } else if (args != null) {
         len = try astgen.addInst(.{ .int = .{
             .type = .u32,
-            .value = try astgen.addValue(Inst.Int.Value, .{ .literal = @intCast(astgen.refToList(args.?).len) }),
+            .value = try astgen.addValue(Inst.Int.Value, .{ .literal = @as(u32, @intCast(astgen.refToList(args.?).len)) }),
         } });
     }
 
