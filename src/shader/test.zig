@@ -5,6 +5,19 @@ const expect = std.testing.expect;
 const expectEqual = std.testing.expectEqual;
 const allocator = std.testing.allocator;
 
+fn expectAst(source: [:0]const u8) !void {
+    var errors = try ErrorList.init(allocator);
+    defer errors.deinit();
+
+    var tree = Ast.parse(allocator, &errors, source) catch |err| {
+        if (err == error.Parsing) {
+            try errors.print(source, null);
+        }
+        return err;
+    };
+    defer tree.deinit(allocator);
+}
+
 test "boids-sprite" {
     const boids_sprite = @embedFile("test/boids-sprite.wgsl");
     try expectAst(boids_sprite);
@@ -135,15 +148,3 @@ test "vertexWriteGBuffers" {
     try expectAst(vertexWriteGBuffers);
 }
 
-fn expectAst(source: [:0]const u8) !void {
-    var errors = try ErrorList.init(allocator);
-    defer errors.deinit();
-
-    var tree = Ast.parse(allocator, &errors, source) catch |err| {
-        if (err == error.Parsing) {
-            try errors.print(source, null);
-        }
-        return err;
-    };
-    defer tree.deinit(allocator);
-}

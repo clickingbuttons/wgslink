@@ -1480,7 +1480,7 @@ fn expectTexelFormat(p: *Parser) !TokenIndex {
 }
 
 fn expectParenExpr(p: *Parser) !NodeIndex {
-    _ = try p.expectToken(.paren_left);
+    const main_token = try p.expectToken(.paren_left);
     const expr = try p.expression() orelse {
         try p.errors.add(
             p.peekToken(.loc, 0),
@@ -1491,7 +1491,11 @@ fn expectParenExpr(p: *Parser) !NodeIndex {
         return error.Parsing;
     };
     _ = try p.expectToken(.paren_right);
-    return expr;
+    return try p.addNode(.{
+        .tag = .paren_expr,
+        .main_token = main_token,
+        .lhs = expr,
+    });
 }
 
 fn callExpr(p: *Parser) !?NodeIndex {

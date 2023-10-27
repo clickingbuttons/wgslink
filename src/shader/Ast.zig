@@ -39,7 +39,10 @@ pub fn parse(allocator: std.mem.Allocator, errors: *ErrorList, source: [:0]const
             var tokenizer = Tokenizer.init(source);
             while (true) {
                 const tok = tokenizer.next();
-                try tokens.append(allocator, tok);
+                switch (tok.tag) {
+                    .line_comment, .block_comment => {},
+                    else => try tokens.append(allocator, tok),
+                }
                 if (tok.tag == .eof) break;
             }
 
@@ -619,6 +622,11 @@ pub const Node = struct {
         /// LHS : --
         /// RHS : --
         comment,
+
+        /// TOK: paren_expr
+        /// LHS : expr
+        /// RHS : --
+        paren_expr,
     };
 
     pub const GlobalVar = struct {

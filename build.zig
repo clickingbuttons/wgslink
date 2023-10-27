@@ -4,12 +4,18 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    const clap = b.dependency("zig-clap", .{
+        .target = target,
+        .optimize = optimize,
+    });
+
     const exe = b.addExecutable(.{
         .name = "wgsl-linker",
         .root_source_file = .{ .path = "src/main.zig" },
         .target = target,
         .optimize = optimize,
     });
+    exe.addModule("clap", clap.module("clap"));
     b.installArtifact(exe);
 
     const run_cmd = b.addRunArtifact(exe);

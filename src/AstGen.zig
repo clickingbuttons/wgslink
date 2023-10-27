@@ -162,22 +162,9 @@ fn writeExpr(self: Self, writer: anytype, node: NodeIndex) !void {
     const lhs = self.tree.nodeLHS(node);
     const rhs = self.tree.nodeRHS(node);
     switch (tag) {
-        .number,
-        .ident,
-        => try self.writeNode(writer, node),
-        .true => try writer.writeAll("true"),
-        .false => try writer.writeAll("false"),
-        .not => {
-            try writer.writeAll("!(");
-            try self.writeExpr(writer, lhs);
-            try writer.writeAll(")");
-        },
-        .negate => {
-            try writer.writeAll("-");
-            try self.writeExpr(writer, lhs);
-        },
-        .deref => {
-            try writer.writeAll(".");
+        .number, .ident, .true, .false => try self.writeNode(writer, node),
+        .not, .negate, .deref => {
+            try self.writeNode(writer, node);
             try self.writeExpr(writer, lhs);
         },
         .addr_of => {
@@ -204,6 +191,7 @@ fn writeExpr(self: Self, writer: anytype, node: NodeIndex) !void {
         .greater_than_equal,
         => |t| {
             try self.writeExpr(writer, lhs);
+            try writer.writeAll(" ");
             try writer.writeAll(switch (t) {
                 .mul => "*",
                 .div => "/",
@@ -217,7 +205,7 @@ fn writeExpr(self: Self, writer: anytype, node: NodeIndex) !void {
                 .xor => "^",
                 .logical_and => "&&",
                 .logical_or => "||",
-                .equal => "=",
+                .equal => "==",
                 .not_equal => "!=",
                 .less_than => "<",
                 .less_than_equal => "<=",
@@ -225,6 +213,7 @@ fn writeExpr(self: Self, writer: anytype, node: NodeIndex) !void {
                 .greater_than_equal => ">=",
                 else => "",
             });
+            try writer.writeAll(" ");
             try self.writeExpr(writer, rhs);
         },
         .index_access => {
@@ -238,8 +227,11 @@ fn writeExpr(self: Self, writer: anytype, node: NodeIndex) !void {
             try writer.writeAll(".");
             try self.writeToken(writer, rhs.asTokenIndex());
         },
-        .call => {
-            try self.writeCall(@TypeOf(writer).Error, writer, node);
+        .call => try self.writeCall(writer, node),
+        .paren_expr => {
+            try writer.writeAll("(");
+            try self.writeExpr(writer, lhs);
+            try writer.writeAll(")");
         },
         .bitcast => {
             try self.writeNode(writer, lhs);
@@ -333,7 +325,7 @@ fn writeToken(self: Self, writer: anytype, tok: TokenIndex) !void {
     try writer.writeAll(self.tree.tokenLoc(tok).slice(self.tree.source));
 }
 
-fn writeCall(self: Self, comptime Error: type, writer: anytype, node: NodeIndex) Error!void {
+fn writeCall(self: Self, writer: anytype, node: NodeIndex) @TypeOf(writer).Error!void {
     const ty = self.tree.nodeRHS(node);
     if (ty != .none) try self.writeType(writer, ty) else try self.writeNode(writer, node);
 
@@ -376,73 +368,99 @@ fn writeTypeAlias(self: Self, writer: anytype, node: NodeIndex) !void {
     try self.writeNode(writer, self.tree.nodeLHS(node));
 }
 
-fn writeStatement(self: Self, writer: anytype, node: NodeIndex, depth: usize) !bool {
-    for (0..depth) |_| try writer.writeAll(self.tab);
+fn writeIf(self: Self, writer: anytype, node: NodeIndex, depth: usize) !void {
+    try writer.writeAll("if ");
+    try self.writeExpr(writer, self.tree.nodeLHS(node));
+    try writer.writeAll(" ");
+    try self.writeBlock(writer, self.tree.nodeRHS(node), depth + 1);
+}
+
+fn writeStatement(self: Self, writer: anytype, node: NodeIndex, depth: usize) @TypeOf(writer).Error!bool {
     const tag = self.tree.nodeTag(node);
+    const lhs = self.tree.nodeLHS(node);
+    const rhs = self.tree.nodeRHS(node);
+
+    for (0..depth) |_| try writer.writeAll(self.tab);
     switch (tag) {
         .compound_assign => {
-            try self.writeExpr(writer, self.tree.nodeLHS(node));
+            try self.writeExpr(writer, lhs);
             try writer.writeAll(" = ");
-            try self.writeExpr(writer, self.tree.nodeRHS(node));
+            try self.writeExpr(writer, rhs);
         },
         .phony_assign => {
             try writer.writeAll("_ = ");
-            try self.writeExpr(writer, self.tree.nodeLHS(node));
+            try self.writeExpr(writer, lhs);
         },
-        // .call => try astgen.genCall(scope, node),
+        .call => try self.writeCall(writer, node),
         .@"return" => {
-            try writer.writeAll("return ");
-            try self.writeExpr(writer, self.tree.nodeLHS(node));
+            try writer.writeAll("return");
+            if (lhs != .none) {
+                try writer.writeAll(" ");
+                try self.writeExpr(writer, lhs);
+            }
+            return true;
         },
         .comment => try self.writeComment(writer, node),
-        // .break_if => try astgen.genBreakIf(scope, node),
-        // .@"if" => try astgen.genIf(scope, node),
-        // .if_else => try astgen.genIfElse(scope, node),
-        // .if_else_if => try astgen.genIfElseIf(scope, node),
-        // .@"while" => try astgen.genWhile(scope, node),
-        // .@"for" => try astgen.genFor(scope, node),
+        .break_if => {
+            try writer.writeAll("break if ");
+            try self.writeExpr(writer, lhs);
+        },
+        .@"if" => try self.writeIf(writer, node, depth),
+        .if_else => {
+            try self.writeIf(writer, lhs, depth);
+            try writer.writeAll(" else ");
+            try self.writeBlock(writer, rhs, depth + 1);
+        },
+       .if_else_if => {
+            try self.writeIf(writer, lhs, depth);
+            try writer.writeAll(" else ");
+            try self.writeIf(writer, rhs, depth);
+       },
+        .@"while" => {
+            try writer.writeAll("while (");
+            try self.writeExpr(writer, lhs);
+            try writer.writeAll(") ");
+            try self.writeBlock(writer, rhs, depth + 1);
+        },
+        .@"for" => {
+            const extra = self.tree.extraData(Node.ForHeader, self.tree.nodeLHS(node));
+            try writer.writeAll("for (");
+            if (extra.init != .none) _ = try self.writeStatement(writer, extra.init, 0);
+            try writer.writeAll("; ");
+            if (extra.cond != .none) _ = try self.writeExpr(writer, extra.cond);
+            try writer.writeAll("; ");
+            if (extra.update != .none) _ = try self.writeStatement(writer, extra.update, 0);
+            try writer.writeAll(") ");
+            try self.writeBlock(writer, rhs, depth + 1);
+        },
         // .@"switch" => try astgen.genSwitch(scope, node),
         // .loop => try astgen.genLoop(scope, node),
-        // .block => blk: {
-        //     var inner_scope = try astgen.scope_pool.create();
-        //     inner_scope.* = .{ .tag = .block, .parent = scope };
-        //     const inner_block = try astgen.genBlock(inner_scope, node);
-        //     break :blk inner_block;
-        // },
-        // .continuing => try astgen.genContinuing(scope, node),
-        // .discard => try astgen.addInst(.discard),
-        // .@"break" => try astgen.addInst(.@"break"),
-        // .@"continue" => try astgen.addInst(.@"continue"),
-        // .increase => try astgen.genIncreaseDecrease(scope, node, .add),
-        // .decrease => try astgen.genIncreaseDecrease(scope, node, .sub),
+        .block => try self.writeBlock(writer, node, depth + 1),
+        .continuing => {
+            try writer.writeAll("continuing ");
+            try self.writeBlock(writer, lhs, depth + 1);
+        },
+        .discard => try writer.writeAll("discard"),
+        .@"break" => try writer.writeAll("break"),
+        .@"continue" => try writer.writeAll("continue"),
+        .increase, .decrease => {
+            try self.writeExpr(writer, lhs);
+            try self.writeNode(writer, node);
+        },
         .@"const", .let => try self.writeConst(writer, node),
         .@"var" => {
             const extra = self.tree.extraData(Node.Var, self.tree.nodeLHS(node));
             try self.writeVar(writer, extra, node);
         },
-        // .@"const" => blk: {
-        //     const decl = try astgen.genConst(scope, node);
-        //     scope.decls.putAssumeCapacity(node, decl);
-        //     break :blk decl;
-        // },
-        // .let => blk: {
-        //     const decl = try astgen.genLet(scope, node);
-        //     scope.decls.putAssumeCapacity(node, decl);
-        //     break :blk decl;
-        // },
-        else => {},
+        else => {
+            std.debug.print("not rendering {s}\n", .{ @tagName(tag) });
+        },
     }
-
-    switch (tag) {
-        .comment => {},
-        else => try writer.writeAll(";"),
-    }
-    try writer.writeAll("\n");
 
     return false;
 }
 
-fn writeBlock(self: Self, writer: anytype, node: NodeIndex, depth: usize) !void {
+fn writeBlock(self: Self, writer: anytype, node: NodeIndex, depth: usize) @TypeOf(writer).Error!void {
     const lhs = self.tree.nodeLHS(node);
 
     try writer.writeAll("{");
@@ -451,10 +469,19 @@ fn writeBlock(self: Self, writer: anytype, node: NodeIndex, depth: usize) !void 
         const statements = self.tree.spanToList(lhs);
         if (statements.len > 0) try writer.writeAll("\n");
         for (statements) |n| {
-            if (try self.writeStatement(writer, n, depth)) return;
+            const returned = try self.writeStatement(writer, n, depth);
+
+            switch (self.tree.nodeTag(n)) {
+                .comment, .@"if", .if_else, .if_else_if, .@"for", .@"while", .block => {},
+                else => try writer.writeAll(";"),
+            }
+            try writer.writeAll("\n");
+
+            if (returned) break;
         }
     }
 
+    for (0..depth - 1) |_| try writer.writeAll(self.tab);
     try writer.writeAll("}");
 }
 
