@@ -1,9 +1,9 @@
 const std = @import("std");
 const clap = @import("clap");
-
 const ErrorList = @import("./shader/ErrorList.zig");
 const Ast = @import("./shader/Ast.zig");
 const AstGen = @import("./AstGen.zig");
+const Prune = @import("./prune.zig");
 
 const NodeIndex = Ast.NodeIndex;
 
@@ -20,6 +20,8 @@ fn writePretty(allocator: std.mem.Allocator, writer: anytype, source: [:0]const 
     //     const tok = ast.nodeToken(t);
     //     std.debug.print("{s} {s}\n", .{ @tagName(ast.nodeTag(t)), @tagName(ast.tokenTag(tok)) });
     // }
+    var pruner = try Prune.init(allocator, &ast);
+    try pruner.prune();
 
     const generator = AstGen{
         .tree = &ast,
@@ -194,6 +196,49 @@ test "entry function" {
 test "paren" {
     try testSame("const a = (3 - 2);");
     try testSame("const a = ((3 - 2));");
+}
+
+test "switch" {
+    try testSame(
+        \\fn test() {
+        \\  switch a {
+        \\    case 3 {
+        \\      b = 2;
+        \\      break;
+        \\    }
+        \\    default {
+        \\      break;
+        \\    }
+        \\  }
+        \\}
+    );
+}
+
+test "loop" {
+    try testSame(
+        \\fn test() {
+        \\  loop {
+        \\    if (i >= 4) {
+        \\      break;
+        \\    }
+        \\    i++;
+        \\  }
+        \\}
+    );
+}
+
+test "naked if" {
+    try testSame(
+        \\fn test() {
+        \\  if false {
+        \\    return;
+        \\  }
+        \\}
+    );
+}
+
+test "prune" {
+
 }
 
 test "test files" {

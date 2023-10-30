@@ -13,9 +13,7 @@ tree: *const Ast,
 tab: [:0]const u8,
 
 pub fn writeTranslationUnit(self: Self, writer: anytype) !void {
-    const global_nodes = self.tree.spanToList(.globals);
-
-    for (global_nodes) |node| {
+    for (self.tree.globals) |node| {
         const tag = self.tree.nodeTag(node);
         try switch (tag) {
             .global_var => self.writeGlobalVar(writer, node),
@@ -95,9 +93,10 @@ fn writeGlobalVar(self: Self, writer: anytype, node: NodeIndex) !void {
 }
 
 fn writeType(self: Self, writer: anytype, node: NodeIndex) !void {
+    try self.writeNode(writer, node);
+
     const lhs = self.tree.nodeLHS(node);
     const rhs = self.tree.nodeRHS(node);
-    try self.writeNode(writer, node);
     switch (self.tree.nodeTag(node)) {
         .atomic_type,
         .array_type,
@@ -298,16 +297,16 @@ fn writeStruct(self: Self, writer: anytype, node: NodeIndex) !void {
     try writer.writeAll("struct ");
     try writer.writeAll(self.tree.declNameLoc(node).?.slice(self.tree.source));
     try writer.writeAll(" {");
-    const member_nodes_list = self.tree.spanToList(self.tree.nodeLHS(node));
-    for (member_nodes_list) |member_node| {
-        const member_name_loc = self.tree.tokenLoc(self.tree.nodeToken(member_node));
+    const members = self.tree.spanToList(self.tree.nodeLHS(node));
+    for (members) |m| {
+        const member_name_loc = self.tree.tokenLoc(self.tree.nodeToken(m));
         const name = member_name_loc.slice(self.tree.source);
         try writer.writeAll("\n");
         try writer.writeAll(self.tab);
-        const member_attrs_node = self.tree.nodeLHS(member_node);
+        const member_attrs_node = self.tree.nodeLHS(m);
         if (member_attrs_node != .none) try self.writeAttributes(writer, member_attrs_node);
         try writer.print("{s}: ", .{name});
-        try self.writeType(writer, self.tree.nodeRHS(member_node));
+        try self.writeType(writer, self.tree.nodeRHS(m));
         try writer.writeAll(",");
     }
     try writer.writeAll("\n}");
@@ -433,8 +432,39 @@ fn writeStatement(self: Self, writer: anytype, node: NodeIndex, depth: usize) @T
             try writer.writeAll(") ");
             try self.writeBlock(writer, rhs, depth + 1);
         },
-        // .@"switch" => try astgen.genSwitch(scope, node),
-        // .loop => try astgen.genLoop(scope, node),
+        .@"switch" => {
+            try writer.writeAll("switch ");
+            try self.writeExpr(writer, lhs);
+            try writer.writeAll(" {");
+            if (rhs != .none) for (self.tree.spanToList(rhs)) |c| {
+                try writer.writeAll("\n");
+                for (0..depth + 1) |_| try writer.writeAll(self.tab);
+                switch (self.tree.nodeTag(c)) {
+                    .switch_default, .switch_case_default => try writer.writeAll("default"),
+                    .switch_case => {
+                        const expr_list = self.tree.nodeLHS(c);
+                        if (expr_list != .none) {
+                            try writer.writeAll("case ");
+                            const expressions = self.tree.spanToList(expr_list);
+                            for (expressions, 0..) |e, i| {
+                                try self.writeExpr(writer, e);
+                                if (i != expressions.len - 1) try writer.writeAll(", ");
+                            }
+                        }
+                    },
+                    else => unreachable,
+                }
+                try writer.writeAll(" ");
+                try self.writeBlock(writer, self.tree.nodeRHS(c), depth + 2);
+            };
+            try writer.writeAll("\n");
+            for (0..depth) |_| try writer.writeAll(self.tab);
+            try writer.writeAll("}");
+        },
+        .loop => {
+            try writer.writeAll("loop ");
+            try self.writeBlock(writer, lhs, depth + 1);
+        },
         .block => try self.writeBlock(writer, node, depth + 1),
         .continuing => {
             try writer.writeAll("continuing ");
@@ -472,7 +502,7 @@ fn writeBlock(self: Self, writer: anytype, node: NodeIndex, depth: usize) @TypeO
             const returned = try self.writeStatement(writer, n, depth);
 
             switch (self.tree.nodeTag(n)) {
-                .comment, .@"if", .if_else, .if_else_if, .@"for", .@"while", .block => {},
+                .comment, .@"if", .if_else, .if_else_if, .@"for", .@"while", .block, .@"switch", .loop, => {},
                 else => try writer.writeAll(";"),
             }
             try writer.writeAll("\n");

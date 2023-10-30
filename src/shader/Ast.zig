@@ -12,12 +12,14 @@ pub const TokenList = std.MultiArrayList(Token);
 
 source: []const u8,
 tokens: TokenList.Slice,
+globals: []NodeIndex,
 nodes: NodeList.Slice,
 extra: []const u32,
 extensions: Extensions,
 
 pub fn deinit(tree: *Ast, allocator: std.mem.Allocator) void {
     tree.tokens.deinit(allocator);
+    allocator.free(tree.globals);
     tree.nodes.deinit(allocator);
     allocator.free(tree.extra);
     tree.* = undefined;
@@ -65,6 +67,7 @@ pub fn parse(allocator: std.mem.Allocator, errors: *ErrorList, source: [:0]const
     return .{
         .source = source,
         .tokens = p.tokens.toOwnedSlice(),
+        .globals = try p.globals.toOwnedSlice(allocator),
         .nodes = p.nodes.toOwnedSlice(),
         .extra = try p.extra.toOwnedSlice(allocator),
         .extensions = p.extensions,
@@ -144,7 +147,6 @@ pub fn declNameLoc(tree: Ast, node: NodeIndex) ?Token.Loc {
 
 pub const NodeIndex = enum(u32) {
     none = std.math.maxInt(u32),
-    globals = 0,
     _,
 
     pub fn asTokenIndex(self: NodeIndex) TokenIndex {

@@ -14,6 +14,7 @@ allocator: std.mem.Allocator,
 source: []const u8,
 tok_i: TokenIndex = @enumFromInt(0),
 tokens: std.MultiArrayList(Token),
+globals: std.ArrayListUnmanaged(NodeIndex) = .{},
 nodes: std.MultiArrayList(Node) = .{},
 extra: std.ArrayListUnmanaged(u32) = .{},
 scratch: std.ArrayListUnmanaged(NodeIndex) = .{},
@@ -26,20 +27,14 @@ pub fn translationUnit(p: *Parser) !void {
         error.OutOfMemory => return error.OutOfMemory,
     };
 
-    const root = try p.addNode(.{ .tag = .span, .main_token = undefined });
-
     while (try p.globalDirectiveRecoverable()) {}
 
     while (p.peekToken(.tag, 0) != .eof) {
         const decl = try p.expectGlobalDeclRecoverable() orelse continue;
-        try p.scratch.append(p.allocator, decl);
+        try p.globals.append(p.allocator, decl);
     }
 
     if (p.errors.list.items.len > 0) return error.Parsing;
-
-    try p.extra.appendSlice(p.allocator, @ptrCast(p.scratch.items));
-    p.nodes.items(.lhs)[@intFromEnum(root)] = @enumFromInt(p.extra.items.len - p.scratch.items.len);
-    p.nodes.items(.rhs)[@intFromEnum(root)] = @enumFromInt(p.extra.items.len);
 }
 
 // Based on https://gpuweb.github.io/gpuweb/wgsl/#template-lists-sec
@@ -989,7 +984,7 @@ fn switchStatement(p: *Parser) !?NodeIndex {
             var has_default = false;
             while (true) {
                 const case_expr = try p.expression() orelse {
-                    if (p.eatToken(.k_default)) |_| continue;
+                    if (p.eatToken(.k_default)) |_| has_default = true;
                     break;
                 };
                 _ = p.eatToken(.comma);
@@ -1000,13 +995,13 @@ fn switchStatement(p: *Parser) !?NodeIndex {
             _ = p.eatToken(.colon);
             const default_body = try p.expectBlock();
 
+            p.scratch.shrinkRetainingCapacity(cases_scratch_top);
             try p.scratch.append(p.allocator, try p.addNode(.{
                 .tag = if (has_default) .switch_case_default else .switch_case,
                 .main_token = case_token,
                 .lhs = if (case_expr_list.len == 0) .none else try p.listToSpan(case_expr_list),
                 .rhs = default_body,
             }));
-            p.scratch.shrinkRetainingCapacity(cases_scratch_top);
         } else {
             break;
         }
