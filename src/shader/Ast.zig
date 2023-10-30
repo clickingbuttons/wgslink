@@ -5,11 +5,13 @@ const Tokenizer = @import("Tokenizer.zig");
 const ErrorList = @import("ErrorList.zig");
 const Extensions = @import("wgsl.zig").Extensions;
 
-const Ast = @This();
+const Allocator = std.mem.Allocator;
+const Self = @This();
 
 pub const NodeList = std.MultiArrayList(Node);
 pub const TokenList = std.MultiArrayList(Token);
 
+allocator: Allocator,
 source: []const u8,
 tokens: TokenList.Slice,
 globals: []NodeIndex,
@@ -17,16 +19,20 @@ nodes: NodeList.Slice,
 extra: []const u32,
 extensions: Extensions,
 
-pub fn deinit(tree: *Ast, allocator: std.mem.Allocator) void {
-    tree.tokens.deinit(allocator);
-    allocator.free(tree.globals);
-    tree.nodes.deinit(allocator);
-    allocator.free(tree.extra);
-    tree.* = undefined;
+pub fn deinit(self: *Self) void {
+    self.tokens.deinit(self.allocator);
+    self.allocator.free(self.globals);
+    self.nodes.deinit(self.allocator);
+    self.allocator.free(self.extra);
+    self.* = undefined;
 }
 
 /// parses a TranslationUnit (WGSL Program)
-pub fn parse(allocator: std.mem.Allocator, errors: *ErrorList, source: [:0]const u8) error{ OutOfMemory, Parsing }!Ast {
+pub fn init(
+    allocator: std.mem.Allocator,
+    errors: *ErrorList,
+    source: [:0]const u8
+) error{ OutOfMemory, Parsing }!Self {
     var p = Parser{
         .allocator = allocator,
         .source = source,
@@ -65,6 +71,7 @@ pub fn parse(allocator: std.mem.Allocator, errors: *ErrorList, source: [:0]const
     try p.translationUnit();
 
     return .{
+        .allocator = allocator,
         .source = source,
         .tokens = p.tokens.toOwnedSlice(),
         .globals = try p.globals.toOwnedSlice(allocator),
@@ -74,53 +81,57 @@ pub fn parse(allocator: std.mem.Allocator, errors: *ErrorList, source: [:0]const
     };
 }
 
-pub fn spanToList(tree: Ast, span: NodeIndex) []const NodeIndex {
-    std.debug.assert(tree.nodeTag(span) == .span);
-    return @ptrCast(tree.extra[@intFromEnum(tree.nodeLHS(span))..@intFromEnum(tree.nodeRHS(span))]);
+pub fn spanToList(self: Self, span: NodeIndex) []const NodeIndex {
+    std.debug.assert(self.nodeTag(span) == .span);
+    return @ptrCast(self.extra[@intFromEnum(self.nodeLHS(span))..@intFromEnum(self.nodeRHS(span))]);
 }
 
-pub fn extraData(tree: Ast, comptime T: type, index: NodeIndex) T {
+pub fn extraData(self: Self, comptime T: type, index: NodeIndex) T {
     const fields = std.meta.fields(T);
     var result: T = undefined;
     inline for (fields, 0..) |field, i| {
-        @field(result, field.name) = @enumFromInt(tree.extra[@intFromEnum(index) + i]);
+        @field(result, field.name) = @enumFromInt(self.extra[@intFromEnum(index) + i]);
     }
     return result;
 }
 
-pub fn tokenTag(tree: Ast, i: TokenIndex) Token.Tag {
-    return tree.tokens.items(.tag)[@intFromEnum(i)];
+pub fn tokenTag(self: Self, i: TokenIndex) Token.Tag {
+    return self.tokens.items(.tag)[@intFromEnum(i)];
 }
 
-pub fn tokenLoc(tree: Ast, i: TokenIndex) Token.Loc {
-    return tree.tokens.items(.loc)[@intFromEnum(i)];
+pub fn tokenLoc(self: Self, i: TokenIndex) Token.Loc {
+    return self.tokens.items(.loc)[@intFromEnum(i)];
 }
 
-pub fn nodeTag(tree: Ast, i: NodeIndex) Node.Tag {
-    return tree.nodes.items(.tag)[@intFromEnum(i)];
+pub fn nodeTag(self: Self, i: NodeIndex) Node.Tag {
+    return self.nodes.items(.tag)[@intFromEnum(i)];
 }
 
-pub fn nodeToken(tree: Ast, i: NodeIndex) TokenIndex {
-    return tree.nodes.items(.main_token)[@intFromEnum(i)];
+pub fn nodeToken(self: Self, i: NodeIndex) TokenIndex {
+    return self.nodes.items(.main_token)[@intFromEnum(i)];
 }
 
-pub fn nodeLHS(tree: Ast, i: NodeIndex) NodeIndex {
-    return tree.nodes.items(.lhs)[@intFromEnum(i)];
+pub fn nodeLHS(self: Self, i: NodeIndex) NodeIndex {
+    return self.nodes.items(.lhs)[@intFromEnum(i)];
 }
 
-pub fn nodeRHS(tree: Ast, i: NodeIndex) NodeIndex {
-    return tree.nodes.items(.rhs)[@intFromEnum(i)];
+pub fn nodeRHS(self: Self, i: NodeIndex) NodeIndex {
+    return self.nodes.items(.rhs)[@intFromEnum(i)];
 }
 
-pub fn nodeLoc(tree: Ast, i: NodeIndex) Token.Loc {
-    var loc = tree.tokenLoc(tree.nodeToken(i));
-    switch (tree.nodeTag(i)) {
+pub fn globalName(self: *Self, i: NodeIndex) []const u8 {
+    return self.declNameLoc(i).?.slice(self.source);
+}
+
+pub fn nodeLoc(self: Self, i: NodeIndex) Token.Loc {
+    var loc = self.tokenLoc(self.nodeToken(i));
+    switch (self.nodeTag(i)) {
         .deref, .addr_of => {
-            const lhs_loc = tree.tokenLoc(tree.nodeToken(tree.nodeLHS(i)));
+            const lhs_loc = self.tokenLoc(self.nodeToken(self.nodeLHS(i)));
             loc.end = lhs_loc.end;
         },
         .field_access => {
-            const component_loc = tree.tokenLoc(@enumFromInt(@intFromEnum(tree.nodeToken(i)) + 1));
+            const component_loc = self.tokenLoc(@enumFromInt(@intFromEnum(self.nodeToken(i)) + 1));
             loc.end = component_loc.end;
         },
         else => {},
@@ -128,21 +139,21 @@ pub fn nodeLoc(tree: Ast, i: NodeIndex) Token.Loc {
     return loc;
 }
 
-pub fn declNameLoc(tree: Ast, node: NodeIndex) ?Token.Loc {
-    const token: TokenIndex = switch (tree.nodeTag(node)) {
-        .global_var => tree.extraData(Node.GlobalVar, tree.nodeLHS(node)).name,
-        .@"var" => tree.extraData(Node.Var, tree.nodeLHS(node)).name,
+pub fn declNameLoc(self: Self, node: NodeIndex) ?Token.Loc {
+    const token: TokenIndex = switch (self.nodeTag(node)) {
+        .global_var => self.extraData(Node.GlobalVar, self.nodeLHS(node)).name,
+        .@"var" => self.extraData(Node.Var, self.nodeLHS(node)).name,
         .@"struct",
         .@"fn",
         .@"const",
         .let,
         .override,
         .type_alias,
-        => @enumFromInt(@intFromEnum(tree.nodeToken(node)) + 1),
-        .struct_member, .fn_param => tree.nodeToken(node),
+        => @enumFromInt(@intFromEnum(self.nodeToken(node)) + 1),
+        .struct_member, .fn_param => self.nodeToken(node),
         else => return null,
     };
-    return tree.tokenLoc(token);
+    return self.tokenLoc(token);
 }
 
 pub const NodeIndex = enum(u32) {

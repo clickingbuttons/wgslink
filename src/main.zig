@@ -2,32 +2,37 @@ const std = @import("std");
 const clap = @import("clap");
 const ErrorList = @import("./shader/ErrorList.zig");
 const Ast = @import("./shader/Ast.zig");
-const AstGen = @import("./AstGen.zig");
-const Prune = @import("./prune.zig");
+const Formatter = @import("./Formatter.zig");
+const Pruner = @import("./pruner.zig");
 
 const NodeIndex = Ast.NodeIndex;
+const maxSourceSize = 1 << 30;
 
-fn writePretty(allocator: std.mem.Allocator, writer: anytype, source: [:0]const u8) !void {
+fn writeFormatted(
+    allocator: std.mem.Allocator,
+    writer: anytype,
+    source: [:0]const u8,
+    prune: bool,
+) !void {
     var errors = try ErrorList.init(allocator);
     defer errors.deinit();
-    var ast = Ast.parse(allocator, &errors, source) catch |err| {
+    var ast = Ast.init(allocator, &errors, source) catch |err| {
         if (err == error.Parsing) try errors.print(source, null);
         return err;
     };
-    defer ast.deinit(allocator);
-    // for (0..ast.nodes.len) |i| {
-    //     const t: NodeIndex = @enumFromInt(i);
-    //     const tok = ast.nodeToken(t);
-    //     std.debug.print("{s} {s}\n", .{ @tagName(ast.nodeTag(t)), @tagName(ast.tokenTag(tok)) });
-    // }
-    var pruner = try Prune.init(allocator, &ast);
-    try pruner.prune();
+    defer ast.deinit();
 
-    const generator = AstGen{
+    if (prune) {
+        var pruner = try Pruner.init(allocator);
+        defer pruner.deinit();
+        try pruner.prune(&ast);
+    }
+
+    const formatter = Formatter{
         .tree = &ast,
         .tab = "  ",
     };
-    try generator.writeTranslationUnit(writer);
+    try formatter.writeTranslationUnit(writer);
 }
 
 pub fn main() !void {
@@ -50,38 +55,37 @@ pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     const allocator = gpa.allocator();
 
-    const maxSize = 1 << 30;
     for (res.positionals) |pos| {
         const file = try std.fs.cwd().openFile(pos, .{});
         defer file.close();
 
-        const source = try file.readToEndAllocOptions(allocator, maxSize, null, @alignOf(u8), 0);
+        const source = try file.readToEndAllocOptions(allocator, maxSourceSize, null, @alignOf(u8), 0);
         defer allocator.free(source);
 
-        try writePretty(allocator, stdout, source);
+        try writeFormatted(allocator, stdout, source, true);
     }
     if (res.positionals.len == 0) {
-        const source = try std.io.getStdIn().readToEndAllocOptions(allocator, maxSize, null, @alignOf(u8), 0);
+        const source = try std.io.getStdIn().readToEndAllocOptions(allocator, maxSourceSize, null, @alignOf(u8), 0);
         defer allocator.free(source);
 
-        try writePretty(allocator, stdout, source);
+        try writeFormatted(allocator, stdout, source, true);
     }
 
     try bw.flush();
 }
 
-fn testPretty(source: [:0]const u8, expected: ?[:0]const u8) !void {
+fn testPretty(source: [:0]const u8, expected: ?[:0]const u8, prune: bool) !void {
     const allocator = std.testing.allocator;
     var arr = try std.ArrayList(u8).initCapacity(allocator, source.len);
     defer arr.deinit();
 
-    try writePretty(allocator, arr.writer(), source);
+    try writeFormatted(allocator, arr.writer(), source, prune);
 
-   try std.testing.expectEqualStrings(expected orelse source, arr.items[0..arr.items.len - 1]);
+    try std.testing.expectEqualStrings(expected orelse source, arr.items[0 .. arr.items.len - 1]);
 }
 
 fn testSame(source: [:0]const u8) !void {
-    try testPretty(source, null);
+    try testPretty(source, null, false);
 }
 
 test "array type" {
@@ -173,7 +177,7 @@ test "comments" {
         \\const a: u32 = 0u;
         \\const b: u32 = 0u;
         \\const c: u32 = 0u;
-    );
+    , false);
 }
 
 test "function" {
@@ -238,7 +242,14 @@ test "naked if" {
 }
 
 test "prune" {
-
+    try testPretty(
+        \\fn pruneMe() -> u32 {
+        \\  return 0u;
+        \\}
+        \\@vertex fn main() {}
+    ,
+        \\@vertex fn main() {}
+    , true);
 }
 
 test "test files" {

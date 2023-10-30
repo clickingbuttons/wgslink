@@ -410,11 +410,11 @@ fn writeStatement(self: Self, writer: anytype, node: NodeIndex, depth: usize) @T
             try writer.writeAll(" else ");
             try self.writeBlock(writer, rhs, depth + 1);
         },
-       .if_else_if => {
+        .if_else_if => {
             try self.writeIf(writer, lhs, depth);
             try writer.writeAll(" else ");
             try self.writeIf(writer, rhs, depth);
-       },
+        },
         .@"while" => {
             try writer.writeAll("while (");
             try self.writeExpr(writer, lhs);
@@ -483,7 +483,7 @@ fn writeStatement(self: Self, writer: anytype, node: NodeIndex, depth: usize) @T
             try self.writeVar(writer, extra, node);
         },
         else => {
-            std.debug.print("not rendering {s}\n", .{ @tagName(tag) });
+            std.debug.print("not rendering {s}\n", .{@tagName(tag)});
         },
     }
 
@@ -502,7 +502,16 @@ fn writeBlock(self: Self, writer: anytype, node: NodeIndex, depth: usize) @TypeO
             const returned = try self.writeStatement(writer, n, depth);
 
             switch (self.tree.nodeTag(n)) {
-                .comment, .@"if", .if_else, .if_else_if, .@"for", .@"while", .block, .@"switch", .loop, => {},
+                .comment,
+                .@"if",
+                .if_else,
+                .if_else_if,
+                .@"for",
+                .@"while",
+                .block,
+                .@"switch",
+                .loop,
+                => {},
                 else => try writer.writeAll(";"),
             }
             try writer.writeAll("\n");

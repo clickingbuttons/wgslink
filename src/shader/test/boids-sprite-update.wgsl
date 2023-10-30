@@ -18,10 +18,6 @@ struct Particles {
 @binding(1) @group(0) var<storage,read> particlesA: Particles;
 @binding(2) @group(0) var<storage,read_write> particlesB: Particles;
 
-fn pruneMe() -> u32 {
-	return 0u;
-}
-
 // https://github.com/austinEng/Project6-Vulkan-Flocking/blob/master/data/shaders/computeparticles/particle.comp
 @compute @workgroup_size(64)
 fn main(@builtin(global_invocation_id) GlobalInvocationID: vec3<u32>) {

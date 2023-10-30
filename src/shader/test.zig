@@ -9,13 +9,13 @@ fn expectAst(source: [:0]const u8) !void {
     var errors = try ErrorList.init(allocator);
     defer errors.deinit();
 
-    var tree = Ast.parse(allocator, &errors, source) catch |err| {
+    var tree = Ast.init(allocator, &errors, source) catch |err| {
         if (err == error.Parsing) {
             try errors.print(source, null);
         }
         return err;
     };
-    defer tree.deinit(allocator);
+    defer tree.deinit();
 }
 
 test "boids-sprite" {
@@ -147,4 +147,3 @@ test "vertexWriteGBuffers" {
     const vertexWriteGBuffers = @embedFile("test/vertexWriteGBuffers.wgsl");
     try expectAst(vertexWriteGBuffers);
 }
-
