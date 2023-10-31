@@ -1,9 +1,9 @@
 const std = @import("std");
 const clap = @import("clap");
-const ErrorList = @import("./shader/ErrorList.zig");
-const Ast = @import("./shader/Ast.zig");
-const Formatter = @import("./Formatter.zig");
-const Pruner = @import("./pruner.zig");
+const ErrorList = @import("./wgsl/ErrorList.zig");
+const Ast = @import("./wgsl/Ast.zig");
+const Renderer = @import("./renderer.zig");
+const Pruner = @import("./wgsl/Pruner.zig");
 
 const NodeIndex = Ast.NodeIndex;
 const maxSourceSize = 1 << 30;
@@ -28,7 +28,7 @@ fn writeFormatted(
         try pruner.prune(&ast);
     }
 
-    const formatter = Formatter{
+    const formatter = Renderer{
         .tree = &ast,
         .tab = "  ",
     };
@@ -100,12 +100,15 @@ test "const" {
 }
 
 test "struct" {
-    try testSame(
+    const foo =
         \\struct Foo {
         \\  bar: u32,
         \\  baz: i32,
         \\}
-    );
+    ;
+    try testSame(foo);
+
+    try testPretty(foo ++ ";", foo, false);
 
     try testSame(
         \\struct Foo {
@@ -252,6 +255,10 @@ test "prune" {
     , true);
 }
 
+test "import" {
+    try testSame("// import { Foo } from './foo.wgsl';");
+}
+
 test "test files" {
-    _ = @import("./shader/test.zig");
+    _ = @import("./wgsl/test.zig");
 }

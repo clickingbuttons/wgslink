@@ -1,6 +1,5 @@
-// Rather than lower to IR we'll raise back to WGSL
-const Ast = @import("./shader/Ast.zig");
 const std = @import("std");
+const Ast = @import("./wgsl/Ast.zig");
 
 const NodeIndex = Ast.NodeIndex;
 const TokenIndex = Ast.TokenIndex;
@@ -23,8 +22,9 @@ pub fn writeTranslationUnit(self: Self, writer: anytype) !void {
             .@"fn" => self.writeFn(writer, node),
             .type_alias => self.writeTypeAlias(writer, node),
             .comment => self.writeComment(writer, node),
+            .import => self.writeImport(writer, node),
             else => |t| {
-                std.debug.print("could not write node {s}\n", .{@tagName(t)});
+                std.debug.print("could not render node {s}\n", .{@tagName(t)});
             },
         };
         switch (tag) {
@@ -557,4 +557,21 @@ fn writeFn(self: Self, writer: anytype, node: NodeIndex) !void {
 
 fn writeComment(self: Self, writer: anytype, node: NodeIndex) !void {
     try self.writeNode(writer, node);
+}
+
+fn writeImport(self: Self, writer: anytype, node: NodeIndex) !void {
+    const imports = self.tree.nodeLHS(node);
+    const mod_token = self.tree.tokenLoc(self.tree.nodeRHS(node).asTokenIndex()).slice(self.tree.source);
+
+    try writer.writeAll("// import ");
+   if (imports != .none) {
+        try writer.writeAll("{ ");
+        const list = self.tree.spanToList(imports);
+        for (list, 0..) |n, i| {
+            try self.writeNode(writer, n);
+            if (i != list.len - 1) try writer.writeAll(", ");
+        }
+        try writer.writeAll(" } ");
+   }
+    try writer.print("from '{s}';", .{ mod_token[1..mod_token.len - 1] });
 }

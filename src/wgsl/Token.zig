@@ -101,6 +101,9 @@ pub const Tag = enum {
     angle_bracket_angle_bracket_right_equal,
     underscore,
 
+    template_left,
+    template_right,
+
     k_enable,
     k_requires,
 
@@ -171,11 +174,9 @@ pub const Tag = enum {
     k_false,
     k_true,
 
-    template_left,
-    template_right,
-
-    line_comment,
-    block_comment,
+    k_import,
+    k_from,
+    string_literal,
 
     pub fn symbol(self: Tag) []const u8 {
         return switch (self) {
@@ -183,6 +184,7 @@ pub const Tag = enum {
             .invalid => "invalid bytes",
             .ident => "an identifier",
             .number => "a number literal",
+            .string_literal => "a string literal",
 
             .paren_left => "(",
             .paren_right => ")",
@@ -297,8 +299,8 @@ pub const Tag = enum {
             .k_true => "true",
             .template_left => "<",
             .template_right => ">",
-            .line_comment => "//",
-            .block_comment => "/*",
+            .k_import => "// import",
+            .k_from => "from",
         };
     }
 };
@@ -369,6 +371,8 @@ pub const keywords = std.ComptimeStringMap(Tag, .{
     .{ "texture_storage_3d", .k_texture_storage_3d },
     .{ "false", .k_false },
     .{ "true", .k_true },
+    .{ "import", .k_import },
+    .{ "from", .k_from },
 });
 
 pub const reserved = blk: {
@@ -424,7 +428,6 @@ pub const reserved = blk: {
         .{ "final", {} },
         .{ "finally", {} },
         .{ "friend", {} },
-        .{ "from", {} },
         .{ "fxgroup", {} },
         .{ "get", {} },
         .{ "goto", {} },
@@ -432,7 +435,6 @@ pub const reserved = blk: {
         .{ "highp", {} },
         .{ "impl", {} },
         .{ "implements", {} },
-        .{ "import", {} },
         .{ "inline", {} },
         .{ "instanceof", {} },
         .{ "interface", {} },

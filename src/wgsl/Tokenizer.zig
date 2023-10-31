@@ -33,6 +33,8 @@ const State = union(enum) {
     slash,
     asterisk,
     xor,
+    single_quote,
+    double_quote,
 };
 
 pub fn init(source: [:0]const u8) Tokenizer {
@@ -81,6 +83,8 @@ pub fn peek(self: *Tokenizer) Token {
                 '*' => state = .asterisk,
                 '_' => state = .underscore,
                 '^' => state = .xor,
+                '\'' => state = .single_quote,
+                '"' => state = .double_quote,
 
                 '@' => {
                     result.tag = .attr;
@@ -196,28 +200,34 @@ pub fn peek(self: *Tokenizer) Token {
                 }
             },
             .line_comment => switch (c) {
-                0 => break,
+                    0 => {
+                        result.loc.start = index;
+                        if (index != self.source.len) {
+                            result.tag = .invalid;
+                            index += 1;
+                        }
+                        break;
+                    },
+                't' => {
+                    if (std.mem.eql(u8, Token.Tag.k_import.symbol(), self.source[result.loc.start..index + 1])) {
+                        result.tag = .k_import;
+                        index += 1;
+                        break;
+                    }
+                },
                 '\n' => {
-                    result.tag = .line_comment;
-                    break;
+                    result.loc.start = index + 1;
+                    state = .start;
                 },
                 else => {},
             },
             .block_comment => switch (c) {
-                '*' => {
-                    state = .block_comment_ending;
-                },
+                '*' => state = .block_comment_ending,
                 else => {},
             },
             .block_comment_ending => switch (c) {
-                '/' => {
-                    result.tag = .block_comment;
-                    index += 1;
-                    break;
-                },
-                else => {
-                    state = .block_comment;
-                },
+                '/' => state = .start,
+                else => state = .block_comment,
             },
             .ampersand => switch (c) {
                 '&' => {
@@ -426,6 +436,22 @@ pub fn peek(self: *Tokenizer) Token {
                     break;
                 },
             },
+            .single_quote => switch (c) {
+                '\'' => {
+                    result.tag = .string_literal;
+                    index += 1;
+                    break;
+                },
+                else => {}
+            },
+            .double_quote => switch (c) {
+                '"' => {
+                    result.tag = .string_literal;
+                    index += 1;
+                    break;
+                },
+                else => {}
+            },
         }
     }
 
@@ -439,35 +465,103 @@ pub fn next(self: *Tokenizer) Token {
     return tok;
 }
 
-test "tokenize identifier and numbers and comments" {
-    const str =
-        \\_ __ _iden iden -100i 100.8i // cc
+fn testTokenize(source: [:0]const u8, expected_token_tags: []const Token.Tag) !void {
+    var tokenizer = Tokenizer.init(source);
+    for (expected_token_tags) |expected_token_tag| {
+        const token = tokenizer.next();
+        std.testing.expectEqual(expected_token_tag, token.tag) catch |err| {
+            std.debug.print("unexpected token is '{s}'\n", .{ token.loc.slice(source) });
+            return err;
+        };
+        try std.testing.expect(token.loc.start != token.loc.end);
+    }
+    const last_token = tokenizer.next();
+    try std.testing.expectEqual(Token.Tag.eof, last_token.tag);
+    try std.testing.expectEqual(source.len, last_token.loc.end);
+    try std.testing.expectEqual(source.len, last_token.loc.start);
+}
+
+test "identifiers" {
+    try testTokenize(
+        \\_ __ _iden iden
+    , &.{
+        .underscore,
+        .ident,
+        .ident,
+        .ident,
+    });
+}
+
+test "numbers" {
+    try testTokenize(
+        \\10.0 10f 10u 10i
+    , &.{
+        .number,
+        .number,
+        .number,
+        .number,
+    });
+
+}
+
+test "comments" {
+    try testTokenize(
         \\// comment
         \\/*
         \\ block*comment
-        \\ */
-        \\
-    ;
-    var tokenizer = Tokenizer.init(str);
-    const Tag = Token.Tag;
-    try std.testing.expectEqual(Tag.underscore, tokenizer.next().tag);
-    try std.testing.expectEqual(Tag.ident, tokenizer.next().tag);
-    try std.testing.expectEqual(Tag.ident, tokenizer.next().tag);
-    try std.testing.expectEqual(Tag.ident, tokenizer.next().tag);
-    const int1 = tokenizer.next();
-    try std.testing.expectEqual(Tag.number, int1.tag);
-    try std.testing.expectEqualStrings("-100i", int1.loc.slice(str));
-    const int2 = tokenizer.next();
-    try std.testing.expectEqual(Tag.number, int2.tag);
-    try std.testing.expectEqualStrings("100.8i", int2.loc.slice(str));
-    const comment1 = tokenizer.next();
-    try std.testing.expectEqual(Tag.line_comment, comment1.tag);
-    try std.testing.expectEqualStrings("// cc", comment1.loc.slice(str));
-    const comment2 = tokenizer.next();
-    try std.testing.expectEqual(Tag.line_comment, comment2.tag);
-    try std.testing.expectEqualStrings("// comment", comment2.loc.slice(str));
-    const comment3 = tokenizer.next();
-    try std.testing.expectEqual(Tag.block_comment, comment3.tag);
-    try std.testing.expectEqualStrings("/*\n block*comment\n */", comment3.loc.slice(str));
-    try std.testing.expectEqual(Tag.eof, tokenizer.next().tag);
+        \\ */iden
+    , &.{
+       .ident
+    });
+}
+
+test "EOF comment" {
+    try testTokenize(
+        \\iden// asdf
+    , &.{
+       .ident
+    });
+}
+
+test "function" {
+    try testTokenize(
+        \\// comment
+        \\fn D_GGX(dotNH : f32, roughness : f32) -> f32 { return 1.0f; }
+    , &.{
+        .k_fn,
+        .ident,
+        .paren_left,
+        .ident,
+        .colon,
+        .k_f32,
+        .comma,
+        .ident,
+        .colon,
+        .k_f32,
+        .paren_right,
+        .arrow,
+        .k_f32,
+        .brace_left,
+        .k_return,
+        .number,
+        .semicolon,
+        .brace_right,
+    });
+}
+
+test "import" {
+    try testTokenize(
+        \\// comment
+        \\// import { Foo, Bart } from './foo.wgsl';
+    , &.{
+        .k_import,
+        .brace_left,
+        .ident,
+        .comma,
+        .ident,
+        .brace_right,
+        .k_from,
+        .string_literal,
+        .semicolon,
+    });
 }

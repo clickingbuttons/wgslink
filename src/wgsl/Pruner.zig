@@ -1,5 +1,5 @@
 const std = @import("std");
-const Ast = @import("./shader/Ast.zig");
+const Ast = @import("./Ast.zig");
 
 const Allocator = std.mem.Allocator;
 const Node = Ast.Node;

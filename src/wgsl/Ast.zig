@@ -3,7 +3,6 @@ const Parser = @import("Parser.zig");
 const Token = @import("Token.zig");
 const Tokenizer = @import("Tokenizer.zig");
 const ErrorList = @import("ErrorList.zig");
-const Extensions = @import("wgsl.zig").Extensions;
 
 const Allocator = std.mem.Allocator;
 const Self = @This();
@@ -17,7 +16,7 @@ tokens: TokenList.Slice,
 globals: []NodeIndex,
 nodes: NodeList.Slice,
 extra: []const u32,
-extensions: Extensions,
+extensions: Parser.Extensions,
 
 pub fn deinit(self: *Self) void {
     self.tokens.deinit(self.allocator);
@@ -47,10 +46,7 @@ pub fn init(
             var tokenizer = Tokenizer.init(source);
             while (true) {
                 const tok = tokenizer.next();
-                switch (tok.tag) {
-                    .line_comment, .block_comment => {},
-                    else => try tokens.append(allocator, tok),
-                }
+                try tokens.append(allocator, tok);
                 if (tok.tag == .eof) break;
             }
 
@@ -61,6 +57,7 @@ pub fn init(
     defer p.scratch.deinit(allocator);
     errdefer {
         p.tokens.deinit(allocator);
+        p.globals.deinit(allocator);
         p.nodes.deinit(allocator);
         p.extra.deinit(allocator);
     }
@@ -640,6 +637,11 @@ pub const Node = struct {
         /// LHS : expr
         /// RHS : --
         paren_expr,
+
+        /// TOK: import
+        /// LHS : ident list
+        /// RHS : mod token
+        import,
     };
 
     pub const GlobalVar = struct {

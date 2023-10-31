@@ -2,13 +2,16 @@
 const std = @import("std");
 const Ast = @import("Ast.zig");
 const Token = @import("Token.zig");
-const Extensions = @import("wgsl.zig").Extensions;
 const ErrorList = @import("ErrorList.zig");
 const Node = Ast.Node;
 const NodeIndex = Ast.NodeIndex;
 const TokenIndex = Ast.TokenIndex;
 const fieldNames = std.meta.fieldNames;
 const Parser = @This();
+
+pub const Extensions = struct {
+    f16: bool = false,
+};
 
 allocator: std.mem.Allocator,
 source: []const u8,
@@ -171,10 +174,14 @@ fn expectGlobalDeclRecoverable(p: *Parser) !?NodeIndex {
 fn expectGlobalDecl(p: *Parser) !NodeIndex {
     while (p.eatToken(.semicolon)) |_| {}
 
-    if (try p.comment()) |node| return node;
-
     const attrs = try p.attributeList();
-    if (try p.structDecl() orelse try p.fnDecl(attrs)) |node| return node;
+    if (try p.structDecl() orelse
+        try p.fnDecl(attrs) orelse
+        try p.importDecl()
+        ) |node| {
+        while (p.eatToken(.semicolon)) |_| {}
+        return node;
+    }
 
     if (try p.constDecl() orelse
         try p.typeAliasDecl() orelse
@@ -524,14 +531,6 @@ fn typeAliasDecl(p: *Parser) !?NodeIndex {
     });
 }
 
-fn comment(p: *Parser) !?NodeIndex {
-    const token = p.eatToken(.line_comment) orelse p.eatToken(.block_comment) orelse return null;
-    return try p.addNode(.{
-        .tag = .comment,
-        .main_token = token,
-    });
-}
-
 fn structDecl(p: *Parser) !?NodeIndex {
     const main_token = p.eatToken(.k_struct) orelse return null;
     const name_token = try p.expectToken(.ident);
@@ -607,6 +606,20 @@ fn constAssert(p: *Parser) !?NodeIndex {
     });
 }
 
+fn importDecl(p: *Parser) !?NodeIndex {
+    const import_token = p.eatToken(.k_import) orelse return null;
+    const imports = try p.importList();
+    _ = try p.expectToken(.k_from);
+    const mod_token = try p.expectToken(.string_literal);
+
+    return try p.addNode(.{
+        .tag = .import,
+        .main_token = import_token,
+        .lhs = imports orelse .none,
+        .rhs = mod_token.asNodeIndex(),
+    });
+}
+
 fn fnDecl(p: *Parser, attrs: ?NodeIndex) !?NodeIndex {
     const fn_token = p.eatToken(.k_fn) orelse return null;
     _ = try p.expectToken(.ident);
@@ -644,6 +657,25 @@ fn fnDecl(p: *Parser, attrs: ?NodeIndex) !?NodeIndex {
         .lhs = fn_proto,
         .rhs = body,
     });
+}
+
+fn importList(p: *Parser) !?NodeIndex {
+    _  = p.eatToken(.brace_left) orelse return null;
+    const scratch_top = p.scratch.items.len;
+    defer p.scratch.shrinkRetainingCapacity(scratch_top);
+    while (true) {
+        const main_token = try p.expectToken(.ident);
+        const imp = try p.addNode(.{
+            .main_token = main_token,
+            .tag = .ident,
+        });
+        try p.scratch.append(p.allocator, imp);
+        if (p.eatToken(.comma) == null) break;
+    }
+    _  = try p.expectToken(.brace_right);
+    const imports = p.scratch.items[scratch_top..];
+    if (imports.len == 0) return null;
+    return try p.listToSpan(imports);
 }
 
 fn parameterList(p: *Parser) !?NodeIndex {
@@ -701,8 +733,6 @@ fn statementRecoverable(p: *Parser) !?NodeIndex {
 
 fn statement(p: *Parser) !?NodeIndex {
     while (p.eatToken(.semicolon)) |_| {}
-
-    if (try p.comment()) |node| return node;
 
     if (try p.breakStatement() orelse
         try p.breakIfStatement() orelse

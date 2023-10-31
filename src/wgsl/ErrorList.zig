@@ -123,6 +123,6 @@ fn printCode(writer: anytype, term: std.io.tty.Config, source: []const u8, loc: 
     try term.setColor(writer, .bold);
     try term.setColor(writer, .green);
     try writer.writeByte('^');
-    try writer.writeByteNTimes('~', loc.end - loc.start - 1);
+    if (loc.end > loc.start) try writer.writeByteNTimes('~', loc.end - loc.start - 1);
     try writer.writeByte('\n');
 }
