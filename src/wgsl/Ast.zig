@@ -1,793 +1,243 @@
 const std = @import("std");
 const Parser = @import("Parser.zig");
 const Token = @import("Token.zig");
-const Tokenizer = @import("Tokenizer.zig");
-const ErrorList = @import("ErrorList.zig");
+const Node = @import("Node.zig");
+const Tokenizer = @import("Tokenizer.zig").Tokenizer;
 
 const Allocator = std.mem.Allocator;
 const Self = @This();
-
-pub const NodeList = std.MultiArrayList(Node);
+pub const ByteOffset = Token.Index;
 pub const TokenList = std.MultiArrayList(Token);
+pub const NodeList = std.MultiArrayList(Node);
+pub const Error = struct {
+    tag: Tag,
+    token: Token.Index,
+    expected_tag: ?Token.Tag = null,
+    is_note: bool = false,
 
-allocator: Allocator,
-source: []const u8,
+    pub const Tag = enum {
+        deep_template,
+        invalid_extension,
+        invalid_attribute,
+        expected_token,
+        expected_unary_expr,
+        expected_expr,
+        expected_lhs_expr,
+        expected_struct_member,
+        expected_function_parameter,
+        expected_function_body,
+        expected_global_decl,
+        expected_block_statement,
+        expected_statement,
+        expected_type_specifier,
+        type_needs_ext,
+        invalid_element_count,
+        invalid_address_space,
+        invalid_access_mode,
+        invalid_texel_format,
+        invalid_builtin,
+        invalid_interpolation_type,
+        invalid_interpolation_sample,
+        invalid_initializer,
+        invalid_assignment_op,
+        empty_struct,
+    };
+};
+
+source: [:0]const u8,
 tokens: TokenList.Slice,
-globals: []NodeIndex,
+/// The root AST node is assumed to be index 0. Since there can be no
+/// references to the root node, this means 0 is available to indicate null.
 nodes: NodeList.Slice,
-extra: []const u32,
-extensions: Parser.Extensions,
+extra: []Node.Index,
+extensions: Node.Extensions,
+errors: []const Error,
 
-pub fn deinit(self: *Self) void {
-    self.tokens.deinit(self.allocator);
-    self.allocator.free(self.globals);
-    self.nodes.deinit(self.allocator);
-    self.allocator.free(self.extra);
+pub fn deinit(self: *Self, allocator: Allocator) void {
+    self.tokens.deinit(allocator);
+    self.nodes.deinit(allocator);
+    allocator.free(self.errors);
+    allocator.free(self.extra);
     self.* = undefined;
 }
 
-/// parses a TranslationUnit (WGSL Program)
-pub fn init(
-    allocator: std.mem.Allocator,
-    errors: *ErrorList,
-    source: [:0]const u8
-) error{ OutOfMemory, Parsing }!Self {
-    var p = Parser{
-        .allocator = allocator,
-        .source = source,
-        .tokens = blk: {
-            const estimated_tokens = source.len / 8;
+pub fn init(allocator: std.mem.Allocator, source: [:0]const u8) Allocator.Error!Self {
+    var tokens = TokenList{};
+    defer tokens.deinit(allocator);
+    try tokens.ensureTotalCapacity(allocator, source.len / 8);
 
-            var tokens = std.MultiArrayList(Token){};
-            errdefer tokens.deinit(allocator);
-
-            try tokens.ensureTotalCapacity(allocator, estimated_tokens);
-
-            var tokenizer = Tokenizer.init(source);
-            while (true) {
-                const tok = tokenizer.next();
-                try tokens.append(allocator, tok);
-                if (tok.tag == .eof) break;
-            }
-
-            break :blk tokens;
-        },
-        .errors = errors,
-    };
-    defer p.scratch.deinit(allocator);
-    errdefer {
-        p.tokens.deinit(allocator);
-        p.globals.deinit(allocator);
-        p.nodes.deinit(allocator);
-        p.extra.deinit(allocator);
+    var tokenizer = Tokenizer.init(source);
+    while (true) {
+        const token = tokenizer.next();
+        try tokens.append(allocator, token);
+        if (token.tag == .eof) break;
     }
 
-    const estimated_nodes = p.tokens.len / 2 + 1;
-    try p.nodes.ensureTotalCapacity(allocator, estimated_nodes);
-
-    try p.translationUnit();
-
-    return .{
+    var parser = Parser{
         .allocator = allocator,
         .source = source,
-        .tokens = p.tokens.toOwnedSlice(),
-        .globals = try p.globals.toOwnedSlice(allocator),
-        .nodes = p.nodes.toOwnedSlice(),
-        .extra = try p.extra.toOwnedSlice(allocator),
-        .extensions = p.extensions,
+        .tokens = tokens,
+    };
+    defer parser.errors.deinit(allocator);
+    defer parser.nodes.deinit(allocator);
+    defer parser.extra.deinit(allocator);
+    defer parser.scratch.deinit(allocator);
+
+    try parser.nodes.ensureTotalCapacity(allocator, tokens.len / 2 + 1);
+
+    try parser.parseTranslationUnit();
+
+    return Self{
+        .source = source,
+        .tokens = tokens.toOwnedSlice(),
+        .nodes = parser.nodes.toOwnedSlice(),
+        .extra = try parser.extra.toOwnedSlice(allocator),
+        .extensions = parser.extensions,
+        .errors = try parser.errors.toOwnedSlice(allocator),
     };
 }
 
-pub fn spanToList(self: Self, span: NodeIndex) []const NodeIndex {
-    std.debug.assert(self.nodeTag(span) == .span);
-    return @ptrCast(self.extra[@intFromEnum(self.nodeLHS(span))..@intFromEnum(self.nodeRHS(span))]);
+pub fn rootDecls(self: Self) []const Node.Index {
+    // Root is always index 0.
+    const node = self.nodes.items(.data)[0];
+    return self.extra_data[node.lhs..node.rhs];
 }
 
-pub fn extraData(self: Self, comptime T: type, index: NodeIndex) T {
+pub fn extraData(self: Self, comptime T: type, index: Node.Index) T {
     const fields = std.meta.fields(T);
     var result: T = undefined;
     inline for (fields, 0..) |field, i| {
-        @field(result, field.name) = @enumFromInt(self.extra[@intFromEnum(index) + i]);
+        comptime std.debug.assert(field.type == Node.Index);
+        @field(result, field.name) = self.extra[index + i];
     }
     return result;
 }
 
-pub fn tokenTag(self: Self, i: TokenIndex) Token.Tag {
-    return self.tokens.items(.tag)[@intFromEnum(i)];
+fn tokenTag(self: Self, i: Token.Index) Token.Tag {
+    return self.tokens.items(.tag)[i];
 }
 
-pub fn tokenLoc(self: Self, i: TokenIndex) Token.Loc {
-    return self.tokens.items(.loc)[@intFromEnum(i)];
+fn tokenLoc(self: Self, i: Token.Index) Token.Loc {
+    return self.tokens.items(.loc)[i];
 }
 
-pub fn nodeTag(self: Self, i: NodeIndex) Node.Tag {
-    return self.nodes.items(.tag)[@intFromEnum(i)];
+pub fn tokenSource(self: Self, i: Token.Index) []const u8 {
+    const loc = self.tokenLoc(i);
+    return self.source[loc.start..loc.end];
 }
 
-pub fn nodeToken(self: Self, i: NodeIndex) TokenIndex {
-    return self.nodes.items(.main_token)[@intFromEnum(i)];
+pub fn nodeTag(self: Self, i: Node.Index) Node.Tag {
+    return self.nodes.items(.tag)[i];
 }
 
-pub fn nodeLHS(self: Self, i: NodeIndex) NodeIndex {
-    return self.nodes.items(.lhs)[@intFromEnum(i)];
+pub fn nodeToken(self: Self, i: Node.Index) Token.Index {
+    return self.nodes.items(.main_token)[i];
 }
 
-pub fn nodeRHS(self: Self, i: NodeIndex) NodeIndex {
-    return self.nodes.items(.rhs)[@intFromEnum(i)];
+pub fn nodeLHS(self: Self, i: Node.Index) Node.Index {
+    return self.nodes.items(.lhs)[i];
 }
 
-pub fn globalName(self: *Self, i: NodeIndex) []const u8 {
-    return self.declNameLoc(i).?.slice(self.source);
+pub fn nodeRHS(self: Self, i: Node.Index) Node.Index {
+    return self.nodes.items(.rhs)[i];
 }
 
-pub fn nodeLoc(self: Self, i: NodeIndex) Token.Loc {
+pub fn nodeSource(self: Self, i: Node.Index) []const u8 {
     var loc = self.tokenLoc(self.nodeToken(i));
     switch (self.nodeTag(i)) {
         .deref, .addr_of => {
-            const lhs_loc = self.tokenLoc(self.nodeToken(self.nodeLHS(i)));
+            const lhs = self.nodeLHS(i);
+            const lhs_token = self.nodeToken(lhs);
+            const lhs_loc = self.tokenLoc(lhs_token);
             loc.end = lhs_loc.end;
         },
         .field_access => {
-            const component_loc = self.tokenLoc(@enumFromInt(@intFromEnum(self.nodeToken(i)) + 1));
+            const component_loc = self.tokenLoc(self.nodeToken(i) + 1);
             loc.end = component_loc.end;
         },
         else => {},
     }
-    return loc;
+    return self.source[loc.start..loc.end];
 }
 
-pub fn declNameLoc(self: Self, node: NodeIndex) ?Token.Loc {
-    const token: TokenIndex = switch (self.nodeTag(node)) {
-        .global_var => self.extraData(Node.GlobalVar, self.nodeLHS(node)).name,
-        .@"var" => self.extraData(Node.Var, self.nodeLHS(node)).name,
+fn declNameLoc(self: Self, i: Node.Index) ?Token.Loc {
+    const token: Token.Index = switch (self.nodeTag(i)) {
+        .global_var => self.extraData(Node.GlobalVar, self.nodeLHS(i)).name,
+        .@"var" => self.extraData(Node.Var, self.nodeLHS(i)).name,
         .@"struct",
         .@"fn",
         .@"const",
         .let,
         .override,
         .type_alias,
-        => @enumFromInt(@intFromEnum(self.nodeToken(node)) + 1),
-        .struct_member, .fn_param => self.nodeToken(node),
+        => self.nodeToken(i) + 1,
+        .struct_member, .fn_param => self.nodeToken(i),
         else => return null,
     };
-    return self.tokenLoc(token);
+    return self.tokens.items(.loc)[token];
 }
 
-pub const NodeIndex = enum(u32) {
-    none = std.math.maxInt(u32),
-    _,
-
-    pub fn asTokenIndex(self: NodeIndex) TokenIndex {
-        return @enumFromInt(@intFromEnum(self));
-    }
-};
-
-pub const TokenIndex = enum(u32) {
-    none = std.math.maxInt(u32),
-    _,
-
-    pub fn asNodeIndex(self: TokenIndex) NodeIndex {
-        return @enumFromInt(@intFromEnum(self));
-    }
-};
-
-pub const Node = struct {
-    tag: Tag,
-    main_token: TokenIndex,
-    lhs: NodeIndex = .none,
-    rhs: NodeIndex = .none,
-
-    pub const Tag = enum {
-        /// an slice NodeIndex in extra [LHS..RHS]
-        /// TOK : undefined
-        /// LHS : NodeIndex
-        /// RHS : NodeIndex
-        span,
-
-        /// TOK : k_var
-        /// LHS : GlobalVar
-        /// RHS : Expr?
-        global_var,
-
-        /// TOK : k_override
-        /// LHS : Override
-        /// RHS : Expr
-        override,
-
-        /// TOK : k_type
-        /// LHS : Type
-        /// RHS : --
-        type_alias,
-
-        /// TOK : k_const_assert
-        /// LHS : Expr
-        /// RHS : --
-        const_assert,
-
-        /// TOK : k_struct
-        /// LHS : span(struct_member)
-        /// RHS : --
-        @"struct",
-        /// TOK : ident
-        /// LHS : span(Attribute)
-        /// RHS : Type
-        struct_member,
-
-        /// TOK : k_fn
-        /// LHS : FnProto
-        /// RHS : block
-        @"fn",
-        /// TOK : ident
-        /// LHS : ?span(Attribute)
-        /// RHS : type
-        fn_param,
-
-        /// TOK : brace_left
-        /// LHS : span(Statement)?
-        /// RHS : --
-        block,
-
-        /// TOK : k_return
-        /// LHS : Expr?
-        /// RHS : --
-        @"return",
-
-        /// TOK : k_discard
-        /// LHS : --
-        /// RHS : --
-        discard,
-
-        /// TOK : k_loop
-        /// LHS : block
-        /// RHS : --
-        loop,
-
-        /// TOK : k_continuing
-        /// LHS : block
-        /// RHS : --
-        continuing,
-
-        /// TOK : k_break
-        /// LHS : Expr
-        /// RHS : --
-        break_if,
-
-        /// TOK : k_break
-        /// LHS : --
-        /// RHS : --
-        @"break",
-
-        /// TOK : k_continue
-        /// LHS : --
-        /// RHS : --
-        @"continue",
-
-        /// TOK : k_if
-        /// LHS : Expr
-        /// RHS : block
-        @"if",
-        /// RHS is else body
-        /// TOK : k_if
-        /// LHS : if
-        /// RHS : block
-        if_else,
-        /// TOK : k_if
-        /// LHS : if
-        /// RHS : if, if_else, if_else_if
-        if_else_if,
-
-        /// TOK : k_switch
-        /// LHS : Expr
-        /// RHS : span(switch_case, switch_default, switch_case_default)
-        @"switch",
-        /// TOK : k_case
-        /// LHS : span(Expr)
-        /// RHS : block
-        switch_case,
-        /// TOK : k_default
-        /// LHS : --
-        /// RHS : block
-        switch_default,
-        /// switch_case with default (`case 1, 2, default {}`)
-        /// TOK : k_case
-        /// LHS : span(Expr)
-        /// RHS : block
-        switch_case_default,
-
-        /// TOK : k_var
-        /// LHS : Var
-        /// RHS : Expr?
-        @"var",
-
-        /// TOK : k_const
-        /// LHS : Type?
-        /// RHS : Expr
-        @"const",
-
-        /// TOK : k_let
-        /// LHS : Type?
-        /// RHS : Expr
-        let,
-
-        /// TOK : k_while
-        /// LHS : Expr
-        /// RHS : block
-        @"while",
-
-        /// TOK : k_for
-        /// LHS : ForHeader
-        /// RHS : block
-        @"for",
-
-        /// TOK : plus_plus
-        /// LHS : Expr
-        increase,
-
-        /// TOK : minus_minus
-        /// LHS : Expr
-        decrease,
-
-        /// TOK : plus_equal,        minus_equal,
-        ///       times_equal,       division_equal,
-        ///       modulo_equal,      and_equal,
-        ///       or_equal,          xor_equal,
-        ///       shl_equal, shl_equal
-        /// LHS : Expr
-        /// RHS : Expr
-        compound_assign,
-
-        /// TOK : equal
-        /// LHS : Expr
-        /// RHS : --
-        phony_assign,
-
-        /// TOK : k_i32, k_u32, k_f32, k_f16, k_bool
-        /// LHS : --
-        /// RHS : --
-        number_type,
-
-        /// TOK : k_bool
-        /// LHS : --
-        /// RHS : --
-        bool_type,
-
-        /// TOK : k_sampler, k_sampler_comparison
-        /// LHS : --
-        /// RHS : --
-        sampler_type,
-
-        /// TOK : k_vec2, k_vec3, k_vec4
-        /// LHS : Type?
-        /// RHS : --
-        vector_type,
-
-        /// TOK : k_mat2x2, k_mat2x3, k_mat2x4,
-        ///       k_mat3x2, k_mat3x3, k_mat3x4,
-        ///       k_mat4x2, k_mat4x3, k_mat4x4
-        /// LHS : Type?
-        /// RHS : --
-        matrix_type,
-
-        /// TOK : k_atomic
-        /// LHS : Type
-        /// RHS : --
-        atomic_type,
-
-        /// TOK : k_array
-        /// LHS : Type?
-        /// RHS : Expr?
-        array_type,
-
-        /// TOK : k_ptr
-        /// LHS : Type
-        /// RHS : PtrType
-        ptr_type,
-
-        /// TOK : k_texture_1d, k_texture_2d, k_texture_2d_array,
-        ///       k_texture_3d, k_texture_cube, k_texture_cube_array
-        /// LHS : Type
-        /// RHS : --
-        sampled_texture_type,
-
-        /// TOK : k_texture_multisampled_2d, k_texture_depth_multisampled_2d
-        /// LHS : Type?
-        /// RHS : --
-        multisampled_texture_type,
-
-        /// TOK : k_texture_external
-        /// LHS : Type
-        /// RHS : --
-        external_texture_type,
-
-        /// TOK : k_texture_storage_1d, k_texture_storage_2d,
-        ///       k_texture_storage_2d_array, k_texture_storage_3d
-        /// LHS : Token(TexelFormat)
-        /// RHS : Token(AccessMode)
-        storage_texture_type,
-
-        /// TOK : k_texture_depth_2d, k_texture_depth_2d_array
-        ///       k_texture_depth_cube, k_texture_depth_cube_array
-        /// LHS : --
-        /// RHS : --
-        depth_texture_type,
-
-        /// TOK : attr
-        attr_const,
-
-        /// TOK : attr
-        attr_invariant,
-
-        /// TOK : attr
-        attr_must_use,
-
-        /// TOK : attr
-        attr_vertex,
-
-        /// TOK : attr
-        attr_fragment,
-
-        /// TOK : attr
-        attr_compute,
-
-        /// TOK : attr
-        /// LHS : Expr
-        /// RHS : --
-        attr_align,
-
-        /// TOK : attr
-        /// LHS : Expr
-        /// RHS : --
-        attr_binding,
-
-        /// TOK : attr
-        /// LHS : Expr
-        /// RHS : --
-        attr_group,
-
-        /// TOK : attr
-        /// LHS : Expr
-        /// RHS : --
-        attr_id,
-
-        /// TOK : attr
-        /// LHS : Expr
-        /// RHS : --
-        attr_location,
-
-        /// TOK : attr
-        /// LHS : Expr
-        /// RHS : --
-        attr_size,
-
-        /// TOK : attr
-        /// LHS : Token(Builtin)
-        /// RHS : --
-        attr_builtin,
-
-        /// TOK : attr
-        /// LHS : WorkgroupSize
-        /// RHS : --
-        attr_workgroup_size,
-
-        /// TOK : attr
-        /// LHS : Token(InterpolationType)
-        /// RHS : Token(InterpolationSample))
-        attr_interpolate,
-
-        /// TOK : *
-        /// LHS : Expr
-        /// RHS : Expr
-        mul,
-
-        /// TOK : /
-        /// LHS : Expr
-        /// RHS : Expr
-        div,
-
-        /// TOK : %
-        /// LHS : Expr
-        /// RHS : Expr
-        mod,
-
-        /// TOK : +
-        /// LHS : Expr
-        /// RHS : Expr
-        add,
-
-        /// TOK : -
-        /// LHS : Expr
-        /// RHS : Expr
-        sub,
-
-        /// TOK : <<
-        /// LHS : Expr
-        /// RHS : Expr
-        shl,
-
-        /// TOK : >>
-        /// LHS : Expr
-        /// RHS : Expr
-        shr,
-
-        /// TOK : &
-        /// LHS : Expr
-        /// RHS : Expr
-        @"and",
-
-        /// TOK : |
-        /// LHS : Expr
-        /// RHS : Expr
-        @"or",
-
-        /// TOK : ^
-        /// LHS : Expr
-        /// RHS : Expr
-        xor,
-
-        /// TOK : &&
-        /// LHS : Expr
-        /// RHS : Expr
-        logical_and,
-
-        /// TOK : ||
-        /// LHS : Expr
-        /// RHS : Expr
-        logical_or,
-
-        /// TOK : !
-        /// LHS : Expr
-        /// RHS : --
-        not,
-
-        /// TOK : -
-        /// LHS : Expr
-        /// RHS : --
-        negate,
-
-        /// TOK : *
-        /// LHS : Expr
-        /// RHS : --
-        deref,
-
-        /// TOK : &
-        /// LHS : Expr
-        /// RHS : --
-        addr_of,
-
-        /// TOK : ==
-        /// LHS : Expr
-        /// RHS : Expr
-        equal,
-
-        /// TOK : !=
-        /// LHS : Expr
-        /// RHS : Expr
-        not_equal,
-
-        /// TOK : <
-        /// LHS : Expr
-        /// RHS : Expr
-        less_than,
-
-        /// TOK : <=
-        /// LHS : Expr
-        /// RHS : Expr
-        less_than_equal,
-
-        /// TOK : >
-        /// LHS : Expr
-        /// RHS : Expr
-        greater_than,
-
-        /// TOK : >=
-        /// LHS : Expr
-        /// RHS : Expr
-        greater_than_equal,
-
-        /// for identifier, array without element type specified,
-        /// vector prefix (e.g. vec2) and matrix prefix (e.g. mat2x2) RHS is null
-        /// see callExpr in Parser.zig if you don't understand this
-        ///
-        /// TOK : ident, k_array, k_bool, 'number type keywords', 'vector keywords', 'matrix keywords'
-        /// LHS : span(Arguments Expr)
-        /// RHS : (number_type, bool_type, vector_type, matrix_type, array_type)?
-        call,
-
-        /// TOK : k_bitcast
-        /// LHS : Type
-        /// RHS : Expr
-        bitcast,
-
-        /// TOK : ident
-        /// LHS : --
-        /// RHS : --
-        ident,
-
-        /// LHS is prefix expression
-        /// TOK : ident
-        /// LHS : Expr
-        /// RHS : Token(NodeIndex(ident))
-        field_access,
-
-        /// LHS is prefix expression
-        /// TOK : bracket_left
-        /// LHS : Expr
-        /// RHS : Expr
-        index_access,
-
-        /// TOK : k_true
-        /// LHS : --
-        /// RHS : --
-        true,
-        /// TOK : k_false
-        /// LHS : --
-        /// RHS : --
-        false,
-        /// TOK : number
-        /// LHS : --
-        /// RHS : --
-        number,
-
-        /// TOK: comment
-        /// LHS : --
-        /// RHS : --
-        comment,
-
-        /// TOK: paren_expr
-        /// LHS : expr
-        /// RHS : --
-        paren_expr,
-
-        /// TOK: import
-        /// LHS : ident list
-        /// RHS : mod token
-        import,
+pub fn declNameSource(self: Self, i: Node.Index) []const u8 {
+    const loc = self.declNameLoc(i).?;
+    return self.source[loc.start..loc.end];
+}
+
+pub fn spanToList(self: Self, i: Node.Index) []const Node.Index {
+    std.debug.assert(self.nodeTag(i) == .span);
+    return @ptrCast(self.extra[self.nodeLHS(i)..self.nodeRHS(i)]);
+}
+
+pub fn renderError(self: Self, err: Error, writer: anytype, term: std.io.tty.Config) !void {
+    const loc = self.tokenLoc(err.token);
+    const loc_extra = loc.extraInfo(self.source);
+    try term.setColor(writer, .dim);
+    try writer.print("\n{d} │ ", .{loc_extra.line});
+    try term.setColor(writer, .reset);
+    try writer.writeAll(self.source[loc_extra.line_start..loc.start]);
+    try term.setColor(writer, .green);
+    try writer.writeAll(self.source[loc.start..loc.end]);
+    try term.setColor(writer, .reset);
+    try writer.writeAll(self.source[loc.end..loc_extra.line_end]);
+    try writer.writeByte('\n');
+
+    // location pointer
+    const line_number_len = (std.math.log10(loc_extra.line) + 1) + 3;
+    try writer.writeByteNTimes(
+        ' ',
+        line_number_len + (loc_extra.col - 1),
+    );
+    try term.setColor(writer, .bold);
+    try term.setColor(writer, .green);
+    try writer.writeByte('^');
+    if (loc.end > loc.start) try writer.writeByteNTimes('~', loc.end - loc.start - 1);
+    try writer.writeByte(' ');
+    try switch (err.tag) {
+        .deep_template => writer.writeAll("template too deep"),
+        .invalid_extension => writer.writeAll("invalid extension"),
+        .invalid_attribute => writer.writeAll("invalid attribute"),
+        .expected_token => writer.print("expected token \"{s}\"", .{ err.expected_tag.?.symbol()  }),
+        .expected_unary_expr => writer.writeAll("expected unary expression"),
+        .expected_expr => writer.writeAll("expected expression"),
+        .expected_lhs_expr => writer.writeAll("expects left hand side expression"),
+        .expected_struct_member => writer.writeAll("expected struct member"),
+        .expected_function_parameter => writer.writeAll("expected function parameter"),
+        .expected_function_body => writer.writeAll("expected function body"),
+        .expected_global_decl => writer.writeAll("expected global declaration"),
+        .expected_block_statement => writer.writeAll("expected block statement"),
+        .expected_statement => writer.writeAll("expected statement"),
+        .expected_type_specifier => writer.writeAll("expected type specifier"),
+        .type_needs_ext => writer.writeAll("type requires an extension"),
+        .invalid_element_count => writer.writeAll("invalid element count"),
+        .invalid_address_space => writer.writeAll("invalid address space"),
+        .invalid_access_mode => writer.writeAll("invalid access mode"),
+        .invalid_texel_format => writer.writeAll("invalid texel format"),
+        .invalid_builtin => writer.writeAll("invalid builtin"),
+        .invalid_interpolation_type => writer.writeAll("invalid interpolation type"),
+        .invalid_interpolation_sample => writer.writeAll("invalid interpolation sample"),
+        .invalid_initializer => writer.writeAll("invalid intializer"),
+        .invalid_assignment_op => writer.writeAll("invalid assignment op"),
+        .empty_struct => writer.writeAll("emtpy structs are forbidden"),
     };
 
-    pub const GlobalVar = struct {
-        /// span(Attr)?
-        attrs: NodeIndex = .none,
-        /// Token(ident)
-        name: TokenIndex,
-        /// Token(AddressSpace)?
-        addr_space: TokenIndex = .none,
-        /// Token(AccessMode)?
-        access_mode: TokenIndex = .none,
-        /// Type?
-        type: NodeIndex = .none,
-    };
-
-    pub const Var = struct {
-        /// Token(ident)
-        name: TokenIndex,
-        /// Token(AddressSpace)?
-        addr_space: TokenIndex = .none,
-        /// Token(AccessMode)?
-        access_mode: TokenIndex = .none,
-        /// Type?
-        type: NodeIndex = .none,
-    };
-
-    pub const Override = struct {
-        /// span(Attr)?
-        attrs: NodeIndex = .none,
-        /// Type?
-        type: NodeIndex = .none,
-    };
-
-    pub const PtrType = struct {
-        /// Token(AddressSpace)
-        addr_space: TokenIndex,
-        /// Token(AccessMode)?
-        access_mode: TokenIndex,
-    };
-
-    pub const WorkgroupSize = struct {
-        /// Expr
-        x: NodeIndex,
-        /// Expr?
-        y: NodeIndex = .none,
-        /// Expr?
-        z: NodeIndex = .none,
-    };
-
-    pub const FnProto = struct {
-        /// span(Attr)?
-        attrs: NodeIndex = .none,
-        /// span(fn_param)?
-        params: NodeIndex = .none,
-        /// span(Attr)?
-        return_attrs: NodeIndex = .none,
-        /// Type?
-        return_type: NodeIndex = .none,
-    };
-
-    pub const ForHeader = struct {
-        /// var, const, let, phony_assign, compound_assign
-        init: NodeIndex = .none,
-        /// Expr
-        cond: NodeIndex = .none,
-        /// call, phony_assign, compound_assign
-        update: NodeIndex = .none,
-    };
-};
-
-pub const Builtin = enum {
-    vertex_index,
-    instance_index,
-    position,
-    front_facing,
-    frag_depth,
-    local_invocation_id,
-    local_invocation_index,
-    global_invocation_id,
-    workgroup_id,
-    num_workgroups,
-    sample_index,
-    sample_mask,
-};
-
-pub const InterpolationType = enum {
-    perspective,
-    linear,
-    flat,
-};
-
-pub const InterpolationSample = enum {
-    center,
-    centroid,
-    sample,
-};
-
-pub const AddressSpace = enum {
-    function,
-    private,
-    workgroup,
-    uniform,
-    storage,
-    handle,
-};
-
-pub const AccessMode = enum {
-    read,
-    write,
-    read_write,
-};
-
-pub const Attribute = enum {
-    invariant,
-    @"const",
-    must_use,
-    vertex,
-    fragment,
-    compute,
-    @"align",
-    binding,
-    group,
-    id,
-    location,
-    size,
-    builtin,
-    workgroup_size,
-    interpolate,
-};
-
-pub const TexelFormat = enum {
-    rgba8unorm,
-    rgba8snorm,
-    rgba8uint,
-    rgba8sint,
-    rgba16uint,
-    rgba16sint,
-    rgba16float,
-    r32uint,
-    r32sint,
-    r32float,
-    rg32uint,
-    rg32sint,
-    rg32float,
-    rgba32uint,
-    rgba32sint,
-    rgba32float,
-    bgra8unorm,
-};
+    try writer.writeByte('\n');
+}

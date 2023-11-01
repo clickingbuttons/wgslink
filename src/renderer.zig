@@ -1,30 +1,34 @@
 const std = @import("std");
 const Ast = @import("./wgsl/Ast.zig");
+const Node = @import("./wgsl/Node.zig");
+const Token = @import("./wgsl/Token.zig");
 
-const NodeIndex = Ast.NodeIndex;
-const TokenIndex = Ast.TokenIndex;
-const Node = Ast.Node;
+const NodeIndex = Node.Index;
+const TokenIndex = Token.Index;
 const Self = @This();
 
-pub const InstIndex = enum(u32) { none = std.math.maxInt(u32), _ };
-
 tree: *const Ast,
-tab: [:0]const u8,
+tab: []const u8,
 
-pub fn writeTranslationUnit(self: Self, writer: anytype) !void {
-    for (self.tree.globals) |node| {
-        const tag = self.tree.nodeTag(node);
+pub fn writeTranslationUnit(tree: *const Ast, tab: []const u8, writer: anytype) !void {
+    const r = Self{
+        .tree = tree,
+        .tab = tab,
+    };
+    for (r.tree.spanToList(0)) |node| {
+        const tag = r.tree.nodes.items(.tag)[node];
         try switch (tag) {
-            .global_var => self.writeGlobalVar(writer, node),
-            .override => self.writeOverride(writer, node),
-            .@"const" => self.writeConst(writer, node),
-            .@"struct" => self.writeStruct(writer, node),
-            .@"fn" => self.writeFn(writer, node),
-            .type_alias => self.writeTypeAlias(writer, node),
-            .comment => self.writeComment(writer, node),
-            .import => self.writeImport(writer, node),
+            .global_var => r.writeGlobalVar(writer, node),
+            .override => r.writeOverride(writer, node),
+            .@"const" => r.writeConst(writer, node),
+            .@"struct" => r.writeStruct(writer, node),
+            .@"fn" => r.writeFn(writer, node),
+            .type_alias => r.writeTypeAlias(writer, node),
+            .comment => r.writeComment(writer, node),
+            .import => r.writeImport(writer, node),
             else => |t| {
                 std.debug.print("could not render node {s}\n", .{@tagName(t)});
+                unreachable;
             },
         };
         switch (tag) {
@@ -39,30 +43,28 @@ pub fn writeTranslationUnit(self: Self, writer: anytype) !void {
 fn writeVar(self: Self, writer: anytype, extra: anytype, node: NodeIndex) !void {
     try writer.writeAll("var");
 
-    if (extra.addr_space != .none) {
-        const loc = self.tree.tokenLoc(extra.addr_space);
+    if (extra.addr_space != 0) {
         try writer.writeAll("<");
-        try writer.writeAll(loc.slice(self.tree.source));
+        try writer.writeAll(self.tree.tokenSource(extra.addr_space));
     }
 
-    if (extra.access_mode != .none) {
-        const loc = self.tree.tokenLoc(extra.access_mode);
+    if (extra.access_mode != 0) {
         try writer.writeAll(",");
-        try writer.writeAll(loc.slice(self.tree.source));
+        try writer.writeAll(self.tree.tokenSource(extra.access_mode));
     }
 
-    if (extra.addr_space != .none) try writer.writeAll(">");
+    if (extra.addr_space != 0) try writer.writeAll(">");
 
     try writer.writeAll(" ");
     try self.writeNodeName(writer, node);
 
-    if (extra.type != .none) {
+    if (extra.type != 0) {
         try writer.writeAll(": ");
         try self.writeType(writer, extra.type);
     }
 
     const rhs = self.tree.nodeRHS(node);
-    if (rhs != .none) {
+    if (rhs != 0) {
         try writer.writeAll(" = ");
         try self.writeExpr(writer, rhs);
     }
@@ -71,7 +73,7 @@ fn writeVar(self: Self, writer: anytype, extra: anytype, node: NodeIndex) !void 
 fn writeGlobalVar(self: Self, writer: anytype, node: NodeIndex) !void {
     const extra = self.tree.extraData(Node.GlobalVar, self.tree.nodeLHS(node));
 
-    if (extra.attrs != NodeIndex.none) {
+    if (extra.attrs != 0) {
         for (self.tree.spanToList(extra.attrs)) |attr| {
             switch (self.tree.nodeTag(attr)) {
                 .attr_group => {
@@ -105,35 +107,35 @@ fn writeType(self: Self, writer: anytype, node: NodeIndex) !void {
         .sampled_texture_type,
         .multisampled_texture_type,
         => {
-            if (lhs != .none) {
+            if (lhs != 0) {
                 try writer.writeAll("<");
                 try self.writeType(writer, lhs);
             }
-            if (rhs != .none) {
+            if (rhs != 0) {
                 try writer.writeAll(",");
                 try self.writeType(writer, rhs);
             }
-            if (lhs != .none) try writer.writeAll(">");
+            if (lhs != 0) try writer.writeAll(">");
         },
         .storage_texture_type => {
             try writer.writeAll("<");
-            const tok1 = self.tree.nodeLHS(node).asTokenIndex();
-            try writer.writeAll(self.tree.tokenLoc(tok1).slice(self.tree.source));
+            const tok1 = self.tree.nodeLHS(node);
+            try writer.writeAll(self.tree.tokenSource(tok1));
             try writer.writeAll(",");
-            const tok2 = self.tree.nodeRHS(node).asTokenIndex();
-            try writer.writeAll(self.tree.tokenLoc(tok2).slice(self.tree.source));
+            const tok2 = self.tree.nodeRHS(node);
+            try writer.writeAll(self.tree.tokenSource(tok2));
             try writer.writeAll(">");
         },
         .ptr_type => {
             const extra = self.tree.extraData(Node.PtrType, self.tree.nodeRHS(node));
             try writer.writeAll("<");
-            try writer.writeAll(self.tree.tokenLoc(extra.addr_space).slice(self.tree.source));
+            try writer.writeAll(self.tree.tokenSource(extra.addr_space));
             try writer.writeAll(",");
             try self.writeType(writer, self.tree.nodeLHS(node));
 
-            if (extra.access_mode != .none) {
+            if (extra.access_mode != 0) {
                 try writer.writeAll(",");
-                try writer.writeAll(self.tree.tokenLoc(extra.access_mode).slice(self.tree.source));
+                try writer.writeAll(self.tree.tokenSource(extra.access_mode));
             }
             try writer.writeAll(">");
         },
@@ -144,11 +146,10 @@ fn writeType(self: Self, writer: anytype, node: NodeIndex) !void {
 fn writeConst(self: Self, writer: anytype, node: NodeIndex) !void {
     const lhs = self.tree.nodeLHS(node);
     const rhs = self.tree.nodeRHS(node);
-    const name = self.tree.declNameLoc(node).?;
     try self.writeNode(writer, node);
     try writer.writeAll(" ");
-    try writer.writeAll(name.slice(self.tree.source));
-    if (lhs != .none) {
+    try self.writeNodeName(writer, node);
+    if (lhs != 0) {
         try writer.writeAll(": ");
         try self.writeType(writer, lhs);
     }
@@ -224,7 +225,7 @@ fn writeExpr(self: Self, writer: anytype, node: NodeIndex) !void {
         .field_access => {
             try self.writeExpr(writer, lhs);
             try writer.writeAll(".");
-            try self.writeToken(writer, rhs.asTokenIndex());
+            try self.writeToken(writer, rhs);
         },
         .call => try self.writeCall(writer, node),
         .paren_expr => {
@@ -268,25 +269,24 @@ fn writeAttributes(self: Self, writer: anytype, attrs: NodeIndex) !void {
         };
         try writer.writeAll(attr_name);
         const lhs = self.tree.nodeLHS(attr);
-        if (lhs != .none) {
+        if (lhs != 0) {
             try writer.writeAll("(");
             switch (tag) {
-                .attr_builtin, .attr_interpolate => try self.writeToken(writer, lhs.asTokenIndex()),
+                .attr_builtin, .attr_interpolate => try self.writeToken(writer, lhs),
                 .attr_workgroup_size => {
                     const extra = self.tree.extraData(Node.WorkgroupSize, lhs);
                     try self.writeExpr(writer, extra.x);
-                    if (extra.y != .none) {
+                    if (extra.y != 0) {
                         try writer.writeAll(",");
                         try self.writeExpr(writer, extra.y);
                     }
-                    if (extra.z != .none) {
+                    if (extra.z != 0) {
                         try writer.writeAll(",");
                         try self.writeExpr(writer, extra.z);
                     }
                 },
                 else => try self.writeNode(writer, lhs),
             }
-
             try writer.writeAll(")");
         }
         try writer.writeAll(" ");
@@ -295,16 +295,15 @@ fn writeAttributes(self: Self, writer: anytype, attrs: NodeIndex) !void {
 
 fn writeStruct(self: Self, writer: anytype, node: NodeIndex) !void {
     try writer.writeAll("struct ");
-    try writer.writeAll(self.tree.declNameLoc(node).?.slice(self.tree.source));
+    try self.writeNodeName(writer, node);
     try writer.writeAll(" {");
     const members = self.tree.spanToList(self.tree.nodeLHS(node));
     for (members) |m| {
-        const member_name_loc = self.tree.tokenLoc(self.tree.nodeToken(m));
-        const name = member_name_loc.slice(self.tree.source);
+        const name = self.tree.tokenSource(self.tree.nodeToken(m));
         try writer.writeAll("\n");
         try writer.writeAll(self.tab);
         const member_attrs_node = self.tree.nodeLHS(m);
-        if (member_attrs_node != .none) try self.writeAttributes(writer, member_attrs_node);
+        if (member_attrs_node != 0) try self.writeAttributes(writer, member_attrs_node);
         try writer.print("{s}: ", .{name});
         try self.writeType(writer, self.tree.nodeRHS(m));
         try writer.writeAll(",");
@@ -313,24 +312,24 @@ fn writeStruct(self: Self, writer: anytype, node: NodeIndex) !void {
 }
 
 fn writeNodeName(self: Self, writer: anytype, node: NodeIndex) !void {
-    try writer.writeAll(self.tree.declNameLoc(node).?.slice(self.tree.source));
+    try writer.writeAll(self.tree.declNameSource(node));
 }
 
 fn writeNode(self: Self, writer: anytype, node: NodeIndex) !void {
-    try writer.writeAll(self.tree.nodeLoc(node).slice(self.tree.source));
+    try writer.writeAll(self.tree.nodeSource(node));
 }
 
 fn writeToken(self: Self, writer: anytype, tok: TokenIndex) !void {
-    try writer.writeAll(self.tree.tokenLoc(tok).slice(self.tree.source));
+    try writer.writeAll(self.tree.tokenSource(tok));
 }
 
 fn writeCall(self: Self, writer: anytype, node: NodeIndex) @TypeOf(writer).Error!void {
     const ty = self.tree.nodeRHS(node);
-    if (ty != .none) try self.writeType(writer, ty) else try self.writeNode(writer, node);
+    if (ty != 0) try self.writeType(writer, ty) else try self.writeNode(writer, node);
 
     try writer.writeAll("(");
     const args = self.tree.nodeLHS(node);
-    if (args != .none) {
+    if (args != 0) {
         const list = self.tree.spanToList(args);
         for (list, 0..) |arg, i| {
             try self.writeExpr(writer, arg);
@@ -343,18 +342,18 @@ fn writeCall(self: Self, writer: anytype, node: NodeIndex) @TypeOf(writer).Error
 fn writeOverride(self: Self, writer: anytype, node: NodeIndex) !void {
     const extra = self.tree.extraData(Node.Override, self.tree.nodeLHS(node));
 
-    if (extra.attrs != .none) try self.writeAttributes(writer, extra.attrs);
+    if (extra.attrs != 0) try self.writeAttributes(writer, extra.attrs);
 
     try writer.writeAll("override ");
     try self.writeNodeName(writer, node);
 
-    if (extra.type != .none) {
+    if (extra.type != 0) {
         try writer.writeAll(": ");
         try self.writeType(writer, extra.type);
     }
 
     const rhs = self.tree.nodeRHS(node);
-    if (rhs != .none) {
+    if (rhs != 0) {
         try writer.writeAll(" = ");
         try self.writeExpr(writer, rhs);
     }
@@ -393,7 +392,7 @@ fn writeStatement(self: Self, writer: anytype, node: NodeIndex, depth: usize) @T
         .call => try self.writeCall(writer, node),
         .@"return" => {
             try writer.writeAll("return");
-            if (lhs != .none) {
+            if (lhs != 0) {
                 try writer.writeAll(" ");
                 try self.writeExpr(writer, lhs);
             }
@@ -424,11 +423,11 @@ fn writeStatement(self: Self, writer: anytype, node: NodeIndex, depth: usize) @T
         .@"for" => {
             const extra = self.tree.extraData(Node.ForHeader, self.tree.nodeLHS(node));
             try writer.writeAll("for (");
-            if (extra.init != .none) _ = try self.writeStatement(writer, extra.init, 0);
+            if (extra.init != 0) _ = try self.writeStatement(writer, extra.init, 0);
             try writer.writeAll("; ");
-            if (extra.cond != .none) _ = try self.writeExpr(writer, extra.cond);
+            if (extra.cond != 0) _ = try self.writeExpr(writer, extra.cond);
             try writer.writeAll("; ");
-            if (extra.update != .none) _ = try self.writeStatement(writer, extra.update, 0);
+            if (extra.update != 0) _ = try self.writeStatement(writer, extra.update, 0);
             try writer.writeAll(") ");
             try self.writeBlock(writer, rhs, depth + 1);
         },
@@ -436,14 +435,14 @@ fn writeStatement(self: Self, writer: anytype, node: NodeIndex, depth: usize) @T
             try writer.writeAll("switch ");
             try self.writeExpr(writer, lhs);
             try writer.writeAll(" {");
-            if (rhs != .none) for (self.tree.spanToList(rhs)) |c| {
+            if (rhs != 0) for (self.tree.spanToList(rhs)) |c| {
                 try writer.writeAll("\n");
                 for (0..depth + 1) |_| try writer.writeAll(self.tab);
                 switch (self.tree.nodeTag(c)) {
                     .switch_default, .switch_case_default => try writer.writeAll("default"),
                     .switch_case => {
                         const expr_list = self.tree.nodeLHS(c);
-                        if (expr_list != .none) {
+                        if (expr_list != 0) {
                             try writer.writeAll("case ");
                             const expressions = self.tree.spanToList(expr_list);
                             for (expressions, 0..) |e, i| {
@@ -495,7 +494,7 @@ fn writeBlock(self: Self, writer: anytype, node: NodeIndex, depth: usize) @TypeO
 
     try writer.writeAll("{");
 
-    if (lhs != .none) {
+    if (lhs != 0) {
         const statements = self.tree.spanToList(lhs);
         if (statements.len > 0) try writer.writeAll("\n");
         for (statements) |n| {
@@ -527,17 +526,17 @@ fn writeBlock(self: Self, writer: anytype, node: NodeIndex, depth: usize) @TypeO
 fn writeFn(self: Self, writer: anytype, node: NodeIndex) !void {
     const extra = self.tree.extraData(Node.FnProto, self.tree.nodeLHS(node));
 
-    if (extra.attrs != .none) try self.writeAttributes(writer, extra.attrs);
+    if (extra.attrs != 0) try self.writeAttributes(writer, extra.attrs);
 
     try writer.writeAll("fn ");
     try self.writeNodeName(writer, node);
     try writer.writeAll("(");
 
-    if (extra.params != .none) {
+    if (extra.params != 0) {
         const params = self.tree.spanToList(extra.params);
         for (params, 0..) |p, i| {
             const attrs = self.tree.nodeLHS(p);
-            if (attrs != .none) try self.writeAttributes(writer, attrs);
+            if (attrs != 0) try self.writeAttributes(writer, attrs);
 
             try self.writeNode(writer, p);
             try writer.writeAll(": ");
@@ -546,9 +545,9 @@ fn writeFn(self: Self, writer: anytype, node: NodeIndex) !void {
         }
     }
     try writer.writeAll(")");
-    if (extra.return_type != .none) {
+    if (extra.return_type != 0) {
         try writer.writeAll(" -> ");
-        if (extra.return_attrs != .none) try self.writeAttributes(writer, extra.return_attrs);
+        if (extra.return_attrs != 0) try self.writeAttributes(writer, extra.return_attrs);
         try self.writeType(writer, extra.return_type);
     }
     try writer.writeAll(" ");
@@ -561,10 +560,10 @@ fn writeComment(self: Self, writer: anytype, node: NodeIndex) !void {
 
 fn writeImport(self: Self, writer: anytype, node: NodeIndex) !void {
     const imports = self.tree.nodeLHS(node);
-    const mod_token = self.tree.tokenLoc(self.tree.nodeRHS(node).asTokenIndex()).slice(self.tree.source);
+    const mod_name = self.tree.tokenSource(self.tree.nodeRHS(node));
 
     try writer.writeAll("// import ");
-   if (imports != .none) {
+   if (imports != 0) {
         try writer.writeAll("{ ");
         const list = self.tree.spanToList(imports);
         for (list, 0..) |n, i| {
@@ -573,5 +572,203 @@ fn writeImport(self: Self, writer: anytype, node: NodeIndex) !void {
         }
         try writer.writeAll(" } ");
    }
-    try writer.print("from '{s}';", .{ mod_token[1..mod_token.len - 1] });
+    try writer.print("from {s};", .{ mod_name });
+}
+
+fn writeFormatted(
+    allocator: std.mem.Allocator,
+    writer: anytype,
+    source: [:0]const u8,
+) !void {
+    var ast = try Ast.init(allocator, source);
+    defer ast.deinit(allocator);
+    const stderr = std.io.getStdErr();
+    const term = std.io.tty.detectConfig(stderr);
+    for (ast.errors) |e| try ast.renderError(e, stderr.writer(), term);
+    if (ast.errors.len == 0) try writeTranslationUnit(&ast, "  ", writer);
+}
+
+fn testRender(comptime source: [:0]const u8, comptime expected: [:0]const u8) !void {
+    const allocator = std.testing.allocator;
+    var arr = try std.ArrayList(u8).initCapacity(allocator, source.len);
+    defer arr.deinit();
+
+    try writeFormatted(allocator, arr.writer(), source);
+
+    try std.testing.expectEqualStrings(expected ++ "\n", arr.items);
+}
+
+fn testCanonical(comptime source: [:0]const u8) !void {
+    try testRender(source, source);
+}
+
+test "array type" {
+    try testCanonical("var a: array<u32,3> = array<u32,3>(0u, 1u, 2u);");
+}
+
+test "const" {
+    try testCanonical("const a: u32 = 0u;");
+    try testCanonical("const b: Foo = Foo();");
+    try testCanonical("const c: vec2f = vec2f();");
+    try testCanonical("const d: vec2f = vec2f(1.0);");
+}
+
+test "struct" {
+    const foo =
+        \\struct Foo {
+        \\  bar: u32,
+        \\  baz: i32,
+        \\}
+    ;
+    try testCanonical(foo);
+
+    try testRender(foo ++ ";", foo);
+
+    try testCanonical(
+        \\struct Foo {
+        \\  @align(16) @size(4) bar: u32,
+        \\  baz: i32,
+        \\}
+    );
+
+    try testCanonical(
+        \\struct VertexInput {
+        \\  @builtin(vertex_index) vertex: u32,
+        \\  @builtin(instance_index) instance: u32,
+        \\}
+        \\struct VertexOutput {
+        \\  @builtin(position) position: vec4f,
+        \\  @location(0) color: vec4f,
+        \\  @location(1) worldPos: vec4f,
+        \\  @location(2) normal: vec3f,
+        \\}
+    );
+}
+
+test "global var" {
+    try testCanonical("@group(g_scene) @binding(0) var<uniform> view: View;");
+}
+
+test "var types" {
+    try testCanonical("var a: vec2<Test>;");
+    try testCanonical("var b: array<i32>;");
+    try testCanonical("var b: mat4x4<f32>;");
+    try testCanonical("var b: mat4x4f;");
+
+    try testCanonical("var ptr_int: ptr<function,i32>;");
+    try testCanonical("var ptr_int2: ptr<function,i32,read>;");
+
+    try testCanonical("var sam: sampler;");
+    try testCanonical("var tex: texture_2d<f32>;");
+
+    try testCanonical("var tex2: texture_multisampled_2d<i32>;");
+    try testCanonical("var tex3: texture_depth_multisampled_2d;");
+
+    try testCanonical("var tex4: texture_storage_2d<rgba8unorm,read>;");
+
+    try testCanonical("var tex5: texture_depth_2d;");
+    try testCanonical("var tex6: texture_external;");
+}
+
+test "override" {
+    try testCanonical("@id(0) override wireframe: bool = false;");
+}
+
+test "type alias" {
+    try testCanonical("alias single = f32;");
+}
+
+test "field access" {
+    try testCanonical("var a = b.c;");
+}
+
+test "comments" {
+    try testRender(
+        \\// Hello there
+        \\const a: u32 = 0u;
+        \\// Goodbye there
+        \\const b: u32 = 0u;
+        \\/* Block here */
+        \\const c: u32 = 0u;
+    ,
+        \\const a: u32 = 0u;
+        \\const b: u32 = 0u;
+        \\const c: u32 = 0u;
+    );
+}
+
+test "function" {
+    try testCanonical(
+        \\fn view32() -> @location(0) mat4x4f {
+        \\  var res = mat4x4f(view.view);
+        \\  res[3][0] = 0.0;
+        \\  res[3][1] = 0.0;
+        \\  res[3][2] = 0.0;
+        \\  return res;
+        \\}
+    );
+}
+
+test "entry function" {
+    try testCanonical("@vertex fn main() {}");
+    try testCanonical("@compute @workgroup_size(1,2,3) fn main() {}");
+}
+
+test "paren" {
+    try testCanonical("const a = (3 - 2);");
+    try testCanonical("const a = ((3 - 2));");
+}
+
+test "switch" {
+    try testCanonical(
+        \\fn test() {
+        \\  switch a {
+        \\    case 3 {
+        \\      b = 2;
+        \\      break;
+        \\    }
+        \\    default {
+        \\      break;
+        \\    }
+        \\  }
+        \\}
+    );
+}
+
+test "loop" {
+    try testCanonical(
+        \\fn test() {
+        \\  loop {
+        \\    if (i >= 4) {
+        \\      break;
+        \\    }
+        \\    i++;
+        \\  }
+        \\}
+    );
+}
+
+test "naked if" {
+    try testCanonical(
+        \\fn test() {
+        \\  if false {
+        \\    return;
+        \\  }
+        \\}
+    );
+}
+
+// test "prune" {
+//     try testPretty(
+//         \\fn pruneMe() -> u32 {
+//         \\  return 0u;
+//         \\}
+//         \\@vertex fn main() {}
+//     ,
+//         \\@vertex fn main() {}
+//     , true);
+// }
+
+test "import" {
+    try testCanonical("// import { Foo } from './foo.wgsl';");
 }

@@ -1,21 +1,12 @@
 const std = @import("std");
-const ErrorList = @import("ErrorList.zig");
 const Ast = @import("Ast.zig");
 const expect = std.testing.expect;
 const expectEqual = std.testing.expectEqual;
 const allocator = std.testing.allocator;
 
 fn expectAst(source: [:0]const u8) !void {
-    var errors = try ErrorList.init(allocator);
-    defer errors.deinit();
-
-    var tree = Ast.init(allocator, &errors, source) catch |err| {
-        if (err == error.Parsing) {
-            try errors.print(source, null);
-        }
-        return err;
-    };
-    defer tree.deinit();
+    var tree = try Ast.init(allocator, source);
+    defer tree.deinit(allocator);
 }
 
 test "boids-sprite" {
