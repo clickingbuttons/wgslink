@@ -218,13 +218,13 @@ pub fn renderError(self: Self, err: Error, writer: anytype, term: std.io.tty.Con
         .invalid_extension => {
             try writer.writeAll("invalid extension. expected ");
             const fields = @typeInfo(Node.Extensions).Struct.fields;
-           inline for (fields, 0..) |f, i| {
+            inline for (fields, 0..) |f, i| {
                 try writer.writeAll(f.name);
                 if (i != fields.len - 1) try writer.writeAll(",");
-           }
+            }
         },
         .invalid_attribute => writer.writeAll("invalid attribute"),
-        .expected_token => writer.print("expected {s}", .{ err.expected_tag.?.symbol()  }),
+        .expected_token => writer.print("expected {s}", .{err.expected_tag.?.symbol()}),
         .expected_unary_expr => writer.writeAll("expected unary expression"),
         .expected_expr => writer.writeAll("expected expression"),
         .expected_lhs_expr => writer.writeAll("expects left hand side expression"),

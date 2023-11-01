@@ -246,9 +246,4 @@ pub const Extensions = struct {
     f16: bool = false,
 };
 
-pub const Severity = enum {
-    @"error",
-    warning,
-    info,
-    off
-};
+pub const Severity = enum { @"error", warning, info, off };

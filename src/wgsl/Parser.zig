@@ -18,15 +18,15 @@ extra: std.ArrayListUnmanaged(Node.Index) = .{},
 scratch: std.ArrayListUnmanaged(Node.Index) = .{},
 
 /// global_directive* global_decl*
-pub fn parseTranslationUnit(p: *Self) error{ OutOfMemory }!void {
-   try  p.parameterizeTemplates();
+pub fn parseTranslationUnit(p: *Self) error{OutOfMemory}!void {
+    try p.parameterizeTemplates();
     // Root node must be index 0.
     p.nodes.appendAssumeCapacity(.{
         .tag = .span,
         .main_token = 0,
     });
     // So that extra nodes are never `0`.
-    try p.extra.appendSlice(p.allocator,  &[_]Node.Index{0, 0, 0, 0});
+    try p.extra.appendSlice(p.allocator, &[_]Node.Index{ 0, 0, 0, 0 });
 
     while (p.peekToken(.tag, 0) != .eof) {
         const directive = try p.globalDirectiveRecoverable();
@@ -46,7 +46,7 @@ pub fn parseTranslationUnit(p: *Self) error{ OutOfMemory }!void {
 
 /// Disambiguate templates (since WGSL chose < and >)
 /// https://gpuweb.github.io/gpuweb/wgsl/#template-lists-sec
-fn parameterizeTemplates(p: *Self) error { OutOfMemory }!void {
+fn parameterizeTemplates(p: *Self) error{OutOfMemory}!void {
     const UnclosedCandidate = struct {
         token_tag: *Token.Tag,
         depth: u32,
@@ -100,19 +100,17 @@ fn parameterizeTemplates(p: *Self) error { OutOfMemory }!void {
                 i += 1;
             },
             .@">" => {
-                if (
-                    discovered_tmpls.len > 0 and
-                    discovered_tmpls.get(discovered_tmpls.len - 1).depth == depth
-                ) {
+                if (discovered_tmpls.len > 0 and
+                    discovered_tmpls.get(discovered_tmpls.len - 1).depth == depth)
+                {
                     discovered_tmpls.pop().token_tag.* = .template_args_start;
                     p.tokens.items(.tag)[i] = .template_args_end;
                 }
             },
             .@">>" => {
-                if (
-                    discovered_tmpls.len > 0 and
-                    discovered_tmpls.get(discovered_tmpls.len - 1).depth == depth
-                ) {
+                if (discovered_tmpls.len > 0 and
+                    discovered_tmpls.get(discovered_tmpls.len - 1).depth == depth)
+                {
                     discovered_tmpls.pop().token_tag.* = .template_args_start;
                     discovered_tmpls.pop().token_tag.* = .template_args_start;
 
@@ -128,10 +126,8 @@ fn parameterizeTemplates(p: *Self) error { OutOfMemory }!void {
             },
             .@"(", .@"{" => depth += 1,
             .@")", .@"}" => {
-                while (
-                    discovered_tmpls.len > 0 and
-                    discovered_tmpls.get(discovered_tmpls.len - 1).depth == depth
-                ) _ = discovered_tmpls.pop();
+                while (discovered_tmpls.len > 0 and
+                    discovered_tmpls.get(discovered_tmpls.len - 1).depth == depth) _ = discovered_tmpls.pop();
 
                 if (depth > 0) depth -= 1;
             },
@@ -140,10 +136,8 @@ fn parameterizeTemplates(p: *Self) error { OutOfMemory }!void {
                 discovered_tmpls.resize(0) catch unreachable;
             },
             .@"||", .@"&&" => {
-                while (
-                    discovered_tmpls.len > 0 and
-                    discovered_tmpls.get(discovered_tmpls.len - 1).depth == depth
-                ) _ = discovered_tmpls.pop();
+                while (discovered_tmpls.len > 0 and
+                    discovered_tmpls.get(discovered_tmpls.len - 1).depth == depth) _ = discovered_tmpls.pop();
             },
             else => {},
         }
@@ -177,12 +171,7 @@ pub fn diagnosticDirective(p: *Self) Error!?Node.Index {
     _ = p.eatToken(.@",");
     _ = try p.expectToken(.@")");
     _ = try p.expectToken(.@";");
-    return try p.addNode(.{
-        .main_token = main_token,
-        .tag = .diagnostic,
-        .lhs = severity,
-        .rhs = try p.addExtra(rule)
-    });
+    return try p.addNode(.{ .main_token = main_token, .tag = .diagnostic, .lhs = severity, .rhs = try p.addExtra(rule) });
 }
 
 pub fn enableDirective(p: *Self) Error!?Node.Index {
@@ -194,7 +183,7 @@ pub fn enableDirective(p: *Self) Error!?Node.Index {
         const ext = p.eatToken(.k_f16) orelse try p.expectToken(.ident);
         const str = p.tokenSource(ext);
         var found = false;
-       inline for (@typeInfo(Node.Extensions).Struct.fields) |f| {
+        inline for (@typeInfo(Node.Extensions).Struct.fields) |f| {
             if (std.mem.eql(u8, f.name, str)) {
                 @field(p.extensions, f.name) = true;
                 found = true;
@@ -243,11 +232,10 @@ pub fn requiresDirective(p: *Self) Error!?Node.Index {
 // diagnostic_directive | enable_directive | requires_directive
 fn globalDirective(p: *Self) Error!Node.Index {
     while (p.eatToken(.@";")) |_| {}
-    if (
-       try p.diagnosticDirective() orelse
+    if (try p.diagnosticDirective() orelse
         try p.enableDirective() orelse
-        try p.requiresDirective()
-    ) |node| {
+        try p.requiresDirective()) |node|
+    {
         while (p.eatToken(.@";")) |_| {}
         return node;
     }
@@ -268,7 +256,7 @@ fn findNextGlobalDirective(p: *Self) void {
     }
 }
 
-fn globalDirectiveRecoverable(p: *Self) error { OutOfMemory }!Node.Index {
+fn globalDirectiveRecoverable(p: *Self) error{OutOfMemory}!Node.Index {
     return p.globalDirective() catch |err| switch (err) {
         Error.Parsing => {
             p.findNextGlobalDirective();
@@ -289,22 +277,19 @@ fn expectGlobalDecl(p: *Self) Error!Node.Index {
     while (p.eatToken(.@";")) |_| {}
 
     const attrs = try p.attributeList();
-    if (
-        try p.structDecl() orelse
+    if (try p.structDecl() orelse
         try p.fnDecl(attrs) orelse
-        try p.importDecl()
-    ) |node| {
+        try p.importDecl()) |node|
+    {
         while (p.eatToken(.@";")) |_| {}
         return node;
     }
 
-    if (
-        try p.constDecl() orelse
+    if (try p.constDecl() orelse
         try p.typeAliasDecl() orelse
         try p.constAssert() orelse
         try p.globalVar(attrs) orelse
-        try p.globalOverrideDecl(attrs)
-    ) |node|
+        try p.globalOverrideDecl(attrs)) |node|
     {
         _ = try p.expectToken(.@";");
         return node;
@@ -359,7 +344,7 @@ fn findNextGlobalDecl(p: *Self) void {
     }
 }
 
-fn expectGlobalDeclRecoverable(p: *Self) error { OutOfMemory }!?Node.Index {
+fn expectGlobalDeclRecoverable(p: *Self) error{OutOfMemory}!?Node.Index {
     return p.expectGlobalDecl() catch |err| switch (err) {
         Error.Parsing => {
             p.findNextGlobalDecl();
@@ -493,10 +478,7 @@ fn expectBuiltin(p: *Self) Error!Token.Index {
         if (std.meta.stringToEnum(Node.Builtin, str)) |_| return token;
     }
 
-    try p.errors.append(p.allocator, Ast.Error{
-        .tag = .invalid_builtin,
-        .token = token
-    });
+    try p.errors.append(p.allocator, Ast.Error{ .tag = .invalid_builtin, .token = token });
     return Error.Parsing;
 }
 
@@ -507,7 +489,7 @@ fn expectInterpolationType(p: *Self) Error!Token.Index {
         if (std.meta.stringToEnum(Node.InterpolationType, str)) |_| return token;
     }
 
-    try p.errors.append(p.allocator, Ast.Error {
+    try p.errors.append(p.allocator, Ast.Error{
         .tag = .invalid_interpolation_type,
         .token = token,
     });
@@ -621,7 +603,7 @@ fn structDecl(p: *Self) Error!?Node.Index {
         const attrs = try p.attributeList();
         const member = try p.structMember(attrs) orelse {
             if (attrs != null) {
-                try p.errors.append(p.allocator, Ast.Error {
+                try p.errors.append(p.allocator, Ast.Error{
                     .tag = .expected_struct_member,
                     .token = p.tok_i,
                 });
@@ -725,7 +707,7 @@ fn fnDecl(p: *Self, attrs: ?Node.Index) Error!?Node.Index {
 }
 
 fn importList(p: *Self) Error!?Node.Index {
-    _  = p.eatToken(.@"{") orelse return null;
+    _ = p.eatToken(.@"{") orelse return null;
     const scratch_top = p.scratch.items.len;
     defer p.scratch.shrinkRetainingCapacity(scratch_top);
     while (true) {
@@ -737,7 +719,7 @@ fn importList(p: *Self) Error!?Node.Index {
         try p.scratch.append(p.allocator, imp);
         if (p.eatToken(.@",") == null) break;
     }
-    _  = try p.expectToken(.@"}");
+    _ = try p.expectToken(.@"}");
     const imports = p.scratch.items[scratch_top..];
     if (imports.len == 0) return null;
     return try p.listToSpan(imports);
@@ -1139,7 +1121,7 @@ fn letDecl(p: *Self) Error!?Node.Index {
 }
 
 fn varUpdateStatement(p: *Self) Error!?Node.Index {
-    if (p.eatToken(.@"_")) |_| {
+    if (p.eatToken(._)) |_| {
         const equal_token = try p.expectToken(.@"=");
         const expr = try p.expectExpression();
         return try p.addNode(.{
@@ -1185,10 +1167,7 @@ fn varUpdateStatement(p: *Self) Error!?Node.Index {
                 });
             },
             else => {
-                try p.errors.append(p.allocator, Ast.Error{
-                    .tag = .invalid_assignment_op,
-                    .token = op_token
-                });
+                try p.errors.append(p.allocator, Ast.Error{ .tag = .invalid_assignment_op, .token = op_token });
                 return Error.Parsing;
             },
         }
@@ -1422,10 +1401,7 @@ fn expectAddressSpace(p: *Self) Error!Token.Index {
         }
     }
 
-    try p.errors.append(p.allocator, Ast.Error{
-        .tag = .invalid_address_space,
-        .token = token
-    });
+    try p.errors.append(p.allocator, Ast.Error{ .tag = .invalid_address_space, .token = token });
     return Error.Parsing;
 }
 
@@ -1438,10 +1414,7 @@ fn expectAccessMode(p: *Self) Error!Token.Index {
         }
     }
 
-    try p.errors.append(p.allocator, Ast.Error{
-        .tag = .invalid_access_mode,
-        .token = token
-    });
+    try p.errors.append(p.allocator, Ast.Error{ .tag = .invalid_access_mode, .token = token });
     return Error.Parsing;
 }
 
@@ -1660,10 +1633,7 @@ fn unaryExpr(p: *Self) error{ OutOfMemory, Parsing }!?Node.Index {
 
 fn expectUnaryExpr(p: *Self) error{ OutOfMemory, Parsing }!Node.Index {
     return try p.unaryExpr() orelse {
-        try p.errors.append(p.allocator, Ast.Error{
-            .tag = .expected_unary_expr,
-            .token = p.tok_i
-        });
+        try p.errors.append(p.allocator, Ast.Error{ .tag = .expected_unary_expr, .token = p.tok_i });
         return Error.Parsing;
     };
 }

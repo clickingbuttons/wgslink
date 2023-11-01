@@ -593,7 +593,7 @@ fn writeImport(self: Self, writer: anytype, node: NodeIndex) !void {
     const mod_name = self.tree.tokenSource(self.tree.nodeRHS(node));
 
     try writer.writeAll("// import ");
-   if (imports != 0) {
+    if (imports != 0) {
         try writer.writeAll("{ ");
         const list = self.tree.spanToList(imports);
         for (list, 0..) |n, i| {
@@ -601,8 +601,8 @@ fn writeImport(self: Self, writer: anytype, node: NodeIndex) !void {
             if (i != list.len - 1) try writer.writeAll(", ");
         }
         try writer.writeAll(" } ");
-   }
-    try writer.print("from {s};", .{ mod_name });
+    }
+    try writer.print("from {s};", .{mod_name});
 }
 
 fn writeFormatted(
