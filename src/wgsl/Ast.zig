@@ -27,6 +27,7 @@ pub const Error = struct {
         expected_function_parameter,
         expected_function_body,
         expected_global_decl,
+        expected_global_directive,
         expected_block_statement,
         expected_statement,
         expected_type_specifier,
@@ -40,6 +41,7 @@ pub const Error = struct {
         invalid_interpolation_sample,
         invalid_initializer,
         invalid_assignment_op,
+        invalid_severity,
         empty_struct,
     };
 };
@@ -207,15 +209,22 @@ pub fn renderError(self: Self, err: Error, writer: anytype, term: std.io.tty.Con
         line_number_len + (loc_extra.col - 1),
     );
     try term.setColor(writer, .bold);
-    try term.setColor(writer, .green);
+    try term.setColor(writer, .red);
     try writer.writeByte('^');
     if (loc.end > loc.start) try writer.writeByteNTimes('~', loc.end - loc.start - 1);
     try writer.writeByte(' ');
     try switch (err.tag) {
         .deep_template => writer.writeAll("template too deep"),
-        .invalid_extension => writer.writeAll("invalid extension"),
+        .invalid_extension => {
+            try writer.writeAll("invalid extension. expected ");
+            const fields = @typeInfo(Node.Extensions).Struct.fields;
+           inline for (fields, 0..) |f, i| {
+                try writer.writeAll(f.name);
+                if (i != fields.len - 1) try writer.writeAll(",");
+           }
+        },
         .invalid_attribute => writer.writeAll("invalid attribute"),
-        .expected_token => writer.print("expected token \"{s}\"", .{ err.expected_tag.?.symbol()  }),
+        .expected_token => writer.print("expected {s}", .{ err.expected_tag.?.symbol()  }),
         .expected_unary_expr => writer.writeAll("expected unary expression"),
         .expected_expr => writer.writeAll("expected expression"),
         .expected_lhs_expr => writer.writeAll("expects left hand side expression"),
@@ -223,6 +232,7 @@ pub fn renderError(self: Self, err: Error, writer: anytype, term: std.io.tty.Con
         .expected_function_parameter => writer.writeAll("expected function parameter"),
         .expected_function_body => writer.writeAll("expected function body"),
         .expected_global_decl => writer.writeAll("expected global declaration"),
+        .expected_global_directive => writer.writeAll("expected global directive"),
         .expected_block_statement => writer.writeAll("expected block statement"),
         .expected_statement => writer.writeAll("expected statement"),
         .expected_type_specifier => writer.writeAll("expected type specifier"),
@@ -236,8 +246,17 @@ pub fn renderError(self: Self, err: Error, writer: anytype, term: std.io.tty.Con
         .invalid_interpolation_sample => writer.writeAll("invalid interpolation sample"),
         .invalid_initializer => writer.writeAll("invalid intializer"),
         .invalid_assignment_op => writer.writeAll("invalid assignment op"),
+        .invalid_severity => {
+            try writer.writeAll("invalid severity. expected ");
+            const fields = @typeInfo(Node.Severity).Enum.fields;
+            inline for (fields, 0..) |f, i| {
+                try writer.writeAll(f.name);
+                if (i != fields.len - 1) try writer.writeAll(",");
+            }
+        },
         .empty_struct => writer.writeAll("emtpy structs are forbidden"),
     };
 
+    try term.setColor(writer, .reset);
     try writer.writeByte('\n');
 }

@@ -100,6 +100,9 @@ pub const Tag = enum {
     number,
     comment,
     paren_expr,
+    diagnostic,
+    enable,
+    requires,
     import,
 
     comptime {
@@ -152,6 +155,11 @@ pub const ForHeader = struct {
     init: Index = 0,
     cond: Index = 0,
     update: Index = 0,
+};
+
+pub const DiagnosticRule = struct {
+    name: Index,
+    field: Index = 0,
 };
 
 pub const Builtin = enum {
@@ -236,4 +244,11 @@ pub const TexelFormat = enum {
 
 pub const Extensions = struct {
     f16: bool = false,
+};
+
+pub const Severity = enum {
+    @"error",
+    warning,
+    info,
+    off
 };

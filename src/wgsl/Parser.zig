@@ -8,6 +8,7 @@ const Error = error{ OutOfMemory, Parsing };
 
 allocator: std.mem.Allocator,
 source: [:0]const u8,
+// May mutate for template tags
 tokens: Ast.TokenList,
 tok_i: Token.Index = 0,
 errors: std.ArrayListUnmanaged(Ast.Error) = .{},
@@ -24,8 +25,14 @@ pub fn parseTranslationUnit(p: *Self) error{ OutOfMemory }!void {
         .tag = .span,
         .main_token = 0,
     });
+    // So that extra nodes are never `0`.
     try p.extra.appendSlice(p.allocator,  &[_]Node.Index{0, 0, 0, 0});
-    while (try p.globalDirectiveRecoverable()) {}
+
+    while (p.peekToken(.tag, 0) != .eof) {
+        const directive = try p.globalDirectiveRecoverable();
+        if (directive == 0) break;
+        try p.scratch.append(p.allocator, directive);
+    }
 
     while (p.peekToken(.tag, 0) != .eof) {
         const decl = try p.expectGlobalDeclRecoverable() orelse continue;
@@ -148,21 +155,104 @@ pub fn tokenSource(p: Self, i: Token.Index) []const u8 {
     return p.source[loc.start..loc.end];
 }
 
-// diagnostic_directive | enable_directive | requires_directive
-fn globalDirective(p: *Self) Error!bool {
-    _ = p.eatToken(.k_enable) orelse return false;
-    const ext_token = try p.expectToken(.ident);
-    const directive = p.tokenSource(ext_token);
-    if (std.mem.eql(u8, directive, "f16")) {
-        p.extensions.f16 = true;
-    } else {
+pub fn diagnosticDirective(p: *Self) Error!?Node.Index {
+    const main_token = p.eatToken(.k_diagnostic) orelse return null;
+
+    _ = try p.expectToken(.@"(");
+    const severity = try p.expectToken(.ident);
+    const str = p.tokenSource(severity);
+    _ = std.meta.stringToEnum(Node.Severity, str) orelse {
         try p.errors.append(p.allocator, Ast.Error{
-            .tag = .invalid_extension,
-            .token = ext_token,
+            .tag = .invalid_severity,
+            .token = severity,
         });
         return Error.Parsing;
+    };
+    _ = try p.expectToken(.@",");
+
+    var rule = Node.DiagnosticRule{
+        .name = try p.expectToken(.ident),
+    };
+    if (p.eatToken(.@".")) |_| rule.field = try p.expectToken(.ident);
+    _ = p.eatToken(.@",");
+    _ = try p.expectToken(.@")");
+    _ = try p.expectToken(.@";");
+    return try p.addNode(.{
+        .main_token = main_token,
+        .tag = .diagnostic,
+        .lhs = severity,
+        .rhs = try p.addExtra(rule)
+    });
+}
+
+pub fn enableDirective(p: *Self) Error!?Node.Index {
+    const main_token = p.eatToken(.k_enable) orelse return null;
+
+    const scratch_top = p.scratch.items.len;
+    defer p.scratch.shrinkRetainingCapacity(scratch_top);
+    while (true) {
+        const ext = p.eatToken(.k_f16) orelse try p.expectToken(.ident);
+        const str = p.tokenSource(ext);
+        var found = false;
+       inline for (@typeInfo(Node.Extensions).Struct.fields) |f| {
+            if (std.mem.eql(u8, f.name, str)) {
+                @field(p.extensions, f.name) = true;
+                found = true;
+                try p.scratch.append(p.allocator, ext);
+                break;
+            }
+        }
+        if (!found) {
+            try p.errors.append(p.allocator, Ast.Error{
+                .tag = .invalid_extension,
+                .token = ext,
+            });
+            return Error.Parsing;
+        }
+        if (p.eatToken(.@",") == null) break;
     }
-    return true;
+    _ = p.eatToken(.@",");
+    _ = try p.expectToken(.@";");
+    const enables = p.scratch.items[scratch_top..];
+    return try p.addNode(.{
+        .main_token = main_token,
+        .tag = .enable,
+        .lhs = try p.listToSpan(enables),
+    });
+}
+
+pub fn requiresDirective(p: *Self) Error!?Node.Index {
+    const main_token = p.eatToken(.k_requires) orelse return null;
+
+    const scratch_top = p.scratch.items.len;
+    defer p.scratch.shrinkRetainingCapacity(scratch_top);
+    while (true) {
+        const ext = try p.expectToken(.ident);
+        try p.scratch.append(p.allocator, ext);
+        if (p.eatToken(.@",") == null) break;
+    }
+    _ = p.eatToken(.@",");
+    _ = try p.expectToken(.@";");
+    return try p.addNode(.{
+        .main_token = main_token,
+        .tag = .requires,
+        .lhs = try p.listToSpan(p.scratch.items[scratch_top..]),
+    });
+}
+
+// diagnostic_directive | enable_directive | requires_directive
+fn globalDirective(p: *Self) Error!Node.Index {
+    while (p.eatToken(.@";")) |_| {}
+    if (
+       try p.diagnosticDirective() orelse
+        try p.enableDirective() orelse
+        try p.requiresDirective()
+    ) |node| {
+        while (p.eatToken(.@";")) |_| {}
+        return node;
+    }
+
+    return 0;
 }
 
 fn findNextGlobalDirective(p: *Self) void {
@@ -178,11 +268,11 @@ fn findNextGlobalDirective(p: *Self) void {
     }
 }
 
-fn globalDirectiveRecoverable(p: *Self) error { OutOfMemory }!bool {
+fn globalDirectiveRecoverable(p: *Self) error { OutOfMemory }!Node.Index {
     return p.globalDirective() catch |err| switch (err) {
         Error.Parsing => {
             p.findNextGlobalDirective();
-            return false;
+            return 0;
         },
         error.OutOfMemory => error.OutOfMemory,
     };
@@ -199,19 +289,22 @@ fn expectGlobalDecl(p: *Self) Error!Node.Index {
     while (p.eatToken(.@";")) |_| {}
 
     const attrs = try p.attributeList();
-    if (try p.structDecl() orelse
+    if (
+        try p.structDecl() orelse
         try p.fnDecl(attrs) orelse
         try p.importDecl()
-        ) |node| {
+    ) |node| {
         while (p.eatToken(.@";")) |_| {}
         return node;
     }
 
-    if (try p.constDecl() orelse
+    if (
+        try p.constDecl() orelse
         try p.typeAliasDecl() orelse
         try p.constAssert() orelse
         try p.globalVar(attrs) orelse
-        try p.globalOverrideDecl(attrs)) |node|
+        try p.globalOverrideDecl(attrs)
+    ) |node|
     {
         _ = try p.expectToken(.@";");
         return node;
