@@ -53,21 +53,22 @@ pub const Tag = enum {
     external_texture_type,
     storage_texture_type,
     depth_texture_type,
-    attr_const,
-    attr_invariant,
-    attr_must_use,
-    attr_vertex,
-    attr_fragment,
-    attr_compute,
     attr_align,
     attr_binding,
+    attr_builtin,
+    attr_compute,
+    attr_const,
+    attr_diagnostic,
+    attr_fragment,
     attr_group,
     attr_id,
-    attr_location,
-    attr_size,
-    attr_builtin,
-    attr_workgroup_size,
     attr_interpolate,
+    attr_invariant,
+    attr_location,
+    attr_must_use,
+    attr_size,
+    attr_vertex,
+    attr_workgroup_size,
     mul,
     div,
     mod,
@@ -100,9 +101,9 @@ pub const Tag = enum {
     number,
     comment,
     paren_expr,
-    diagnostic,
-    enable,
-    requires,
+    diagnostic_directive,
+    enable_directive,
+    requires_directive,
     import,
 
     comptime {
@@ -205,21 +206,22 @@ pub const AccessMode = enum {
 };
 
 pub const Attribute = enum {
-    invariant,
-    @"const",
-    must_use,
-    vertex,
-    fragment,
-    compute,
     @"align",
     binding,
+    builtin,
+    @"const",
+    compute,
+    diagnostic,
+    fragment,
     group,
     id,
-    location,
-    size,
-    builtin,
-    workgroup_size,
     interpolate,
+    invariant,
+    location,
+    must_use,
+    size,
+    vertex,
+    workgroup_size,
 };
 
 pub const TexelFormat = enum {
@@ -242,8 +244,12 @@ pub const TexelFormat = enum {
     bgra8unorm,
 };
 
-pub const Extensions = struct {
+pub const EnableExtensions = struct {
     f16: bool = false,
+};
+
+pub const LangExtensions = struct {
+    readonly_and_readwrite_storage_textures: bool = false,
 };
 
 pub const Severity = enum { @"error", warning, info, off };

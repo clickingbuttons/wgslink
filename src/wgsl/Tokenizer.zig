@@ -570,3 +570,19 @@ test "import" {
         .@";",
     });
 }
+
+test "diagnostic" {
+    try testTokenize(
+        \\@diagnostic(error, foo.bar)
+    , &.{
+        .@"@",
+        .k_diagnostic,
+        .@"(",
+        .ident,
+        .@",",
+        .ident,
+        .@".",
+        .ident,
+        .@")",
+    });
+}

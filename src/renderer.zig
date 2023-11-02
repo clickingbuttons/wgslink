@@ -17,11 +17,11 @@ pub fn writeTranslationUnit(tree: *const Ast, tab: []const u8, writer: anytype) 
     };
 
     for (r.tree.spanToList(0)) |node| {
-        const tag = r.tree.nodes.items(.tag)[node];
+        const tag = r.tree.nodeTag(node);
         try switch (tag) {
-            .diagnostic => r.writeDiagnostic(writer, node),
-            .enable => r.writeEnable(writer, node),
-            .requires => r.writeEnable(writer, node),
+            .diagnostic_directive => r.writeGlobalDiagnostic(writer, node),
+            .enable_directive => r.writeEnable(writer, node),
+            .requires_directive => r.writeEnable(writer, node),
             .global_var => r.writeGlobalVar(writer, node),
             .override => r.writeOverride(writer, node),
             .@"const" => r.writeConst(writer, node),
@@ -36,7 +36,14 @@ pub fn writeTranslationUnit(tree: *const Ast, tab: []const u8, writer: anytype) 
             },
         };
         switch (tag) {
-            .global_var, .override, .@"const", .type_alias => try writer.writeByte(';'),
+            .global_var,
+            .override,
+            .@"const",
+            .type_alias,
+            .diagnostic_directive,
+            .enable_directive,
+            .requires_directive,
+            => try writer.writeByte(';'),
             else => {},
         }
 
@@ -64,12 +71,9 @@ fn writeEnable(self: Self, writer: anytype, node: NodeIndex) !void {
         try writer.writeAll(self.tree.tokenSource(enable));
         if (i != enables.len - 1) try writer.writeAll(", ");
     }
-    try writer.writeByte(';');
 }
 
-fn writeDiagnostic(self: Self, writer: anytype, node: NodeIndex) !void {
-    try self.writeNode(writer, node);
-    try writer.writeByte('(');
+fn writeDiagnosticRule(self: Self, writer: anytype, node: NodeIndex) !void {
     try self.writeToken(writer, self.tree.nodeLHS(node));
     try writer.writeAll(", ");
     const rule = self.tree.extraData(Node.DiagnosticRule, self.tree.nodeRHS(node));
@@ -78,8 +82,13 @@ fn writeDiagnostic(self: Self, writer: anytype, node: NodeIndex) !void {
         try writer.writeByte('.');
         try self.writeToken(writer, rule.field);
     }
+}
 
-    try writer.writeAll(");");
+fn writeGlobalDiagnostic(self: Self, writer: anytype, node: NodeIndex) !void {
+    try self.writeNode(writer, node);
+    try writer.writeByte('(');
+    try self.writeDiagnosticRule(writer, node);
+    try writer.writeByte(')');
 }
 
 fn writeVar(self: Self, writer: anytype, extra: anytype, node: NodeIndex) !void {
@@ -291,30 +300,14 @@ fn writeAttributes(self: Self, writer: anytype, attrs: NodeIndex) !void {
     for (self.tree.spanToList(attrs)) |attr| {
         try writer.writeByte('@');
         const tag = self.tree.nodeTag(attr);
-        const attr_name = switch (tag) {
-            .attr_const => "const",
-            .attr_invariant => "invariant",
-            .attr_must_use => "must_use",
-            .attr_vertex => "vertex",
-            .attr_fragment => "fragment",
-            .attr_compute => "compute",
-            .attr_align => "align",
-            .attr_binding => "binding",
-            .attr_group => "group",
-            .attr_id => "id",
-            .attr_location => "location",
-            .attr_size => "size",
-            .attr_builtin => "builtin",
-            .attr_workgroup_size => "workgroup_size",
-            .attr_interpolate => "interpolate",
-            else => "UNKNOWN ATTRIBUTE",
-        };
+        const attr_name = @tagName(tag)["attr_".len..];
         try writer.writeAll(attr_name);
         const lhs = self.tree.nodeLHS(attr);
         if (lhs != 0) {
             try writer.writeByte('(');
             switch (tag) {
                 .attr_builtin, .attr_interpolate => try self.writeToken(writer, lhs),
+                .attr_diagnostic => try self.writeDiagnosticRule(writer, attr),
                 .attr_workgroup_size => {
                     const extra = self.tree.extraData(Node.WorkgroupSize, lhs);
                     try self.writeExpr(writer, extra.x);
@@ -644,6 +637,8 @@ test "enable" {
 test "diagnostic" {
     try testCanonical("diagnostic(warning, foo);");
     try testCanonical("diagnostic(error, foo.bar);");
+
+    try testCanonical("@diagnostic(error, foo.bar) fn main() {}");
 }
 
 test "requires" {

@@ -17,8 +17,8 @@ pub const Error = struct {
 
     pub const Tag = enum {
         deep_template,
-        invalid_extension,
         invalid_attribute,
+        invalid_attributes,
         expected_token,
         expected_unary_expr,
         expected_expr,
@@ -52,7 +52,8 @@ tokens: TokenList.Slice,
 /// references to the root node, this means 0 is available to indicate null.
 nodes: NodeList.Slice,
 extra: []Node.Index,
-extensions: Node.Extensions,
+enable_extensions: Node.EnableExtensions,
+lang_extensions: Node.LangExtensions,
 errors: []const Error,
 
 pub fn deinit(self: *Self, allocator: Allocator) void {
@@ -94,7 +95,8 @@ pub fn init(allocator: std.mem.Allocator, source: [:0]const u8) Allocator.Error!
         .tokens = tokens.toOwnedSlice(),
         .nodes = parser.nodes.toOwnedSlice(),
         .extra = try parser.extra.toOwnedSlice(allocator),
-        .extensions = parser.extensions,
+        .enable_extensions = parser.enable_extensions,
+        .lang_extensions = parser.lang_extensions,
         .errors = try parser.errors.toOwnedSlice(allocator),
     };
 }
@@ -189,6 +191,15 @@ pub fn spanToList(self: Self, i: Node.Index) []const Node.Index {
     return @ptrCast(self.extra[self.nodeLHS(i)..self.nodeRHS(i)]);
 }
 
+fn renderList(writer: anytype, Enum: anytype) !void {
+    try writer.writeAll(". expected one of ");
+    const fields = @typeInfo(Enum).Enum.fields;
+    inline for (fields, 0..) |f, i| {
+        try writer.writeAll(f.name);
+        if (i != fields.len - 1) try writer.writeAll(",");
+    }
+}
+
 pub fn renderError(self: Self, err: Error, writer: anytype, term: std.io.tty.Config) !void {
     const loc = self.tokenLoc(err.token);
     const loc_extra = loc.extraInfo(self.source);
@@ -215,15 +226,11 @@ pub fn renderError(self: Self, err: Error, writer: anytype, term: std.io.tty.Con
     try writer.writeByte(' ');
     try switch (err.tag) {
         .deep_template => writer.writeAll("template too deep"),
-        .invalid_extension => {
-            try writer.writeAll("invalid extension. expected ");
-            const fields = @typeInfo(Node.Extensions).Struct.fields;
-            inline for (fields, 0..) |f, i| {
-                try writer.writeAll(f.name);
-                if (i != fields.len - 1) try writer.writeAll(",");
-            }
+        .invalid_attribute => {
+            try writer.writeAll("invalid attribute");
+            try renderList(writer, Node.Attribute);
         },
-        .invalid_attribute => writer.writeAll("invalid attribute"),
+        .invalid_attributes => writer.writeAll("unexpected attribute list"),
         .expected_token => writer.print("expected {s}", .{err.expected_tag.?.symbol()}),
         .expected_unary_expr => writer.writeAll("expected unary expression"),
         .expected_expr => writer.writeAll("expected expression"),
@@ -238,21 +245,35 @@ pub fn renderError(self: Self, err: Error, writer: anytype, term: std.io.tty.Con
         .expected_type_specifier => writer.writeAll("expected type specifier"),
         .type_needs_ext => writer.writeAll("type requires an extension"),
         .invalid_element_count => writer.writeAll("invalid element count"),
-        .invalid_address_space => writer.writeAll("invalid address space"),
-        .invalid_access_mode => writer.writeAll("invalid access mode"),
-        .invalid_texel_format => writer.writeAll("invalid texel format"),
-        .invalid_builtin => writer.writeAll("invalid builtin"),
-        .invalid_interpolation_type => writer.writeAll("invalid interpolation type"),
-        .invalid_interpolation_sample => writer.writeAll("invalid interpolation sample"),
-        .invalid_initializer => writer.writeAll("invalid intializer"),
+        .invalid_address_space => {
+            try writer.writeAll("invalid address space");
+            try renderList(writer, Node.AddressSpace);
+        },
+        .invalid_access_mode => {
+            try writer.writeAll("invalid access mode");
+            try renderList(writer, Node.AccessMode);
+        },
+        .invalid_texel_format => {
+            try writer.writeAll("invalid texel format");
+            try renderList(writer, Node.TexelFormat);
+        },
+        .invalid_builtin => {
+            try writer.writeAll("invalid builtin");
+            try renderList(writer, Node.Builtin);
+        },
+        .invalid_interpolation_type => {
+            try writer.writeAll("invalid interpolation type");
+            try renderList(writer, Node.InterpolationType);
+        },
+        .invalid_interpolation_sample => {
+            try writer.writeAll("invalid interpolation sample");
+            try renderList(writer, Node.InterpolationSample);
+        },
+        .invalid_initializer => writer.writeAll("variable requires a type or initializer"),
         .invalid_assignment_op => writer.writeAll("invalid assignment op"),
         .invalid_severity => {
-            try writer.writeAll("invalid severity. expected ");
-            const fields = @typeInfo(Node.Severity).Enum.fields;
-            inline for (fields, 0..) |f, i| {
-                try writer.writeAll(f.name);
-                if (i != fields.len - 1) try writer.writeAll(",");
-            }
+            try writer.writeAll("invalid severity");
+            try renderList(writer, Node.Severity);
         },
         .empty_struct => writer.writeAll("emtpy structs are forbidden"),
     };
