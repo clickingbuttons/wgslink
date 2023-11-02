@@ -204,7 +204,7 @@ pub fn renderError(self: Self, err: Error, writer: anytype, term: std.io.tty.Con
     const loc = self.tokenLoc(err.token);
     const loc_extra = loc.extraInfo(self.source);
     try term.setColor(writer, .dim);
-    try writer.print("\n{d} │ ", .{loc_extra.line});
+    try writer.print("{d} │ ", .{loc_extra.line});
     try term.setColor(writer, .reset);
     try writer.writeAll(self.source[loc_extra.line_start..loc.start]);
     try term.setColor(writer, .green);
