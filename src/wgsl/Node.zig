@@ -25,8 +25,8 @@ pub const Tag = enum {
     @"break",
     @"continue",
     @"if",
-    if_else,
-    if_else_if,
+    @"else",
+    else_if,
     @"switch",
     switch_case,
     switch_default,
@@ -163,27 +163,28 @@ pub const DiagnosticRule = struct {
     field: Index = 0,
 };
 
+/// https://www.w3.org/TR/WGSL/#built-in-values
 pub const Builtin = enum {
     vertex_index,
     instance_index,
     position,
     front_facing,
     frag_depth,
+    sample_index,
+    sample_mask,
     local_invocation_id,
     local_invocation_index,
     global_invocation_id,
     workgroup_id,
     num_workgroups,
-    sample_index,
-    sample_mask,
 };
 
+/// https://www.w3.org/TR/WGSL/#interpolation
 pub const InterpolationType = enum {
     perspective,
     linear,
     flat,
 };
-
 pub const InterpolationSample = enum {
     center,
     centroid,

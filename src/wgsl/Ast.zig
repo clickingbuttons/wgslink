@@ -275,7 +275,7 @@ pub fn renderError(self: Self, err: Error, writer: anytype, term: std.io.tty.Con
             try writer.writeAll("invalid severity");
             try renderList(writer, Node.Severity);
         },
-        .empty_struct => writer.writeAll("emtpy structs are forbidden"),
+        .empty_struct => writer.writeAll("empty structs are forbidden"),
     };
 
     try term.setColor(writer, .reset);
