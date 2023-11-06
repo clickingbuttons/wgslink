@@ -2,11 +2,16 @@ const std = @import("std");
 const Ast = @import("Ast.zig");
 const expect = std.testing.expect;
 const expectEqual = std.testing.expectEqual;
-const allocator = std.testing.allocator;
 
 fn expectAst(source: [:0]const u8) !void {
-    var tree = try Ast.init(allocator, source);
-    defer tree.deinit(allocator);
+    const allocator = std.testing.allocator;
+    var ast = try Ast.init(allocator, source);
+    defer ast.deinit(allocator);
+    const stderr = std.io.getStdErr();
+    const term = std.io.tty.detectConfig(stderr);
+    if (ast.errors.len > 0) try stderr.writer().writeByte('\n');
+    for (ast.errors) |e| try ast.renderError(e, stderr.writer(), term);
+    try expectEqual(ast.errors.len, 0);
 }
 
 test "boids-sprite" {

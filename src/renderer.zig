@@ -5,7 +5,7 @@ const Token = @import("./wgsl/Token.zig");
 
 /// Automatically inserts indentation of written data by keeping
 /// track of the current indentation level
-fn Renderer(comptime UnderlyingWriter: type) type {
+pub fn Renderer(comptime UnderlyingWriter: type) type {
     return struct {
         const Self = @This();
         const NodeIndex = Node.Index;
@@ -543,7 +543,7 @@ fn Renderer(comptime UnderlyingWriter: type) type {
             try self.writeAll("if ");
             try self.writeExpr(self.tree.nodeLHS(node));
             try self.writeByte(' ');
-            try self.writeBlock(self.tree.nodeRHS(node));
+            try self.writeCompoundStatement(self.tree.nodeRHS(node));
         }
 
         fn writeStatement(self: *Self, node: NodeIndex) WriteError!bool {
@@ -584,13 +584,13 @@ fn Renderer(comptime UnderlyingWriter: type) type {
                 .@"else" => {
                     try self.writeIf(lhs);
                     try self.writeAll(" else ");
-                    try self.writeBlock(rhs);
+                    try self.writeCompoundStatement(rhs);
                 },
                 .@"while" => {
                     try self.writeAll("while (");
                     try self.writeExpr(lhs);
                     try self.writeAll(") ");
-                    try self.writeBlock(rhs);
+                    try self.writeCompoundStatement(rhs);
                 },
                 .@"for" => {
                     const extra = self.tree.extraData(Node.ForHeader, self.tree.nodeLHS(node));
@@ -601,7 +601,7 @@ fn Renderer(comptime UnderlyingWriter: type) type {
                     try self.writeAll("; ");
                     if (extra.update != 0) _ = try self.writeStatement(extra.update);
                     try self.writeAll(") ");
-                    try self.writeBlock(rhs);
+                    try self.writeCompoundStatement(rhs);
                 },
                 .@"switch" => {
                     try self.writeAll("switch ");
@@ -625,19 +625,20 @@ fn Renderer(comptime UnderlyingWriter: type) type {
                             else => unreachable,
                         }
                         try self.writeByte(' ');
-                        try self.writeBlock(self.tree.nodeRHS(c));
+                        try self.writeCompoundStatement(self.tree.nodeRHS(c));
                     };
                     try self.writeByte('\n');
                     try self.writeByte('}');
                 },
                 .loop => {
+                    if (lhs != 0) try self.writeAttributes(lhs);
                     try self.writeAll("loop ");
-                    try self.writeBlock(lhs);
+                    try self.writeCompoundStatement(rhs);
                 },
-                .block => try self.writeBlock(node),
+                .compound_statement => try self.writeCompoundStatement(node),
                 .continuing => {
                     try self.writeAll("continuing ");
-                    try self.writeBlock(lhs);
+                    try self.writeCompoundStatement(lhs);
                 },
                 .discard => try self.writeAll("discard"),
                 .@"break" => try self.writeAll("break"),
@@ -659,14 +660,16 @@ fn Renderer(comptime UnderlyingWriter: type) type {
             return false;
         }
 
-        fn writeBlock(self: *Self, node: NodeIndex) WriteError!void {
+        fn writeCompoundStatement(self: *Self, node: NodeIndex) WriteError!void {
             const lhs = self.tree.nodeLHS(node);
+            const rhs = self.tree.nodeRHS(node);
 
+            if (lhs != 0) try self.writeAttributes(lhs);
             try self.writeByte('{');
             self.pushIndentNextLine();
 
-            if (lhs != 0) {
-                const statements = self.tree.spanToList(lhs);
+            if (rhs != 0) {
+                const statements = self.tree.spanToList(rhs);
                 if (statements.len > 0) try self.writeByte('\n');
                 for (statements) |n| {
                     const returned = try self.writeStatement(n);
@@ -678,9 +681,10 @@ fn Renderer(comptime UnderlyingWriter: type) type {
                         .@"else",
                         .@"for",
                         .@"while",
-                        .block,
+                        .compound_statement,
                         .@"switch",
                         .loop,
+                        .continuing,
                         => {},
                         else => try self.writeByte(';'),
                     }
@@ -722,7 +726,7 @@ fn Renderer(comptime UnderlyingWriter: type) type {
                 try self.writeType(extra.return_type);
             }
             try self.writeByte(' ');
-            try self.writeBlock(self.tree.nodeRHS(node));
+            try self.writeCompoundStatement(self.tree.nodeRHS(node));
         }
 
         fn writeComment(self: *Self, node: NodeIndex) !void {
@@ -940,6 +944,20 @@ test "loop" {
         \\      break;
         \\    }
         \\    i++;
+        \\  }
+        \\}
+    );
+
+    try testCanonical(
+        \\fn test() {
+        \\  loop {
+        \\    if i % 2 == 0 {
+        \\      continue;
+        \\    }
+        \\    continuing {
+        \\      i++;
+        \\      break if i >= 4;
+        \\    }
         \\  }
         \\}
     );

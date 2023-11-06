@@ -1,7 +1,7 @@
 const std = @import("std");
 const clap = @import("clap");
 const Ast = @import("./wgsl/Ast.zig");
-const Renderer = @import("./renderer.zig");
+const Renderer = @import("./renderer.zig").Renderer;
 // const Pruner = @import("./wgsl/Pruner.zig");
 
 const NodeIndex = Ast.NodeIndex;
@@ -22,8 +22,17 @@ fn writeFormatted(
     //     defer pruner.deinit();
     //     try pruner.prune(&ast);
     // }
-
-    try Renderer.writeTranslationUnit(&ast, "  ", writer);
+    const stderr = std.io.getStdErr();
+    const term = std.io.tty.detectConfig(stderr);
+    if (ast.errors.len > 0) try stderr.writer().writeByte('\n');
+    for (ast.errors) |e| try ast.renderError(e, stderr.writer(), term);
+    if (ast.errors.len == 0) {
+        var renderer = Renderer(@TypeOf(writer)){
+            .tree = &ast,
+            .underlying_writer = writer,
+        };
+        try renderer.writeTranslationUnit();
+    }
 }
 
 pub fn main() !void {

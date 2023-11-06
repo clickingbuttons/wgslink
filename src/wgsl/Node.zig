@@ -16,7 +16,7 @@ pub const Tag = enum {
     struct_member,
     @"fn",
     fn_param,
-    block,
+    compound_statement,
     @"return",
     discard,
     loop,
