@@ -477,18 +477,18 @@ pub const Tokenizer = struct {
     }
 };
 
-fn testTokenize(buffer: [:0]const u8, expected_token_tags: []const Token.Tag) !void {
+fn testTokenize(buffer: [:0]const u8, comptime expected_token_tags: []const Token.Tag) !void {
     var tokenizer = Tokenizer.init(buffer);
-    for (expected_token_tags) |expected_token_tag| {
+    const allocator = std.testing.allocator;
+    var tokens = std.MultiArrayList(Token){};
+    defer tokens.deinit(allocator);
+    while (true) {
         const token = tokenizer.next();
-        std.testing.expectEqual(expected_token_tag, token.tag) catch |err| {
-            tokenizer.dump(token);
-            return err;
-        };
-        try std.testing.expect(token.loc.start != token.loc.end);
+        try tokens.append(allocator, token);
+        if (token.tag == .eof) break;
     }
-    const last_token = tokenizer.next();
-    try std.testing.expectEqual(Token.Tag.eof, last_token.tag);
+    try std.testing.expectEqualSlices(Token.Tag, expected_token_tags ++ &[_]Token.Tag{Token.Tag.eof}, tokens.items(.tag));
+    const last_token = tokens.pop();
     try std.testing.expectEqual(buffer.len, last_token.loc.end);
     try std.testing.expectEqual(buffer.len, last_token.loc.start);
 }
@@ -538,14 +538,14 @@ test "function" {
         .@"(",
         .ident,
         .@":",
-        .k_f32,
+        .ident,
         .@",",
         .ident,
         .@":",
-        .k_f32,
+        .ident,
         .@")",
         .@"->",
-        .k_f32,
+        .ident,
         .@"{",
         .k_return,
         .number,
@@ -585,4 +585,10 @@ test "diagnostic" {
         .ident,
         .@")",
     });
+}
+
+test "template list" {
+    try testTokenize(
+        \\var a = array<u32,2>(0u, 1u)
+    , &.{ .k_var, .ident, .@"=", .ident, .@"<", .ident, .@",", .number, .@">", .@"(", .number, .@",", .number, .@")" });
 }

@@ -92,7 +92,6 @@ pub const Tag = enum {
     greater_than,
     greater_than_equal,
     call,
-    bitcast,
     ident,
     field_access,
     index_access,
@@ -153,9 +152,10 @@ pub const FnProto = struct {
 };
 
 pub const ForHeader = struct {
-    init: Index = 0,
-    cond: Index = 0,
-    update: Index = 0,
+    attrs: Index,
+    init: Index,
+    cond: Index,
+    update: Index,
 };
 
 pub const DiagnosticRule = struct {
