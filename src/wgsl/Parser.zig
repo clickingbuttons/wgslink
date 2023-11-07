@@ -1165,60 +1165,91 @@ fn loopStatement(p: *Self, attrs: Node.Index) Error!?Node.Index {
     });
 }
 
-fn switchStatement(p: *Self) Error!?Node.Index {
-    const main_token = p.eatToken(.k_switch) orelse return null;
+/// 'default' | expression
+fn caseSelector(p: *Self) Error!?Node.Index {
+    if (p.eatToken(.k_default)) |t| {
+        return try p.addNode(.{ .main_token = t, .tag = .case_selector });
+    } else {
+        const main_token = p.tok_i;
+        if (try p.expression()) |e| {
+            return try p.addNode(.{ .main_token = main_token, .tag = .case_selector, .lhs = e });
+        }
+    }
+    return null;
+}
 
-    const expr = try p.expectExpression();
-    _ = try p.expectToken(.@"{");
+/// 'case' case_selectors ':' ? compound_statement
+/// case_selectors :
+///   case_selector ( ',' case_selector ) * ',' ?
+fn caseClause(p: *Self) Error!?Node.Index {
+    const main_token = p.eatToken(.k_case) orelse return null;
+    const scratch_top = p.scratch.items.len;
+    defer p.scratch.shrinkRetainingCapacity(scratch_top);
+    const case_selector = try p.caseSelector() orelse {
+        try p.errors.append(p.allocator, Ast.Error{
+            .tag = .expected_case_selector,
+            .token = p.tok_i,
+        });
+        return Error.Parsing;
+    };
+    try p.scratch.append(p.allocator, case_selector);
+    while (p.eatToken(.@",") != null) {
+        if (try p.caseSelector()) |c| try p.scratch.append(p.allocator, c) else break;
+    }
+    _ = p.eatToken(.@":");
+    return try p.addNode(.{
+        .tag = .case_clause,
+        .main_token = main_token,
+        .lhs = try p.listToSpan(p.scratch.items[scratch_top..]),
+        .rhs = try p.expectCompoundStatement(try p.attributeList()),
+    });
+}
 
+/// 'default' ':' ? compound_statement
+fn defaultAloneClause(p: *Self) Error!?Node.Index {
+    const main_token = p.eatToken(.k_default) orelse return null;
+    _ = p.eatToken(.@":");
+    return try p.addNode(.{
+        .tag = .case_clause,
+        .main_token = main_token,
+        .rhs = try p.expectCompoundStatement(try p.attributeList()),
+    });
+}
+
+/// case_clause | default_alone_clause
+fn switchClause(p: *Self) Error!?Node.Index {
+    return try p.caseClause() orelse try p.defaultAloneClause();
+}
+
+/// attribute * '{' switch_clause + '}'
+fn switchBody(p: *Self) Error!Node.Index {
+    const attrs = try p.attributeList();
+    const main_token = try p.expectToken(.@"{");
     const scratch_top = p.scratch.items.len;
     defer p.scratch.shrinkRetainingCapacity(scratch_top);
     while (true) {
-        if (p.eatToken(.k_default)) |default_token| {
-            _ = p.eatToken(.@":");
-            const default_body = try p.expectCompoundStatement(try p.attributeList());
-            try p.scratch.append(p.allocator, try p.addNode(.{
-                .tag = .switch_default,
-                .main_token = default_token,
-                .rhs = default_body,
-            }));
-        } else if (p.eatToken(.k_case)) |case_token| {
-            const cases_scratch_top = p.scratch.items.len;
-
-            var has_default = false;
-            while (true) {
-                const case_expr = try p.expression() orelse {
-                    if (p.eatToken(.k_default)) |_| has_default = true;
-                    break;
-                };
-                _ = p.eatToken(.@",");
-                try p.scratch.append(p.allocator, case_expr);
-            }
-            const case_expr_list = p.scratch.items[cases_scratch_top..];
-
-            _ = p.eatToken(.@":");
-            const default_body = try p.expectCompoundStatement(try p.attributeList());
-
-            p.scratch.shrinkRetainingCapacity(cases_scratch_top);
-            try p.scratch.append(p.allocator, try p.addNode(.{
-                .tag = if (has_default) .switch_case_default else .switch_case,
-                .main_token = case_token,
-                .lhs = if (case_expr_list.len == 0) 0 else try p.listToSpan(case_expr_list),
-                .rhs = default_body,
-            }));
-        } else {
-            break;
-        }
+        if (try p.switchClause()) |c| try p.scratch.append(p.allocator, c) else break;
     }
-
     _ = try p.expectToken(.@"}");
 
-    const case_list = p.scratch.items[scratch_top..];
+    return try p.addNode(.{
+        .tag = .switch_body,
+        .main_token = main_token,
+        .lhs = attrs,
+        .rhs = try p.listToSpan(p.scratch.items[scratch_top..]),
+    });
+}
+
+/// attribute * 'switch' expression switch_body
+fn switchStatement(p: *Self) Error!?Node.Index {
+    const main_token = p.eatToken(.k_switch) orelse return null;
+    const expr = try p.expectExpression();
+    const body = try p.switchBody();
     return try p.addNode(.{
         .tag = .@"switch",
         .main_token = main_token,
         .lhs = expr,
-        .rhs = try p.listToSpan(case_list),
+        .rhs = body,
     });
 }
 
