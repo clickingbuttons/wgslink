@@ -1537,6 +1537,7 @@ fn expectLhsExpression(p: *Self) Error!Node.Index {
     };
 }
 
+/// primary_expression component_or_swizzle_specifier ?
 fn singularExpr(p: *Self) Error!?Node.Index {
     const prefix = try p.primaryExpr() orelse return null;
     return try p.componentOrSwizzleSpecifier(prefix);
@@ -1601,16 +1602,10 @@ fn literal(p: *Self) Error!?Node.Index {
     };
 }
 
-fn elementCountExpr(p: *Self) Error!?Node.Index {
-    const left = try p.unaryExpr() orelse return null;
-    if (try p.bitwiseExpr(left)) |right| return right;
-    return try p.expectMathExpr(left);
-}
-
 /// | singular_expression
-/// | `'-'` unary_expression
 /// | `'!'` unary_expression
 /// | `'~'` unary_expression
+/// | `'-'` unary_expression
 /// | `'*'` unary_expression
 /// | `'&'` unary_expression
 fn unaryExpr(p: *Self) Error!?Node.Index {
@@ -1639,6 +1634,13 @@ fn expectUnaryExpr(p: *Self) Error!Node.Index {
     };
 }
 
+/// | shift_expression
+/// | shift_expression _less_than shift_expression
+/// | shift_expression _greater_than shift_expression
+/// | shift_expression _less_than_equal shift_expression
+/// | shift_expression _greater_than_equal shift_expression
+/// | shift_expression '==' shift_expression
+/// | shift_expression '!=' shift_expression
 fn expectRelationalExpr(p: *Self, lhs_unary: Node.Index) Error!Node.Index {
     const lhs = try p.expectShiftExpr(lhs_unary);
     const op_token = p.tok_i;
@@ -1718,11 +1720,14 @@ fn bitwiseExpr(p: *Self, lhs: Node.Index) Error!?Node.Index {
     }
 }
 
+/// | additive_expression
+/// | unary_expression _shift_left unary_expression
+/// | unary_expression _shift_right unary_expression
 fn expectShiftExpr(p: *Self, lhs: Node.Index) Error!Node.Index {
     const op_token = p.tok_i;
     const op: Node.Tag = switch (p.tokens.items(.tag)[op_token]) {
         .@"<<" => .shl,
-        .@">>" => .shl,
+        .@">>" => .shr,
         else => return try p.expectMathExpr(lhs),
     };
     _ = p.advanceToken();
@@ -1742,6 +1747,8 @@ fn expectMathExpr(p: *Self, left: Node.Index) Error!Node.Index {
     return p.expectAdditiveExpr(right);
 }
 
+/// | multiplicative_expression
+/// | additive_expression additive_operator multiplicative_expression
 fn expectAdditiveExpr(p: *Self, lhs_mul: Node.Index) Error!Node.Index {
     var lhs = lhs_mul;
     while (true) {
@@ -1784,6 +1791,9 @@ fn expectMultiplicativeExpr(p: *Self, lhs_unary: Node.Index) Error!Node.Index {
     }
 }
 
+/// | '[' expression ']' component_or_swizzle_specifier ?
+/// | '.' member_ident component_or_swizzle_specifier ?
+/// | '.' swizzle_name component_or_swizzle_specifier ?
 fn componentOrSwizzleSpecifier(p: *Self, prefix: Node.Index) Error!Node.Index {
     var prefix_result = prefix;
     while (true) {
