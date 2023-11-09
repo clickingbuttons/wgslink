@@ -1,77 +1,42 @@
 const std = @import("std");
 const clap = @import("clap");
 const Ast = @import("./wgsl/Ast.zig");
-const Renderer = @import("./renderer.zig").Renderer;
+const Module = @import("./module.zig");
+const Bundler = @import("./bundler.zig");
 // const Pruner = @import("./wgsl/Pruner.zig");
 
-const NodeIndex = Ast.NodeIndex;
-const maxSourceSize = 1 << 30;
-
-fn writeFormatted(
-    allocator: std.mem.Allocator,
-    writer: anytype,
-    source: [:0]const u8,
-    prune: bool,
-) !void {
-    var ast = try Ast.init(allocator, source);
-    defer ast.deinit(allocator);
-
-    _ = prune;
-    // if (prune) {
-    //     var pruner = try Pruner.init(allocator);
-    //     defer pruner.deinit();
-    //     try pruner.prune(&ast);
-    // }
-    const stderr = std.io.getStdErr();
-    const term = std.io.tty.detectConfig(stderr);
-    if (ast.errors.len > 0) try stderr.writer().writeByte('\n');
-    for (ast.errors) |e| try ast.renderError(e, stderr.writer(), term);
-    if (ast.errors.len == 0) {
-        var renderer = Renderer(@TypeOf(writer)){
-            .tree = &ast,
-            .underlying_writer = writer,
-        };
-        try renderer.writeTranslationUnit();
-    }
-}
+const ThreadPool = std.Thread.Pool;
+const max_source = 1 << 30;
+const stdout = std.io.getStdOut().writer();
+const stderr = std.io.getStdErr().writer();
 
 pub fn main() !void {
     const params = comptime clap.parseParamsComptime(
         \\-h, --help             Display this help and exit.
-        \\<str>...
+        \\<str>...               Entry WGSL files
         \\
     );
     var diag = clap.Diagnostic{};
     var res = clap.parse(clap.Help, &params, clap.parsers.default, .{ .diagnostic = &diag }) catch |err| {
-        diag.report(std.io.getStdErr().writer(), err) catch {};
+        diag.report(stderr, err) catch {};
         return err;
     };
     defer res.deinit();
 
-    const stdout_file = std.io.getStdOut().writer();
-    var bw = std.io.bufferedWriter(stdout_file);
-    const stdout = bw.writer();
+    if (res.args.help != 0 or res.positionals.len == 0)
+        return clap.help(stderr, clap.Help, &params, .{});
 
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     const allocator = gpa.allocator();
 
-    for (res.positionals) |pos| {
-        const file = try std.fs.cwd().openFile(pos, .{});
-        defer file.close();
+    var thread_pool: ThreadPool = undefined;
+    try thread_pool.init(.{ .allocator = allocator });
+    defer thread_pool.deinit();
 
-        const source = try file.readToEndAllocOptions(allocator, maxSourceSize, null, @alignOf(u8), 0);
-        defer allocator.free(source);
+    var bundler = try Bundler.init(allocator, &thread_pool);
+    defer bundler.deinit();
 
-        try writeFormatted(allocator, stdout, source, true);
-    }
-    if (res.positionals.len == 0) {
-        const source = try std.io.getStdIn().readToEndAllocOptions(allocator, maxSourceSize, null, @alignOf(u8), 0);
-        defer allocator.free(source);
-
-        try writeFormatted(allocator, stdout, source, true);
-    }
-
-    try bw.flush();
+    for (res.positionals) |pos| try bundler.bundle(stdout, pos);
 }
 
 test "renderer" {

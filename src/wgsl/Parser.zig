@@ -4,9 +4,10 @@ const Token = @import("Token.zig");
 const Node = @import("Node.zig");
 
 const Self = @This();
+const Allocator = std.mem.Allocator;
 const Error = error{ OutOfMemory, Parsing };
 
-allocator: std.mem.Allocator,
+allocator: Allocator,
 source: [:0]const u8,
 // May mutate for template tags
 tokens: Ast.TokenList,
@@ -19,6 +20,23 @@ lang_extensions: Node.LangExtensions = .{},
 nodes: Ast.NodeList = .{},
 extra: std.ArrayListUnmanaged(Node.Index) = .{},
 scratch: std.ArrayListUnmanaged(Node.Index) = .{},
+
+pub fn init(allocator: Allocator, source: [:0]const u8, tokens: Ast.TokenList) !Self {
+    var res = Self{
+        .allocator = allocator,
+        .source = source,
+        .tokens = tokens,
+    };
+    try res.nodes.ensureTotalCapacity(allocator, tokens.len / 2 + 1);
+    return res;
+}
+
+pub fn deinit(self: *Self, allocator: Allocator) void {
+    defer self.errors.deinit(allocator);
+    defer self.nodes.deinit(allocator);
+    defer self.extra.deinit(allocator);
+    defer self.scratch.deinit(allocator);
+}
 
 /// global_directive* global_decl*
 pub fn parseTranslationUnit(p: *Self) error{OutOfMemory}!void {
@@ -1460,7 +1478,7 @@ fn argumentExpressionList(p: *Self) Error!Node.Index {
 fn callPhrase(p: *Self) Error!?Node.Index {
     const main_token = p.tok_i;
     const lhs = try p.templateElaboratedIdent() orelse return null;
-    // Unfortunately need lookbehind for some grammar orders
+    // Unfortunately need lookbehind since sometimes other `templateElaboratedIdent` rules follow.
     if (p.peekToken(.tag, 0) != .@"(") {
         p.tok_i = main_token;
         return null;

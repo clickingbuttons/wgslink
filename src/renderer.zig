@@ -9,8 +9,6 @@ pub fn Renderer(comptime UnderlyingWriter: type) type {
     // zig fmt: off
 return struct {
 const Self = @This();
-const NodeIndex = Node.Index;
-const TokenIndex = Token.Index;
 pub const WriteError = UnderlyingWriter.Error;
 pub const Writer = std.io.Writer(*Self, WriteError, write);
 
@@ -26,8 +24,6 @@ indent_one_shot_count: usize = 0,
 applied_indent: usize = 0,
 /// not used until the next line
 indent_next_line: usize = 0,
-
-tree: *const Ast,
 
 pub fn writer(self: *Self) Writer {
         return .{ .context = self };
@@ -158,21 +154,21 @@ fn currentIndent(self: *Self) usize {
         return indent_current;
 }
 
-pub fn writeTranslationUnit(self: *Self) !void {
-        for (self.tree.spanToList(0)) |node| {
-                const tag = self.tree.nodeTag(node);
+pub fn writeTranslationUnit(self: *Self, tree: Ast) !void {
+        for (tree.spanToList(0)) |node| {
+                const tag = tree.nodeTag(node);
                 try switch (tag) {
-                        .diagnostic_directive => self.writeGlobalDiagnostic(node),
-                        .enable_directive => self.writeEnable(node),
-                        .requires_directive => self.writeEnable(node),
-                        .global_var => self.writeGlobalVar(node),
-                        .override => self.writeOverride(node),
-                        .@"const" => self.writeConst(node),
-                        .@"struct" => self.writeStruct(node),
-                        .@"fn" => self.writeFn(node),
-                        .type_alias => self.writeTypeAlias(node),
-                        .comment => self.writeComment(node),
-                        .import => self.writeImport(node),
+                        .diagnostic_directive => self.writeGlobalDiagnostic(tree, node),
+                        .enable_directive => self.writeEnable(tree, node),
+                        .requires_directive => self.writeEnable(tree, node),
+                        .global_var => self.writeGlobalVar(tree, node),
+                        .override => self.writeOverride(tree, node),
+                        .@"const" => self.writeConst(tree, node),
+                        .@"struct" => self.writeStruct(tree, node),
+                        .@"fn" => self.writeFn(tree, node),
+                        .type_alias => self.writeTypeAlias(tree, node),
+                        .comment => self.writeComment(tree, node),
+                        .import => self.writeImport(tree, node),
                         else => |t| {
                                 std.debug.print("could not render node {s}\n", .{@tagName(t)});
                                 unreachable;
@@ -194,90 +190,90 @@ pub fn writeTranslationUnit(self: *Self) !void {
         }
 }
 
-fn writeNodeName(self: *Self, node: NodeIndex) !void {
-        try self.writeAll(self.tree.declNameSource(node));
+fn writeNodeName(self: *Self, tree: Ast, node: Node.Index) !void {
+        try self.writeAll(tree.declNameSource(node));
 }
 
-fn writeNode(self: *Self, node: NodeIndex) !void {
-        try self.writeAll(self.tree.nodeSource(node));
+fn writeNode(self: *Self, tree: Ast, node: Node.Index) !void {
+        try self.writeAll(tree.nodeSource(node));
 }
 
-fn writeToken(self: *Self, tok: TokenIndex) !void {
-        try self.writeAll(self.tree.tokenSource(tok));
+fn writeToken(self: *Self, tree: Ast, tok: Token.Index) !void {
+        try self.writeAll(tree.tokenSource(tok));
 }
 
-fn writeEnable(self: *Self, node: NodeIndex) !void {
-        try self.writeNode(node);
+fn writeEnable(self: *Self, tree: Ast, node: Node.Index) !void {
+        try self.writeNode(tree, node);
         try self.writeByte(' ');
-        const enables = self.tree.spanToList(self.tree.nodeLHS(node));
+        const enables = tree.spanToList(tree.nodeLHS(node));
         for (enables, 0..) |enable, i| {
-                try self.writeAll(self.tree.tokenSource(enable));
+                try self.writeAll(tree.tokenSource(enable));
                 if (i != enables.len - 1) try self.writeAll(", ");
         }
 }
 
-fn writeDiagnosticRule(self: *Self, node: NodeIndex) !void {
-        try self.writeToken(self.tree.nodeLHS(node));
+fn writeDiagnosticRule(self: *Self, tree: Ast, node: Node.Index) !void {
+        try self.writeToken(tree, tree.nodeLHS(node));
         try self.writeAll(", ");
-        const rule = self.tree.extraData(Node.DiagnosticRule, self.tree.nodeRHS(node));
-        try self.writeToken(rule.name);
+        const rule = tree.extraData(Node.DiagnosticRule, tree.nodeRHS(node));
+        try self.writeToken(tree, rule.name);
         if (rule.field != 0) {
                 try self.writeByte('.');
-                try self.writeToken(rule.field);
+                try self.writeToken(tree, rule.field);
         }
 }
 
-fn writeGlobalDiagnostic(self: *Self, node: NodeIndex) !void {
-        try self.writeNode(node);
+fn writeGlobalDiagnostic(self: *Self, tree: Ast, node: Node.Index) !void {
+        try self.writeNode(tree, node);
         try self.writeByte('(');
-        try self.writeDiagnosticRule(node);
+        try self.writeDiagnosticRule(tree, node);
         try self.writeByte(')');
 }
 
-fn writeVar(self: *Self, extra: anytype, node: NodeIndex) !void {
+fn writeVar(self: *Self, tree: Ast, extra: anytype, node: Node.Index) !void {
         try self.writeAll("var");
 
         if (extra.addr_space != 0) {
                 try self.writeByte('<');
-                try self.writeAll(self.tree.tokenSource(extra.addr_space));
+                try self.writeAll(tree.tokenSource(extra.addr_space));
         }
 
         if (extra.access_mode != 0) {
                 try self.writeByte(',');
-                try self.writeAll(self.tree.tokenSource(extra.access_mode));
+                try self.writeAll(tree.tokenSource(extra.access_mode));
         }
 
         if (extra.addr_space != 0) try self.writeByte('>');
 
         try self.writeByte(' ');
-        try self.writeNodeName(node);
+        try self.writeNodeName(tree, node);
 
         if (extra.type != 0) {
                 try self.writeAll(": ");
-                try self.writeType(extra.type);
+                try self.writeType(tree, extra.type);
         }
 
-        const rhs = self.tree.nodeRHS(node);
+        const rhs = tree.nodeRHS(node);
         if (rhs != 0) {
                 try self.writeAll(" = ");
-                try self.writeExpr(rhs);
+                try self.writeExpr(tree, rhs);
         }
 }
 
-fn writeGlobalVar(self: *Self, node: NodeIndex) !void {
-        const extra = self.tree.extraData(Node.GlobalVar, self.tree.nodeLHS(node));
+fn writeGlobalVar(self: *Self, tree: Ast, node: Node.Index) !void {
+        const extra = tree.extraData(Node.GlobalVar, tree.nodeLHS(node));
 
         if (extra.attrs != 0) {
-                for (self.tree.spanToList(extra.attrs)) |attr| {
-                        switch (self.tree.nodeTag(attr)) {
+                for (tree.spanToList(extra.attrs)) |attr| {
+                        switch (tree.nodeTag(attr)) {
                                 .attr_group => {
                                         try self.writeAll("@group(");
-                                        try self.writeExpr(self.tree.nodeLHS(attr));
+                                        try self.writeExpr(tree, tree.nodeLHS(attr));
                                         try self.writeAll(") ");
                                 },
                                 .attr_binding => {
                                         try self.writeAll("@binding(");
-                                        try self.writeExpr(self.tree.nodeLHS(attr));
+                                        try self.writeExpr(tree, tree.nodeLHS(attr));
                                         try self.writeAll(") ");
                                 },
                                 else => {},
@@ -285,55 +281,55 @@ fn writeGlobalVar(self: *Self, node: NodeIndex) !void {
                 }
         }
 
-        try self.writeVar(extra, node);
+        try self.writeVar(tree, extra, node);
 }
 
-fn writeTemplateElaboratedIdent(self: *Self, node: NodeIndex) !void {
-        try self.writeNode(node);
-        const lhs = self.tree.nodeLHS(node);
+fn writeTemplateElaboratedIdent(self: *Self, tree: Ast, node: Node.Index) !void {
+        try self.writeNode(tree, node);
+        const lhs = tree.nodeLHS(node);
         if (lhs != 0) {
                 try self.writeByte('<');
-                const args = self.tree.spanToList(lhs);
+                const args = tree.spanToList(lhs);
                 for (args, 0..) |n, i| {
-                        try self.writeExpr(n);
+                        try self.writeExpr(tree, n);
                         if (i != args.len - 1) try self.writeByte(',');
                 }
                 try self.writeByte('>');
         }
 }
 
-fn writeType(self: *Self, node: NodeIndex) !void {
-        try self.writeTemplateElaboratedIdent(node);
+fn writeType(self: *Self, tree: Ast, node: Node.Index) !void {
+        try self.writeTemplateElaboratedIdent(tree, node);
 }
 
-fn writeConst(self: *Self, node: NodeIndex) !void {
-        const lhs = self.tree.nodeLHS(node);
-        const rhs = self.tree.nodeRHS(node);
-        try self.writeNode(node);
+fn writeConst(self: *Self, tree: Ast, node: Node.Index) !void {
+        const lhs = tree.nodeLHS(node);
+        const rhs = tree.nodeRHS(node);
+        try self.writeNode(tree, node);
         try self.writeByte(' ');
-        try self.writeNodeName(node);
+        try self.writeNodeName(tree, node);
         if (lhs != 0) {
                 try self.writeAll(": ");
-                try self.writeType(lhs);
+                try self.writeType(tree, lhs);
         }
         try self.writeAll(" = ");
-        try self.writeExpr(rhs);
+        try self.writeExpr(tree, rhs);
 }
 
-fn writeExpr(self: *Self, node: NodeIndex) !void {
+fn writeExpr(self: *Self, tree: Ast, node: Node.Index) !void {
     if (node == 0) return;
-        const tag = self.tree.nodeTag(node);
-        const lhs = self.tree.nodeLHS(node);
-        const rhs = self.tree.nodeRHS(node);
+        const tag = tree.nodeTag(node);
+        const lhs = tree.nodeLHS(node);
+        const rhs = tree.nodeRHS(node);
         switch (tag) {
-                .number, .ident, .true, .false => try self.writeNode(node),
+                .number, .ident, .true, .false => try self.writeNode(tree, node),
                 .not, .negate, .deref => {
-                        try self.writeNode(node);
-                        try self.writeExpr(lhs);
+                        try self.writeNode(tree, node);
+                        try self.writeExpr(tree, lhs);
                 },
                 .addr_of => {
                         try self.writeByte('&');
-                        try self.writeExpr(lhs);
+                        try self.writeExpr(tree, lhs);
                 },
                 .mul,
                 .div,
@@ -354,7 +350,7 @@ fn writeExpr(self: *Self, node: NodeIndex) !void {
                 .greater_than,
                 .greater_than_equal,
                 => |t| {
-                        try self.writeExpr(lhs);
+                        try self.writeExpr(tree, lhs);
                         try self.writeByte(' ');
                         try self.writeAll(switch (t) {
                                 .mul => "*",
@@ -378,23 +374,23 @@ fn writeExpr(self: *Self, node: NodeIndex) !void {
                                 else => "",
                         });
                         try self.writeByte(' ');
-                        try self.writeExpr(rhs);
+                        try self.writeExpr(tree, rhs);
                 },
                 .index_access => {
-                        try self.writeExpr(lhs);
+                        try self.writeExpr(tree, lhs);
                         try self.writeByte('[');
-                        try self.writeExpr(rhs);
+                        try self.writeExpr(tree, rhs);
                         try self.writeByte(']');
                 },
                 .field_access => {
-                        try self.writeExpr(lhs);
+                        try self.writeExpr(tree, lhs);
                         try self.writeByte('.');
-                        try self.writeToken(rhs);
+                        try self.writeToken(tree, rhs);
                 },
-                .call => try self.writeCall(node),
+                .call => try self.writeCall(tree, node),
                 .paren_expr => {
                         try self.writeByte('(');
-                        try self.writeExpr(lhs);
+                        try self.writeExpr(tree, lhs);
                         try self.writeByte(')');
                 },
                 else => |t| {
@@ -403,32 +399,32 @@ fn writeExpr(self: *Self, node: NodeIndex) !void {
         }
 }
 
-fn writeAttributes(self: *Self, attrs: NodeIndex) !void {
+fn writeAttributes(self: *Self, tree: Ast, attrs: Node.Index) !void {
     if (attrs == 0) return;
-        for (self.tree.spanToList(attrs)) |attr| {
+        for (tree.spanToList(attrs)) |attr| {
                 try self.writeByte('@');
-                const tag = self.tree.nodeTag(attr);
+                const tag = tree.nodeTag(attr);
                 const attr_name = @tagName(tag)["attr_".len..];
                 try self.writeAll(attr_name);
-                const lhs = self.tree.nodeLHS(attr);
+                const lhs = tree.nodeLHS(attr);
                 if (lhs != 0) {
                         try self.writeByte('(');
                         switch (tag) {
-                                .attr_builtin, .attr_interpolate => try self.writeToken(lhs),
-                                .attr_diagnostic => try self.writeDiagnosticRule(attr),
+                                .attr_builtin, .attr_interpolate => try self.writeToken(tree, lhs),
+                                .attr_diagnostic => try self.writeDiagnosticRule(tree, attr),
                                 .attr_workgroup_size => {
-                                        const extra = self.tree.extraData(Node.WorkgroupSize, lhs);
-                                        try self.writeExpr(extra.x);
+                                        const extra = tree.extraData(Node.WorkgroupSize, lhs);
+                                        try self.writeExpr(tree, extra.x);
                                         if (extra.y != 0) {
                                                 try self.writeByte(',');
-                                                try self.writeExpr(extra.y);
+                                                try self.writeExpr(tree, extra.y);
                                         }
                                         if (extra.z != 0) {
                                                 try self.writeByte(',');
-                                                try self.writeExpr(extra.z);
+                                                try self.writeExpr(tree, extra.z);
                                         }
                                 },
-                                else => try self.writeNode(lhs),
+                                else => try self.writeNode(tree, lhs),
                         }
                         try self.writeByte(')');
                 }
@@ -436,101 +432,101 @@ fn writeAttributes(self: *Self, attrs: NodeIndex) !void {
         }
 }
 
-fn writeStruct(self: *Self, node: NodeIndex) !void {
+fn writeStruct(self: *Self, tree: Ast, node: Node.Index) !void {
         try self.writeAll("struct ");
-        try self.writeNodeName(node);
+        try self.writeNodeName(tree, node);
         try self.writeAll(" {");
         self.pushIndentNextLine();
-        const members = self.tree.spanToList(self.tree.nodeLHS(node));
+        const members = tree.spanToList(tree.nodeLHS(node));
         for (members) |m| {
-                const name = self.tree.tokenSource(self.tree.nodeToken(m));
+                const name = tree.tokenSource(tree.nodeToken(m));
                 try self.writeAll("\n");
-                const member_attrs_node = self.tree.nodeLHS(m);
-                try self.writeAttributes(member_attrs_node);
+                const member_attrs_node = tree.nodeLHS(m);
+                try self.writeAttributes(tree, member_attrs_node);
                 try self.print("{s}: ", .{name});
-                try self.writeType(self.tree.nodeRHS(m));
+                try self.writeType(tree, tree.nodeRHS(m));
                 try self.writeByte(',');
         }
         self.popIndent();
         try self.writeAll("\n}");
 }
 
-fn writeCall(self: *Self, node: NodeIndex) WriteError!void {
-        try self.writeTemplateElaboratedIdent(self.tree.nodeLHS(node));
+fn writeCall(self: *Self, tree: Ast, node: Node.Index) WriteError!void {
+        try self.writeTemplateElaboratedIdent(tree, tree.nodeLHS(node));
         try self.writeByte('(');
-        const args = self.tree.nodeRHS(node);
+        const args = tree.nodeRHS(node);
         if (args != 0) {
-                const list = self.tree.spanToList(args);
+                const list = tree.spanToList(args);
                 for (list, 0..) |arg, i| {
-                        try self.writeExpr(arg);
+                        try self.writeExpr(tree, arg);
                         if (i != list.len - 1) try self.writeAll(", ");
                 }
         }
         try self.writeByte(')');
 }
 
-fn writeOverride(self: *Self, node: NodeIndex) !void {
-        const extra = self.tree.extraData(Node.Override, self.tree.nodeLHS(node));
+fn writeOverride(self: *Self, tree: Ast, node: Node.Index) !void {
+        const extra = tree.extraData(Node.Override, tree.nodeLHS(node));
 
-        try self.writeAttributes(extra.attrs);
+        try self.writeAttributes(tree, extra.attrs);
 
         try self.writeAll("override ");
-        try self.writeNodeName(node);
+        try self.writeNodeName(tree, node);
 
         if (extra.type != 0) {
                 try self.writeAll(": ");
-                try self.writeType(extra.type);
+                try self.writeType(tree, extra.type);
         }
 
-        const rhs = self.tree.nodeRHS(node);
+        const rhs = tree.nodeRHS(node);
         if (rhs != 0) {
                 try self.writeAll(" = ");
-                try self.writeExpr(rhs);
+                try self.writeExpr(tree, rhs);
         }
 }
 
-fn writeTypeAlias(self: *Self, node: NodeIndex) !void {
+fn writeTypeAlias(self: *Self, tree: Ast, node: Node.Index) !void {
         try self.writeAll("alias ");
-        try self.writeNodeName(node);
+        try self.writeNodeName(tree, node);
         try self.writeAll(" = ");
-        try self.writeNode(self.tree.nodeLHS(node));
+        try self.writeNode(tree, tree.nodeLHS(node));
 }
 
-fn writeIf(self: *Self, node: NodeIndex) !void {
+fn writeIf(self: *Self, tree: Ast, node: Node.Index) !void {
         try self.writeAll("if ");
-        try self.writeExpr(self.tree.nodeLHS(node));
+        try self.writeExpr(tree, tree.nodeLHS(node));
         try self.writeByte(' ');
-        try self.writeCompoundStatement(self.tree.nodeRHS(node));
+        try self.writeCompoundStatement(tree, tree.nodeRHS(node));
 }
 
-fn writeCaseSelector(self: *Self, node: NodeIndex) !void {
-    const lhs = self.tree.nodeLHS(node);
-    if (lhs != 0) try self.writeExpr(lhs)
+fn writeCaseSelector(self: *Self, tree: Ast, node: Node.Index) !void {
+    const lhs = tree.nodeLHS(node);
+    if (lhs != 0) try self.writeExpr(tree, lhs)
     else try self.writeAll("default");
 }
 
-fn writeSwitchClause(self: *Self, node: NodeIndex) !void {
-    const selectors = self.tree.nodeLHS(node);
+fn writeSwitchClause(self: *Self, tree: Ast, node: Node.Index) !void {
+    const selectors = tree.nodeLHS(node);
     if (selectors == 0) try self.writeAll("default")
     else {
         try self.writeAll("case ");
-        const list = self.tree.spanToList(selectors);
+        const list = tree.spanToList(selectors);
         for (list, 0..) |s, i| {
-            try self.writeCaseSelector(s);
+            try self.writeCaseSelector(tree, s);
             if (i != list.len - 1) try self.writeAll(", ");
         }
     }
     try self.writeByte(' ');
-    try self.writeCompoundStatement(self.tree.nodeRHS(node));
+    try self.writeCompoundStatement(tree, tree.nodeRHS(node));
 }
 
-fn writeSwitchBody(self: *Self, node: NodeIndex) !void {
-    try self.writeAttributes(self.tree.nodeLHS(node));
+fn writeSwitchBody(self: *Self, tree: Ast, node: Node.Index) !void {
+    try self.writeAttributes(tree, tree.nodeLHS(node));
     self.pushIndentNextLine();
     try self.writeAll("{\n");
-    const clauses = self.tree.spanToList(self.tree.nodeRHS(node)); 
+    const clauses = tree.spanToList(tree.nodeRHS(node));
     for (clauses, 0..) |c, i| {
-        try self.writeSwitchClause(c);
+        try self.writeSwitchClause(tree, c);
         if (i != clauses.len - 1) try self.writeByte('\n');
     }
     try self.writeByte('\n');
@@ -538,92 +534,92 @@ fn writeSwitchBody(self: *Self, node: NodeIndex) !void {
     try self.writeByte('}');
 }
 
-fn writeStatement(self: *Self, node: NodeIndex) WriteError!bool {
+fn writeStatement(self: *Self, tree: Ast, node: Node.Index) WriteError!bool {
     if (node == 0) return false;
-        const tag = self.tree.nodeTag(node);
-        const lhs = self.tree.nodeLHS(node);
-        const rhs = self.tree.nodeRHS(node);
+        const tag = tree.nodeTag(node);
+        const lhs = tree.nodeLHS(node);
+        const rhs = tree.nodeRHS(node);
 
         switch (tag) {
                 .compound_assign => {
-                        try self.writeExpr(lhs);
+                        try self.writeExpr(tree, lhs);
                         try self.writeAll(" = ");
-                        try self.writeExpr(rhs);
+                        try self.writeExpr(tree, rhs);
                 },
                 .phony_assign => {
                         try self.writeAll("_ = ");
-                        try self.writeExpr(lhs);
+                        try self.writeExpr(tree, lhs);
                 },
-                .call => try self.writeCall(node),
+                .call => try self.writeCall(tree, node),
                 .@"return" => {
                         try self.writeAll("return");
                         if (lhs != 0) {
                                 try self.writeByte(' ');
-                                try self.writeExpr(lhs);
+                                try self.writeExpr(tree, lhs);
                         }
                         return true;
                 },
-                .comment => try self.writeComment(node),
+                .comment => try self.writeComment(tree, node),
                 .break_if => {
                         try self.writeAll("break if ");
-                        try self.writeExpr(lhs);
+                        try self.writeExpr(tree, lhs);
                 },
-                .@"if" => try self.writeIf(node),
+                .@"if" => try self.writeIf(tree, node),
                 .else_if => {
-                        try self.writeIf(lhs);
+                        try self.writeIf(tree, lhs);
                         try self.writeAll(" else ");
-                        _ = try self.writeStatement(rhs);
+                        _ = try self.writeStatement(tree, rhs);
                 },
                 .@"else" => {
-                        try self.writeIf(lhs);
+                        try self.writeIf(tree, lhs);
                         try self.writeAll(" else ");
-                        try self.writeCompoundStatement(rhs);
+                        try self.writeCompoundStatement(tree, rhs);
                 },
                 .@"while" => {
                         try self.writeAll("while ");
-                        try self.writeExpr(lhs);
+                        try self.writeExpr(tree, lhs);
                         try self.writeAll(" ");
-                        try self.writeCompoundStatement(rhs);
+                        try self.writeCompoundStatement(tree, rhs);
                 },
                 .@"for" => {
-                        const extra = self.tree.extraData(Node.ForHeader, self.tree.nodeLHS(node));
-                        try self.writeAttributes(extra.attrs);
+                        const extra = tree.extraData(Node.ForHeader, tree.nodeLHS(node));
+                        try self.writeAttributes(tree, extra.attrs);
                         try self.writeAll("for (");
-                        _ = try self.writeStatement(extra.init);
+                        _ = try self.writeStatement(tree, extra.init);
                         try self.writeAll("; ");
-                        _ = try self.writeExpr(extra.cond);
+                        _ = try self.writeExpr(tree, extra.cond);
                         try self.writeAll("; ");
-                        _ = try self.writeStatement(extra.update);
+                        _ = try self.writeStatement(tree, extra.update);
                         try self.writeAll(") ");
-                        try self.writeCompoundStatement(rhs);
+                        try self.writeCompoundStatement(tree, rhs);
                 },
                 .@"switch" => {
                         try self.writeAll("switch ");
-                        try self.writeExpr(lhs);
+                        try self.writeExpr(tree, lhs);
                         try self.writeByte(' ');
-                        try self.writeSwitchBody(rhs);
+                        try self.writeSwitchBody(tree, rhs);
                 },
                 .loop => {
-                        try self.writeAttributes(lhs);
+                        try self.writeAttributes(tree, lhs);
                         try self.writeAll("loop ");
-                        try self.writeCompoundStatement(rhs);
+                        try self.writeCompoundStatement(tree, rhs);
                 },
-                .compound_statement => try self.writeCompoundStatement(node),
+                .compound_statement => try self.writeCompoundStatement(tree, node),
                 .continuing => {
                         try self.writeAll("continuing ");
-                        try self.writeCompoundStatement(lhs);
+                        try self.writeCompoundStatement(tree, lhs);
                 },
                 .discard => try self.writeAll("discard"),
                 .@"break" => try self.writeAll("break"),
                 .@"continue" => try self.writeAll("continue"),
                 .increase, .decrease => {
-                        try self.writeExpr(lhs);
-                        try self.writeNode(node);
+                        try self.writeExpr(tree, lhs);
+                        try self.writeNode(tree, node);
                 },
-                .@"const", .let => try self.writeConst(node),
+                .@"const", .let => try self.writeConst(tree, node),
                 .@"var" => {
-                        const extra = self.tree.extraData(Node.Var, self.tree.nodeLHS(node));
-                        try self.writeVar(extra, node);
+                        const extra = tree.extraData(Node.Var, tree.nodeLHS(node));
+                        try self.writeVar(tree, extra, node);
                 },
                 else => {
                         std.debug.print("not rendering {s}\n", .{@tagName(tag)});
@@ -633,21 +629,21 @@ fn writeStatement(self: *Self, node: NodeIndex) WriteError!bool {
         return false;
 }
 
-fn writeCompoundStatement(self: *Self, node: NodeIndex) WriteError!void {
-        const lhs = self.tree.nodeLHS(node);
-        const rhs = self.tree.nodeRHS(node);
+fn writeCompoundStatement(self: *Self, tree: Ast, node: Node.Index) WriteError!void {
+        const lhs = tree.nodeLHS(node);
+        const rhs = tree.nodeRHS(node);
 
-        try self.writeAttributes(lhs);
+        try self.writeAttributes(tree, lhs);
         try self.writeByte('{');
         self.pushIndentNextLine();
 
         if (rhs != 0) {
-                const statements = self.tree.spanToList(rhs);
+                const statements = tree.spanToList(rhs);
                 if (statements.len > 0) try self.writeByte('\n');
                 for (statements) |n| {
-                        const returned = try self.writeStatement(n);
+                        const returned = try self.writeStatement(tree, n);
 
-                        switch (self.tree.nodeTag(n)) {
+                        switch (tree.nodeTag(n)) {
                                 .comment,
                                 .@"if",
                                 .else_if,
@@ -671,51 +667,51 @@ fn writeCompoundStatement(self: *Self, node: NodeIndex) WriteError!void {
         try self.writeByte('}');
 }
 
-fn writeFn(self: *Self, node: NodeIndex) !void {
-        const extra = self.tree.extraData(Node.FnProto, self.tree.nodeLHS(node));
+fn writeFn(self: *Self, tree: Ast, node: Node.Index) !void {
+        const extra = tree.extraData(Node.FnProto, tree.nodeLHS(node));
 
-        try self.writeAttributes(extra.attrs);
+        try self.writeAttributes(tree, extra.attrs);
 
         try self.writeAll("fn ");
-        try self.writeNodeName(node);
+        try self.writeNodeName(tree, node);
         try self.writeByte('(');
 
         if (extra.params != 0) {
-                const params = self.tree.spanToList(extra.params);
+                const params = tree.spanToList(extra.params);
                 for (params, 0..) |p, i| {
-                        const attrs = self.tree.nodeLHS(p);
-                        try self.writeAttributes(attrs);
+                        const attrs = tree.nodeLHS(p);
+                        try self.writeAttributes(tree, attrs);
 
-                        try self.writeNode(p);
+                        try self.writeNode(tree, p);
                         try self.writeAll(": ");
-                        try self.writeType(self.tree.nodeRHS(p));
+                        try self.writeType(tree, tree.nodeRHS(p));
                         if (i != params.len - 1) try self.writeByte(',');
                 }
         }
         try self.writeByte(')');
         if (extra.return_type != 0) {
                 try self.writeAll(" -> ");
-                try self.writeAttributes(extra.return_attrs);
-                try self.writeType(extra.return_type);
+                try self.writeAttributes(tree, extra.return_attrs);
+                try self.writeType(tree, extra.return_type);
         }
         try self.writeByte(' ');
-        try self.writeCompoundStatement(self.tree.nodeRHS(node));
+        try self.writeCompoundStatement(tree, tree.nodeRHS(node));
 }
 
-fn writeComment(self: *Self, node: NodeIndex) !void {
-        try self.writeNode(node);
+fn writeComment(self: *Self, tree: Ast, node: Node.Index) !void {
+        try self.writeNode(tree, node);
 }
 
-fn writeImport(self: *Self, node: NodeIndex) !void {
-        const imports = self.tree.nodeLHS(node);
-        const mod_name = self.tree.tokenSource(self.tree.nodeRHS(node));
+fn writeImport(self: *Self, tree: Ast, node: Node.Index) !void {
+        const imports = tree.nodeLHS(node);
+        const mod_name = tree.tokenSource(tree.nodeRHS(node));
 
         try self.writeAll("// import ");
         if (imports != 0) {
                 try self.writeAll("{ ");
-                const list = self.tree.spanToList(imports);
+                const list = tree.spanToList(imports);
                 for (list, 0..) |n, i| {
-                        try self.writeNode(n);
+                        try self.writeNode(tree, n);
                         if (i != list.len - 1) try self.writeAll(", ");
                 }
                 try self.writeAll(" } ");

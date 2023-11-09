@@ -58,14 +58,6 @@ enable_extensions: Node.EnableExtensions,
 lang_extensions: Node.LangExtensions,
 errors: []const Error,
 
-pub fn deinit(self: *Self, allocator: Allocator) void {
-    self.tokens.deinit(allocator);
-    self.nodes.deinit(allocator);
-    allocator.free(self.errors);
-    allocator.free(self.extra);
-    self.* = undefined;
-}
-
 pub fn init(allocator: std.mem.Allocator, source: [:0]const u8) Allocator.Error!Self {
     var tokens = TokenList{};
     defer tokens.deinit(allocator);
@@ -78,17 +70,8 @@ pub fn init(allocator: std.mem.Allocator, source: [:0]const u8) Allocator.Error!
         if (token.tag == .eof) break;
     }
 
-    var parser = Parser{
-        .allocator = allocator,
-        .source = source,
-        .tokens = tokens,
-    };
-    defer parser.errors.deinit(allocator);
-    defer parser.nodes.deinit(allocator);
-    defer parser.extra.deinit(allocator);
-    defer parser.scratch.deinit(allocator);
-
-    try parser.nodes.ensureTotalCapacity(allocator, tokens.len / 2 + 1);
+    var parser = try Parser.init(allocator, source, tokens);
+    defer parser.deinit(allocator);
 
     try parser.parseTranslationUnit();
 
@@ -101,6 +84,14 @@ pub fn init(allocator: std.mem.Allocator, source: [:0]const u8) Allocator.Error!
         .lang_extensions = parser.lang_extensions,
         .errors = try parser.errors.toOwnedSlice(allocator),
     };
+}
+
+pub fn deinit(self: *Self, allocator: Allocator) void {
+    self.tokens.deinit(allocator);
+    self.nodes.deinit(allocator);
+    allocator.free(self.extra);
+    allocator.free(self.errors);
+    self.* = undefined;
 }
 
 pub fn rootDecls(self: Self) []const Node.Index {

@@ -1,42 +1,31 @@
 const std = @import("std");
 const Ast = @import("./wgsl/Ast.zig");
-const ErrorList = @import("./wgsl/ErrorList.zig");
+const Node = @import("./wgsl/Node.zig");
 
-const Allocator = std.Allocator;
+const Allocator = std.mem.Allocator;
 const Self = @This();
-pub const File = struct {
-    pub const Stat = struct {
-        inode: std.fs.File.INode,
-        size: u64,
-        mtime: i128,
-    };
-    status: enum {
-        never_loaded,
-        retryable_failure,
-        parse_failure,
-        astgen_failure,
-        success,
-    },
-    source_loaded: bool,
-    tree_loaded: bool,
-    /// Whether this is populated depends on `source_loaded`.
-    source: [:0]const u8,
-    /// Whether this is populated depends on `status`.
-    stat: Stat,
-    /// Whether this is populated or not depends on `tree_loaded`.
-    tree: Ast,
+pub const Stat = struct {
+    inode: std.fs.File.INode,
+    size: u64,
+    mtime: i128,
 };
+const ImportTable = std.StringArrayHashMapUnmanaged(void);
 
 allocator: Allocator,
-source: []const u8,
-ast: *Ast,
-/// Keys are fully resolved file paths. This table owns the keys and values.
-import_table: std.StringArrayHashMapUnmanaged(*File) = .{},
+name: []const u8,
+status: enum {
+    empty,
+    read,
+    parsed,
+} = .empty,
+stat: ?Stat = null,
+source: ?[:0]const u8 = null,
+tree: ?Ast = null,
+import_table: ImportTable = .{},
 
-pub fn init(allocator: Allocator, path: []const u8) !Self {
-    var errors = try ErrorList.init(allocator);
-    defer errors.deinit();
-
+pub fn read(self: *Self) !void {
+    std.debug.print("read {s}\n", .{self.name});
+    const path = self.name;
     var source_file = try std.fs.cwd().openFile(path, .{});
     defer source_file.close();
 
@@ -44,23 +33,48 @@ pub fn init(allocator: Allocator, path: []const u8) !Self {
     if (stat.size > std.math.maxInt(u32))
         return error.FileTooBig;
 
-    const source = try allocator.allocSentinel(u8, @as(usize, @intCast(stat.size)), 0);
+    const source = try self.allocator.allocSentinel(u8, @as(usize, @intCast(stat.size)), 0);
     const amt = try source_file.readAll(source);
     if (amt != stat.size)
         return error.UnexpectedEndOfFile;
 
-    var ast = Ast.init(allocator, &errors, source) catch |err| {
-        if (err == error.Parsing) try errors.print(source, path);
-        return err;
+    self.status = .read;
+    self.stat = Stat{
+        .inode = stat.inode,
+        .size = stat.size,
+        .mtime = stat.mtime,
     };
-    return Self{
-        .allocator = allocator,
-        .source = source,
-        .ast = ast,
-        .deps = &.{},
-    };
+    self.source = source;
+}
+
+pub fn parse(self: *Self) !void {
+    std.debug.print("parse {s}\n", .{self.name});
+    if (self.status != .read) return;
+    var tree = try Ast.init(self.allocator, self.source.?);
+    if (tree.errors.len > 0) {
+        const stderr = std.io.getStdErr();
+        const term = std.io.tty.detectConfig(stderr);
+        try stderr.writer().writeByte('\n');
+        for (tree.errors) |e| try tree.renderError(e, stderr.writer(), term);
+    } else {
+        const dirname = std.fs.path.dirname(self.name).?;
+        // TODO: only used imports
+        for (tree.spanToList(0)) |node| {
+            if (tree.nodeTag(node) != .import) continue;
+            const token = tree.tokenSource(tree.nodeRHS(node));
+            const mod_name = token[1 .. token.len - 1];
+            const resolved = try std.fs.path.resolve(self.allocator, &[_][]const u8{ dirname, mod_name });
+            try self.import_table.put(self.allocator, resolved, {});
+        }
+        self.status = .parsed;
+        self.tree = tree;
+    }
 }
 
 pub fn deinit(self: *Self) void {
-    self.ast.deinit();
+    var allocator = self.allocator;
+    if (self.tree) |*t| t.deinit(allocator);
+    if (self.source) |s| allocator.free(s);
+    for (self.import_table.keys()) |k| allocator.free(k);
+    self.import_table.deinit(allocator);
 }
