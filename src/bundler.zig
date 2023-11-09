@@ -91,3 +91,27 @@ fn workerAst(self: *Self, wait_group: *WaitGroup, path: []const u8) void {
     }
     self.mutex.unlock();
 }
+
+test "bundler" {
+    const allocator = std.testing.allocator;
+
+    var thread_pool: ThreadPool = undefined;
+    try thread_pool.init(.{ .allocator = allocator });
+    defer thread_pool.deinit();
+
+    var bundler = try Self.init(allocator, &thread_pool);
+    defer bundler.deinit();
+
+    var buffer = std.ArrayList(u8).init(allocator);
+    defer buffer.deinit();
+
+    const path = "./src/wgsl/test/cube-map.wgsl";
+    try bundler.bundle(buffer.writer(), path);
+
+    var source_file = try std.fs.cwd().openFile(path, .{});
+    defer source_file.close();
+    const source = try source_file.readToEndAllocOptions(allocator, std.math.maxInt(u32), null, 1, 0);
+    defer allocator.free(source);
+
+    try std.testing.expectEqualStrings(source, buffer.items);
+}

@@ -727,18 +727,17 @@ fn writeFormatted(
     writer: anytype,
     source: [:0]const u8,
 ) !void {
-    var ast = try Ast.init(allocator, source);
-    defer ast.deinit(allocator);
+    var tree = try Ast.init(allocator, source);
+    defer tree.deinit(allocator);
     const stderr = std.io.getStdErr();
     const term = std.io.tty.detectConfig(stderr);
-    if (ast.errors.len > 0) try stderr.writer().writeByte('\n');
-    for (ast.errors) |e| try ast.renderError(e, stderr.writer(), term);
-    if (ast.errors.len == 0) {
+    if (tree.errors.len > 0) try stderr.writer().writeByte('\n');
+    for (tree.errors) |e| try tree.renderError(e, stderr.writer(), term);
+    if (tree.errors.len == 0) {
         var renderer = Renderer(@TypeOf(writer)){
-            .tree = &ast,
             .underlying_writer = writer,
         };
-        try renderer.writeTranslationUnit();
+        try renderer.writeTranslationUnit(tree);
     }
 }
 

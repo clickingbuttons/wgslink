@@ -46,3 +46,7 @@ test "renderer" {
 test "test files" {
     _ = @import("./wgsl/test.zig");
 }
+
+test "bundler" {
+    _ = @import("./bundler.zig");
+}
