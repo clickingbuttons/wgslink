@@ -158,6 +158,7 @@ pub fn writeTranslationUnit(self: *Self, tree: Ast) !void {
         for (tree.spanToList(0)) |node| {
                 const tag = tree.nodeTag(node);
                 try switch (tag) {
+                        .empty => continue,
                         .diagnostic_directive => self.writeGlobalDiagnostic(tree, node),
                         .enable_directive => self.writeEnable(tree, node),
                         .requires_directive => self.writeEnable(tree, node),
@@ -534,13 +535,12 @@ fn writeSwitchBody(self: *Self, tree: Ast, node: Node.Index) !void {
     try self.writeByte('}');
 }
 
-fn writeStatement(self: *Self, tree: Ast, node: Node.Index) WriteError!bool {
-    if (node == 0) return false;
-        const tag = tree.nodeTag(node);
+fn writeStatement(self: *Self, tree: Ast, node: Node.Index) WriteError!void {
+        if (node == 0) return;
         const lhs = tree.nodeLHS(node);
         const rhs = tree.nodeRHS(node);
 
-        switch (tag) {
+        switch (tree.nodeTag(node)) {
                 .compound_assign => {
                         try self.writeExpr(tree, lhs);
                         try self.writeAll(" = ");
@@ -557,7 +557,6 @@ fn writeStatement(self: *Self, tree: Ast, node: Node.Index) WriteError!bool {
                                 try self.writeByte(' ');
                                 try self.writeExpr(tree, lhs);
                         }
-                        return true;
                 },
                 .comment => try self.writeComment(tree, node),
                 .break_if => {
@@ -568,7 +567,7 @@ fn writeStatement(self: *Self, tree: Ast, node: Node.Index) WriteError!bool {
                 .else_if => {
                         try self.writeIf(tree, lhs);
                         try self.writeAll(" else ");
-                        _ = try self.writeStatement(tree, rhs);
+                        try self.writeStatement(tree, rhs);
                 },
                 .@"else" => {
                         try self.writeIf(tree, lhs);
@@ -585,11 +584,11 @@ fn writeStatement(self: *Self, tree: Ast, node: Node.Index) WriteError!bool {
                         const extra = tree.extraData(Node.ForHeader, tree.nodeLHS(node));
                         try self.writeAttributes(tree, extra.attrs);
                         try self.writeAll("for (");
-                        _ = try self.writeStatement(tree, extra.init);
+                        try self.writeStatement(tree, extra.init);
                         try self.writeAll("; ");
-                        _ = try self.writeExpr(tree, extra.cond);
+                        try self.writeExpr(tree, extra.cond);
                         try self.writeAll("; ");
-                        _ = try self.writeStatement(tree, extra.update);
+                        try self.writeStatement(tree, extra.update);
                         try self.writeAll(") ");
                         try self.writeCompoundStatement(tree, rhs);
                 },
@@ -621,12 +620,10 @@ fn writeStatement(self: *Self, tree: Ast, node: Node.Index) WriteError!bool {
                         const extra = tree.extraData(Node.Var, tree.nodeLHS(node));
                         try self.writeVar(tree, extra, node);
                 },
-                else => {
-                        std.debug.print("not rendering {s}\n", .{@tagName(tag)});
+                else => |t| {
+                        std.debug.print("not rendering {s}\n", .{@tagName(t)});
                 },
         }
-
-        return false;
 }
 
 fn writeCompoundStatement(self: *Self, tree: Ast, node: Node.Index) WriteError!void {
@@ -641,7 +638,7 @@ fn writeCompoundStatement(self: *Self, tree: Ast, node: Node.Index) WriteError!v
                 const statements = tree.spanToList(rhs);
                 if (statements.len > 0) try self.writeByte('\n');
                 for (statements) |n| {
-                        const returned = try self.writeStatement(tree, n);
+                        try self.writeStatement(tree, n);
 
                         switch (tree.nodeTag(n)) {
                                 .comment,
@@ -658,8 +655,6 @@ fn writeCompoundStatement(self: *Self, tree: Ast, node: Node.Index) WriteError!v
                                 else => try self.writeByte(';'),
                         }
                         try self.writeAll("\n");
-
-                        if (returned) break;
                 }
         }
 

@@ -3,7 +3,6 @@ const clap = @import("clap");
 const Ast = @import("./wgsl/Ast.zig");
 const Module = @import("./module.zig");
 const Bundler = @import("./bundler.zig");
-// const Pruner = @import("./wgsl/Pruner.zig");
 
 const ThreadPool = std.Thread.Pool;
 const max_source = 1 << 30;
@@ -36,7 +35,10 @@ pub fn main() !void {
     var bundler = try Bundler.init(allocator, &thread_pool);
     defer bundler.deinit();
 
-    for (res.positionals) |pos| try bundler.bundle(stdout, pos);
+    for (res.positionals) |pos| try bundler.bundle(stdout, .{
+        .file = pos,
+        .tree_shake = .{},
+    });
 }
 
 test "renderer" {

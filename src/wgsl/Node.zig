@@ -104,6 +104,7 @@ pub const Tag = enum {
     enable_directive,
     requires_directive,
     import,
+    empty,
 
     comptime {
         // Goal is to keep this under one byte for efficiency.
