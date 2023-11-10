@@ -168,7 +168,7 @@ pub fn writeTranslationUnit(self: *Self, tree: Ast) !void {
                         .@"fn" => self.writeFn(tree, node),
                         .type_alias => self.writeTypeAlias(tree, node),
                         .comment => self.writeComment(tree, node),
-                        .import => self.writeImport(tree, node),
+                        .import => continue, // self.writeImport(tree, node),
                         else => |t| {
                                 std.debug.print("could not render node {s}\n", .{@tagName(t)});
                                 unreachable;

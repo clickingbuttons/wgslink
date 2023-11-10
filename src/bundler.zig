@@ -9,6 +9,7 @@ const Mutex = std.Thread.Mutex;
 const WaitGroup = std.Thread.WaitGroup;
 const Modules = std.StringArrayHashMap(Module);
 const Writer = @TypeOf(std.ArrayList(u8).writer());
+const Visited = std.StringHashMap(void);
 
 allocator: Allocator,
 thread_pool: *ThreadPool,
@@ -29,10 +30,11 @@ pub fn deinit(self: *Self) void {
     self.modules.deinit();
 }
 
-pub fn render(self: Self, renderer: anytype, module: Module) !void {
+pub fn render(self: Self, renderer: anytype, visited: *Visited, module: Module) !void {
+    if ((try visited.getOrPut(module.name)).found_existing) return;
     std.debug.print("render {s}\n", .{module.name});
     for (module.import_table.keys()) |k| {
-        if (self.modules.get(k)) |m| try self.render(renderer, m);
+        if (self.modules.get(k)) |m| try self.render(renderer, visited, m);
     }
     if (module.tree) |t| {
         try renderer.print("// {s}\n", .{module.name});
@@ -58,7 +60,9 @@ pub fn bundle(self: *Self, writer: anytype, entry: []const u8) !void {
     wait_group.wait();
 
     var renderer = Renderer(@TypeOf(writer)){ .underlying_writer = writer };
-    try self.render(&renderer, self.modules.get(resolved).?);
+    var visited = Visited.init(self.allocator);
+    defer visited.deinit();
+    try self.render(&renderer, &visited, self.modules.get(resolved).?);
 }
 
 fn workerAst(self: *Self, wait_group: *WaitGroup, path: []const u8) void {
