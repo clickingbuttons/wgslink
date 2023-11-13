@@ -226,15 +226,23 @@ fn visitStruct(tree: *Ast, used: *Used, node: Node.Index) Allocator.Error!void {
     for (members) |n| try visitType(tree, used, tree.nodeRHS(n));
 }
 
+fn visitTypeAlias(tree: *Ast, used: *Used, node: Node.Index) Allocator.Error!void {
+    try visitType(tree, used, tree.nodeLHS(node));
+}
+
+fn visitConstAssert(tree: *Ast, used: *Used, node: Node.Index) Allocator.Error!void {
+    try visitExpr(tree, used, tree.nodeLHS(node));
+}
+
 fn visitGlobal(tree: *Ast, used: *Used, node: Node.Index) Allocator.Error!void {
     switch (tree.nodeTag(node)) {
         .global_var => try visitGlobalVar(tree, used, node),
         .override => try visitOverride(tree, used, node),
         .@"const" => try visitConst(tree, used, node),
+        .const_assert => try visitConstAssert(tree, used, node),
+        .type_alias => try visitTypeAlias(tree, used, node),
         .@"struct" => try visitStruct(tree, used, node),
         .@"fn" => try visitFn(tree, used, node),
-        // TODO: visit these first in case struct is aliased
-        // .type_alias => try visitTypeAlias(tree, used, r),
         .comment => {},
         else => |t| {
             std.debug.print("could not prune node {s}\n", .{@tagName(t)});
