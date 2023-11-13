@@ -155,7 +155,8 @@ fn currentIndent(self: *Self) usize {
 }
 
 pub fn writeTranslationUnit(self: *Self, tree: Ast) !void {
-        for (tree.spanToList(0)) |node| {
+    const nodes = tree.spanToList(0);
+        for (nodes, 0..) |node, i| {
                 const tag = tree.nodeTag(node);
                 try switch (tag) {
                         .empty => continue,
@@ -187,7 +188,7 @@ pub fn writeTranslationUnit(self: *Self, tree: Ast) !void {
                         else => {},
                 }
 
-                try self.writeAll("\n");
+                if (i != nodes.len - 1) try self.writeByte('\n');
         }
 }
 
@@ -727,7 +728,7 @@ fn writeFormatted(
     const stderr = std.io.getStdErr();
     const term = std.io.tty.detectConfig(stderr);
     if (tree.errors.len > 0) try stderr.writer().writeByte('\n');
-    for (tree.errors) |e| try tree.renderError(e, stderr.writer(), term);
+    for (tree.errors) |e| try tree.renderError(e, stderr.writer(), term, null);
     if (tree.errors.len == 0) {
         var renderer = Renderer(@TypeOf(writer)){
             .underlying_writer = writer,
@@ -743,7 +744,7 @@ fn testRender(comptime source: [:0]const u8, comptime expected: [:0]const u8) !v
 
     try writeFormatted(allocator, arr.writer(), source);
 
-    try std.testing.expectEqualStrings(expected ++ "\n", arr.items);
+    try std.testing.expectEqualStrings(expected, arr.items);
 }
 
 fn testCanonical(comptime source: [:0]const u8) !void {
@@ -844,7 +845,7 @@ test "type alias" {
 }
 
 test "field access" {
-    try testCanonical("var a = b.c;");
+    try testCanonical("var a = b.c[d].e;");
 }
 
 test "comments" {
@@ -959,17 +960,6 @@ test "while" {
     );
 }
 
-// test "prune" {
-//     try testPretty(
-//         \\fn pruneMe() -> u32 {
-//         \\  return 0u;
-//         \\}
-//         \\@vertex fn main() {}
-//     ,
-//         \\@vertex fn main() {}
-//     , true);
-// }
-
 test "import" {
-    try testCanonical("// import { Foo } from './foo.wgsl';");
+    try testRender("// import { Foo } from './foo.wgsl';", "");
 }

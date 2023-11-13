@@ -1,7 +1,9 @@
 // import { b } from './b.wgsl';
-// import { c } from './c.wgsl';
+fn foo() -> f32 {
+	return 4.0;
+}
+const a = 1.0 + b + foo();
 
 @vertex fn main() -> @location(0) vec4f {
-	var a: u32 = b + c;
-	return vec4f(f32(a));
+	return vec4f(a);
 }

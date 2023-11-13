@@ -25,6 +25,19 @@ fn findSymbols(used: *Used, tree: *Ast) !void {
     }
 }
 
+fn addUsedSymbol(tree: *Ast, used: *Used, symbol: []const u8) Allocator.Error!void {
+    if (used.get(symbol)) |_| return;
+    try used.put(symbol, {});
+    for (tree.spanToList(0)) |node| {
+        switch (tree.nodeTag(node)) {
+            .global_var, .override, .@"const", .@"struct", .@"fn", .type_alias => {
+                if (std.mem.eql(u8, tree.declNameSource(node), symbol)) try visitGlobal(tree, used, node);
+            },
+            else => {},
+        }
+    }
+}
+
 fn visitCall(tree: *Ast, used: *Used, node: Node.Index) Allocator.Error!void {
     try visitType(tree, used, tree.nodeLHS(node));
 
@@ -58,7 +71,7 @@ fn visitExpr(tree: *Ast, used: *Used, node: Node.Index) Allocator.Error!void {
     const lhs = tree.nodeLHS(node);
     const rhs = tree.nodeRHS(node);
     switch (tree.nodeTag(node)) {
-        .ident => try used.put(tree.nodeSource(node), {}),
+        .ident => try addUsedSymbol(tree, used, tree.nodeSource(node)),
         .number, .true, .false => {},
         .not, .negate, .deref, .addr_of, .paren_expr, .field_access => try visitExpr(tree, used, lhs),
         .mul,
@@ -115,8 +128,8 @@ fn visitStatement(tree: *Ast, used: *Used, node: Node.Index) Allocator.Error!voi
             try visitCompoundStatement(tree, used, rhs);
         },
         .@"while" => {
-                try visitExpr(tree, used, lhs);
-                try visitCompoundStatement(tree, used, rhs);
+            try visitExpr(tree, used, lhs);
+            try visitCompoundStatement(tree, used, rhs);
         },
         .@"for" => {
             const extra = tree.extraData(Node.ForHeader, tree.nodeLHS(node));
@@ -171,7 +184,7 @@ fn visitCompoundStatement(tree: *Ast, used: *Used, node: Node.Index) Allocator.E
 
 fn visitTemplateElaboratedIdent(tree: *Ast, used: *Used, node: Node.Index) !void {
     if (node == 0) return;
-    try used.put(tree.nodeSource(node), {});
+    try addUsedSymbol(tree, used, tree.nodeSource(node));
     const lhs = tree.nodeLHS(node);
     if (lhs != 0) {
         for (tree.spanToList(lhs)) |n| try visitExpr(tree, used, n);
@@ -189,6 +202,7 @@ fn visitFn(tree: *Ast, used: *Used, node: Node.Index) Allocator.Error!void {
     }
     if (extra.return_type != 0) try visitType(tree, used, extra.return_type);
 
+    try addUsedSymbol(tree, used, tree.declNameSource(node));
     try visitCompoundStatement(tree, used, tree.nodeRHS(node));
 }
 
@@ -234,13 +248,14 @@ pub const Options = struct {
 };
 
 /// Tree shakes globals by setting unused root span nodes to empty.
-/// Sets unused import nodes to comments.
+/// Sets unused import nodes to empty.
 pub fn treeShake(tree: *Ast, allocator: Allocator, opts: Options) Allocator.Error!void {
     var used = Used.init(allocator);
     defer used.deinit();
     for (opts.symbols) |s| try used.put(s, {});
     if (opts.find_symbols) try findSymbols(&used, tree);
 
+    // Find all used identifiers
     for (tree.spanToList(0)) |node| {
         switch (tree.nodeTag(node)) {
             .global_var, .override, .@"const", .@"struct", .@"fn", .type_alias => {
@@ -250,23 +265,19 @@ pub fn treeShake(tree: *Ast, allocator: Allocator, opts: Options) Allocator.Erro
         }
     }
 
-    std.debug.print("used ", .{});
-    var iter = used.keyIterator();
-    while (iter.next()) |k| std.debug.print("{s} ", .{ k.* });
-    std.debug.print("\n", .{});
-
     for (tree.spanToList(0)) |node| {
         switch (tree.nodeTag(node)) {
+            // Set unused root span nodes to empty.
             .global_var, .override, .@"const", .@"struct", .@"fn", .type_alias => {
                 if (used.get(tree.declNameSource(node)) == null) tree.nodes.items(.tag)[node] = .empty;
             },
+            // Set unused import nodes to empty.
             .import => {
                 var import_used = false;
                 const lhs = tree.nodeLHS(node);
                 if (lhs != 0) {
                     for (tree.spanToList(lhs)) |n| {
-                        if (used.get(tree.nodeSource(n))) |_| import_used  = true
-                        else tree.nodes.items(.tag)[n] = .empty;
+                        if (used.get(tree.nodeSource(n))) |_| import_used = true else tree.nodes.items(.tag)[n] = .empty;
                     }
                 }
                 if (!import_used) tree.nodes.items(.tag)[node] = .empty;

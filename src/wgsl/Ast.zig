@@ -13,12 +13,19 @@ pub const Error = struct {
     tag: Tag,
     token: Token.Index,
     expected_tag: ?Token.Tag = null,
-    is_note: bool = false,
 
     pub const Tag = enum {
-        deep_template,
         invalid_attribute,
         invalid_attributes,
+        invalid_element_count,
+        invalid_address_space,
+        invalid_access_mode,
+        invalid_builtin,
+        invalid_interpolation_type,
+        invalid_interpolation_sample,
+        invalid_initializer,
+        invalid_assignment_op,
+        invalid_severity,
         expected_token,
         expected_unary_expr,
         expected_expr,
@@ -34,17 +41,9 @@ pub const Error = struct {
         expected_continuing_statement,
         expected_case_selector,
         type_needs_ext,
-        invalid_element_count,
-        invalid_address_space,
-        invalid_access_mode,
-        invalid_texel_format,
-        invalid_builtin,
-        invalid_interpolation_type,
-        invalid_interpolation_sample,
-        invalid_initializer,
-        invalid_assignment_op,
-        invalid_severity,
         empty_struct,
+        deep_template,
+        unresolved_module,
     };
 };
 
@@ -184,6 +183,12 @@ pub fn spanToList(self: Self, i: Node.Index) []const Node.Index {
     return @ptrCast(self.extra[self.nodeLHS(i)..self.nodeRHS(i)]);
 }
 
+pub fn moduleName(self: Self, i: Node.Index) []const u8 {
+    std.debug.assert(self.nodeTag(i) == .import);
+    const token = self.tokenSource(self.nodeRHS(i));
+    return token[1 .. token.len - 1];
+}
+
 fn renderList(writer: anytype, Enum: anytype) !void {
     try writer.writeAll(". expected one of ");
     const fields = @typeInfo(Enum).Enum.fields;
@@ -193,9 +198,14 @@ fn renderList(writer: anytype, Enum: anytype) !void {
     }
 }
 
-pub fn renderError(self: Self, err: Error, writer: anytype, term: std.io.tty.Config) !void {
+pub fn renderError(self: Self, err: Error, writer: anytype, term: std.io.tty.Config, file_path: ?[]const u8) !void {
     const loc = self.tokenLoc(err.token);
     const loc_extra = loc.extraInfo(self.source);
+
+    // 'file:line:column error: MSG'
+    try term.setColor(writer, .bold);
+    try writer.print("{?s}:{d}:{d}\n", .{ file_path, loc_extra.line, loc_extra.col });
+    try term.setColor(writer, .reset);
     try term.setColor(writer, .dim);
     try writer.print("{d} │ ", .{loc_extra.line});
     try term.setColor(writer, .reset);
@@ -218,12 +228,6 @@ pub fn renderError(self: Self, err: Error, writer: anytype, term: std.io.tty.Con
     if (loc.end > loc.start) try writer.writeByteNTimes('~', loc.end - loc.start - 1);
     try writer.writeByte(' ');
     try switch (err.tag) {
-        .deep_template => writer.writeAll("template too deep"),
-        .invalid_attribute => {
-            try writer.writeAll("invalid attribute");
-            try renderList(writer, Node.Attribute);
-        },
-        .invalid_attributes => writer.writeAll("unexpected attribute list"),
         .expected_token => writer.print("expected {s}", .{err.expected_tag.?.symbol()}),
         .expected_unary_expr => writer.writeAll("expected unary expression"),
         .expected_expr => writer.writeAll("expected expression"),
@@ -238,7 +242,11 @@ pub fn renderError(self: Self, err: Error, writer: anytype, term: std.io.tty.Con
         .expected_continuing_statement => writer.writeAll("expected continuing statement"),
         .expected_statement => writer.writeAll("expected statement"),
         .expected_type_specifier => writer.writeAll("expected type specifier"),
-        .type_needs_ext => writer.writeAll("type requires an extension"),
+        .invalid_attribute => {
+            try writer.writeAll("invalid attribute");
+            try renderList(writer, Node.Attribute);
+        },
+        .invalid_attributes => writer.writeAll("unexpected attribute list"),
         .invalid_element_count => writer.writeAll("invalid element count"),
         .invalid_address_space => {
             try writer.writeAll("invalid address space");
@@ -247,10 +255,6 @@ pub fn renderError(self: Self, err: Error, writer: anytype, term: std.io.tty.Con
         .invalid_access_mode => {
             try writer.writeAll("invalid access mode");
             try renderList(writer, Node.AccessMode);
-        },
-        .invalid_texel_format => {
-            try writer.writeAll("invalid texel format");
-            try renderList(writer, Node.TexelFormat);
         },
         .invalid_builtin => {
             try writer.writeAll("invalid builtin");
@@ -270,7 +274,10 @@ pub fn renderError(self: Self, err: Error, writer: anytype, term: std.io.tty.Con
             try writer.writeAll("invalid severity");
             try renderList(writer, Node.Severity);
         },
+        .type_needs_ext => writer.writeAll("type requires an extension"),
         .empty_struct => writer.writeAll("empty structs are forbidden"),
+        .deep_template => writer.writeAll("template too deep"),
+        .unresolved_module => writer.writeAll("could not resolve module"),
     };
 
     try term.setColor(writer, .reset);

@@ -2,6 +2,7 @@ const std = @import("std");
 const Module = @import("module.zig");
 const Renderer = @import("renderer.zig").Renderer;
 const TreeShakeOptions = @import("./tree_shaker.zig").Options;
+const Ast = @import("./wgsl/Ast.zig");
 
 const Self = @This();
 const Allocator = std.mem.Allocator;
@@ -14,9 +15,9 @@ const Visited = std.StringHashMap(void);
 
 allocator: Allocator,
 thread_pool: *ThreadPool,
-mutex: Mutex = .{},
-/// Cache
 modules: Modules,
+modules_mutex: Mutex = .{},
+stderr_mutex: Mutex = .{},
 
 pub fn init(allocator: Allocator, thread_pool: *ThreadPool) !Self {
     return Self{
@@ -31,15 +32,14 @@ pub fn deinit(self: *Self) void {
     self.modules.deinit();
 }
 
-pub fn render(self: Self, renderer: anytype, visited: *Visited, module: Module) !void {
+pub fn render(self: Self, renderer: anytype, visited: *Visited, module: *const Module) !void {
     if ((try visited.getOrPut(module.name)).found_existing) return;
-    std.debug.print("render {s}\n", .{module.name});
-    for (module.import_table.keys()) |k| {
-        if (self.modules.get(k)) |m| try self.render(renderer, visited, m);
-    }
-    if (module.tree) |t| {
-        try renderer.print("// {s}\n", .{module.name});
-        try renderer.writeTranslationUnit(t);
+    if (module.file) |f| {
+        for (f.import_table.keys()) |k| {
+            const m = self.modules.getPtr(k).?;
+            try self.render(renderer, visited, m);
+        }
+        try module.render(renderer);
     }
 }
 
@@ -48,60 +48,104 @@ pub const Options = struct {
     tree_shake: ?TreeShakeOptions,
 };
 
-/// Caller owns returned slice.
-pub fn bundle(self: *Self, writer: anytype, opts: Options) !void {
-    const resolved = try std.fs.path.resolve(self.allocator, &[_][]const u8{ ".", opts.file });
+pub fn bundle(
+    self: *Self,
+    writer: anytype,
+    errwriter: anytype,
+    errconfig: std.io.tty.Config,
+    opts: Options,
+) !void {
+    const resolved = try Module.resolve(self.allocator, "./foo.wgsl", opts.file);
     defer self.allocator.free(resolved);
-    try self.modules.put(resolved, Module{ .allocator = self.allocator, .name = resolved });
+    try self.modules.put(resolved, Module{
+        .allocator = self.allocator,
+        .name = resolved,
+        .imported_by = "bundle api",
+    });
+    const mod = self.modules.getPtr(resolved).?;
 
     // These jobs are to tokenize, parse and scan files for imports
     var wait_group: WaitGroup = .{};
-    wait_group.reset();
     wait_group.start();
-    try self.thread_pool.spawn(workerAst, .{ self, &wait_group, resolved, opts.tree_shake });
+    try self.thread_pool.spawn(workerAst, .{ self, errwriter, errconfig, &wait_group, mod, opts.tree_shake });
     wait_group.wait();
+    for (self.modules.values()) |v| if (!v.parsed) return error.UnparsedModule;
 
     var renderer = Renderer(@TypeOf(writer)){ .underlying_writer = writer };
     var visited = Visited.init(self.allocator);
     defer visited.deinit();
-    try self.render(&renderer, &visited, self.modules.get(resolved).?);
+    try self.render(&renderer, &visited, mod);
 }
 
-fn workerAst(self: *Self, wait_group: *WaitGroup, path: []const u8, tree_shake: ?TreeShakeOptions) void {
-    var mod = self.modules.getPtr(path).?;
+fn workerAst(
+    self: *Self,
+    errwriter: anytype,
+    errconfig: std.io.tty.Config,
+    wait_group: *WaitGroup,
+    mod: *Module,
+    tree_shake: ?TreeShakeOptions,
+) void {
     defer wait_group.finish();
 
-    switch (mod.status) {
-        .empty => {
-            mod.read() catch return;
-            mod.parse(tree_shake) catch return;
-        },
-        .read => {
-            mod.parse(tree_shake) catch return;
-        },
-        .parsed => return,
-    }
-    if (mod.status != .parsed) return;
+    mod.init(tree_shake) catch |err| {
+        self.stderr_mutex.lock();
+        defer self.stderr_mutex.unlock();
+        switch (err) {
+            error.Parsing => {
+                if (mod.file) |f| {
+                    for (f.tree.errors) |e| f.tree.renderError(e, errwriter, errconfig, mod.name) catch {};
+                }
+            },
+            else => |t| {
+                errwriter.print("error: {s} for {s} (imported by {s})\n", .{ @errorName(t), mod.name, mod.imported_by }) catch {};
+                if (self.modules.get(mod.imported_by)) |imp| {
+                    const tree: Ast = imp.file.?.tree;
+                    for (tree.spanToList(0)) |node| {
+                        if (tree.nodeTag(node) != .import) continue;
+                        const mod_name = tree.moduleName(node);
+                        const resolved = Module.resolve(self.allocator, imp.name, mod_name) catch continue;
+                        defer self.allocator.free(resolved);
+                        if (std.mem.eql(u8, resolved, mod.name)) {
+                            tree.renderError(Ast.Error{
+                                .tag = .unresolved_module,
+                                .token = tree.nodeRHS(node),
+                            }, errwriter, errconfig, mod.imported_by) catch {};
+                        }
+                    }
+                } else {
+                    errwriter.print("sad\n", .{}) catch {};
+                }
+            },
+        }
+        return;
+    };
 
-    self.mutex.lock();
-    var iter = mod.import_table.iterator();
+    self.modules_mutex.lock();
+    defer self.modules_mutex.unlock();
+    var iter = mod.file.?.import_table.iterator();
     while (iter.next()) |kv| {
         const gop = self.modules.getOrPut(kv.key_ptr.*) catch return;
         if (!gop.found_existing) {
-            gop.value_ptr.* = Module{ .allocator = self.allocator, .name = kv.key_ptr.* };
+            gop.value_ptr.* = Module{
+                .allocator = self.allocator,
+                .name = kv.key_ptr.*,
+                .imported_by = mod.name,
+            };
             wait_group.start();
-            var next_tree_shake = tree_shake;
-            if (next_tree_shake) |*t| t.symbols =  kv.value_ptr.*.keys();
-            self.thread_pool.spawn(workerAst, .{ self, wait_group, kv.key_ptr.*, next_tree_shake }) catch {
+            self.thread_pool.spawn(workerAst, .{
+                self, errwriter, errconfig, wait_group, gop.value_ptr, TreeShakeOptions{
+                    .symbols = kv.value_ptr.*.keys(),
+                    .find_symbols = false,
+                },
+            }) catch {
                 wait_group.finish();
                 continue;
             };
         }
     }
-    self.mutex.unlock();
 }
 
-test "bundler" {
+fn testBundle(comptime entry: []const u8, comptime expected: [:0]const u8) !void {
     const allocator = std.testing.allocator;
 
     var thread_pool: ThreadPool = undefined;
@@ -114,13 +158,44 @@ test "bundler" {
     var buffer = std.ArrayList(u8).init(allocator);
     defer buffer.deinit();
 
-    const path = "./src/wgsl/test/cube-map.wgsl";
-    try bundler.bundle(buffer.writer(), path);
+    var errbuf = std.ArrayList(u8).init(allocator);
+    defer errbuf.deinit();
 
-    var source_file = try std.fs.cwd().openFile(path, .{});
-    defer source_file.close();
-    const source = try source_file.readToEndAllocOptions(allocator, std.math.maxInt(u32), null, 1, 0);
-    defer allocator.free(source);
+    try bundler.bundle(buffer.writer(), errbuf.writer(), .no_color, Options{
+        .file = entry,
+        .tree_shake = TreeShakeOptions{},
+    });
 
-    try std.testing.expectEqualStrings(source, buffer.items);
+    try std.testing.expectEqualStrings(expected ++ "\n", buffer.items);
+}
+
+test "basic bundle" {
+    try testBundle("./test/bundle-basic/a.wgsl",
+        \\// test/bundle-basic/c.wgsl
+        \\const c = 3.0;
+        \\// test/bundle-basic/b.wgsl
+        \\const b = 2.0 + c;
+        \\// test/bundle-basic/a.wgsl
+        \\fn foo() -> f32 {
+        \\  return 4.0;
+        \\}
+        \\const a = 1.0 + b + foo();
+        \\@vertex fn main() -> @location(0) vec4f {
+        \\  return vec4f(a);
+        \\}
+    );
+}
+
+test "cycle bundle" {
+    try testBundle("./test/bundle-cycle/a.wgsl",
+        \\// test/bundle-cycle/c.wgsl
+        \\const c = 3.0 + a;
+        \\// test/bundle-cycle/b.wgsl
+        \\const b = 2.0 + c;
+        \\// test/bundle-cycle/a.wgsl
+        \\const a = 1.0 + b;
+        \\@vertex fn main() -> @location(0) vec4f {
+        \\  return vec4f(a);
+        \\}
+    );
 }

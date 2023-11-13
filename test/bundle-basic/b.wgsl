@@ -1,3 +1,2 @@
 // import { c } from './c.wgsl';
-
-var b: u32 = 3u + c;
+const b = 2.0 + c;

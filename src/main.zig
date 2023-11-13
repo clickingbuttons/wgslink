@@ -35,18 +35,16 @@ pub fn main() !void {
     var bundler = try Bundler.init(allocator, &thread_pool);
     defer bundler.deinit();
 
-    for (res.positionals) |pos| try bundler.bundle(stdout, .{
-        .file = pos,
-        .tree_shake = .{},
-    });
+    for (res.positionals) |pos| try bundler.bundle(
+        stdout,
+        stderr,
+        std.io.tty.detectConfig(std.io.getStdErr()),
+        .{ .file = pos, .tree_shake = .{} },
+    );
 }
 
 test "renderer" {
     _ = @import("./renderer.zig");
-}
-
-test "test files" {
-    _ = @import("./wgsl/test.zig");
 }
 
 test "bundler" {

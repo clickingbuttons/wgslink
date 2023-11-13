@@ -6,7 +6,8 @@ pub const Tokenizer = struct {
     index: u32,
 
     pub fn init(buffer: [:0]const u8) Tokenizer {
-        // skip UTF-8 BOM
+        // > A WGSL module is Unicode text using the UTF-8 encoding, with no byte order mark (BOM).
+        // ...But we'll be nice and skip it.
         const src_start: u32 = if (std.mem.startsWith(u8, buffer, "\xEF\xBB\xBF")) 3 else 0;
         return Tokenizer{
             .buffer = buffer,
@@ -502,9 +503,7 @@ test "identifiers" {
 }
 
 test "numbers" {
-    try testTokenize(
-        \\10.0 10f 10u 10i 10
-    , &.{
+    try testTokenize("10.0 10f 10u 10i 10", &.{
         .number,
         .number,
         .number,
@@ -572,9 +571,7 @@ test "import" {
 }
 
 test "diagnostic" {
-    try testTokenize(
-        \\@diagnostic(error, foo.bar)
-    , &.{
+    try testTokenize("@diagnostic(error, foo.bar)", &.{
         .@"@",
         .k_diagnostic,
         .@"(",
@@ -588,7 +585,24 @@ test "diagnostic" {
 }
 
 test "template list" {
-    try testTokenize(
-        \\var a = array<u32,2>(0u, 1u)
-    , &.{ .k_var, .ident, .@"=", .ident, .@"<", .ident, .@",", .number, .@">", .@"(", .number, .@",", .number, .@")" });
+    try testTokenize("var a = array<u32,2>(0u, 1u)", &.{
+        .k_var,
+        .ident,
+        .@"=",
+        .ident,
+        .@"<",
+        .ident,
+        .@",",
+        .number,
+        .@">",
+        .@"(",
+        .number,
+        .@",",
+        .number,
+        .@")",
+    });
+}
+
+test "invalid" {
+    try testTokenize("?;", &.{ .invalid, .@";" });
 }
