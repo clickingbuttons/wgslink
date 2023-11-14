@@ -738,21 +738,6 @@ fn constAssert(p: *Self) Error!?Node.Index {
     });
 }
 
-/// 'import' import_list 'from' string_literal ';'?
-fn importDecl(p: *Self) Error!?Node.Index {
-    const import_token = p.eatToken(.k_import) orelse return null;
-    const imports = try p.importList();
-    _ = try p.expectToken(.k_from);
-    const mod_token = try p.expectToken(.string_literal);
-
-    return try p.addNode(.{
-        .tag = .import,
-        .main_token = import_token,
-        .lhs = imports,
-        .rhs = mod_token,
-    });
-}
-
 /// ident '(' param_list ? ')' ( '->' attribute * template_elaborated_ident ) ?
 fn fnHeader(p: *Self, attrs: Node.Index) Error!Node.Index {
     _ = try p.expectToken(.ident);
@@ -788,23 +773,44 @@ fn fnDecl(p: *Self, attrs: Node.Index) Error!?Node.Index {
     });
 }
 
-// '{' ident (',' ident)* ','? '}'
+// ident ('as' ident)?
+fn alias(p: *Self) Error!Node.Index {
+    const main_token = try p.expectToken(.ident);
+    const lhs = if (p.eatToken(.k_as)) |_| try p.expectToken(.ident)  else 0;
+    return try p.addNode(.{
+        .main_token = main_token,
+        .tag = .alias,
+        .lhs = lhs,
+    });
+}
+
+// '{' alias (',' alias)* ','? '}'
 fn importList(p: *Self) Error!Node.Index {
     _ = p.eatToken(.@"{") orelse return 0;
     const scratch_top = p.scratch.items.len;
     defer p.scratch.shrinkRetainingCapacity(scratch_top);
     while (true) {
-        const main_token = try p.expectToken(.ident);
-        const imp = try p.addNode(.{
-            .main_token = main_token,
-            .tag = .ident,
-        });
-        try p.scratch.append(p.allocator, imp);
+        try p.scratch.append(p.allocator, try p.alias());
         if (p.eatToken(.@",") == null) break;
     }
     _ = try p.expectToken(.@"}");
     const imports = p.scratch.items[scratch_top..];
     return try p.listToSpan(imports);
+}
+
+/// 'import' (import_list 'from')? string_literal ';'?
+fn importDecl(p: *Self) Error!?Node.Index {
+    const import_token = p.eatToken(.k_import) orelse return null;
+    const imports = try p.importList();
+    if (imports != 0) _ = try p.expectToken(.k_from);
+    const mod_token = try p.expectToken(.string_literal);
+
+    return try p.addNode(.{
+        .tag = .import,
+        .main_token = import_token,
+        .lhs = imports,
+        .rhs = mod_token,
+    });
 }
 
 /// attribute * ident ':' type_specifier

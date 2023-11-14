@@ -156,6 +156,14 @@ pub fn nodeSource(self: Self, i: Node.Index) []const u8 {
     return self.source[loc.start..loc.end];
 }
 
+pub fn aliasName(self: Self, i: Node.Index) []const u8 {
+    std.debug.assert(self.nodeTag(i) == .alias);
+    const lhs = self.nodeLHS(i);
+    if (lhs != 0) return self.tokenSource(lhs);
+
+    return self.nodeSource(i);
+}
+
 fn declNameLoc(self: Self, i: Node.Index) ?Token.Loc {
     const token: Token.Index = switch (self.nodeTag(i)) {
         .global_var => self.extraData(Node.GlobalVar, self.nodeLHS(i)).name,

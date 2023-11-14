@@ -104,6 +104,7 @@ pub const Tag = enum {
     enable_directive,
     requires_directive,
     import,
+    alias,
     empty,
 
     comptime {

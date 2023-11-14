@@ -124,7 +124,9 @@ pub const Tag = enum {
     k_true,
     k_var,
     k_while,
+    // Not part of spec.
     k_import,
+    k_as,
     k_from,
 
     pub fn symbol(self: Tag) []const u8 {

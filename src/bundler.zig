@@ -85,8 +85,7 @@ pub fn bundle(
     }
     if (has_unparsed) return error.UnparsedModule;
 
-    var renderer = Renderer(@TypeOf(writer)).init(self.allocator, writer, opts.minify);
-    defer renderer.deinit();
+    var renderer = Renderer(@TypeOf(writer)).init(writer, opts.minify);
     var visited = Visited.init(self.allocator);
     defer visited.deinit();
     try self.render(&renderer, &visited, mod);
@@ -142,19 +141,22 @@ fn workerAst(
     defer self.modules_mutex.unlock();
     var iter = mod.file.?.import_table.iterator();
     while (iter.next()) |kv| {
-        const gop = self.modules.getOrPut(kv.key_ptr.*) catch return;
+        const mod_name = kv.key_ptr.*;
+        const mod_symbols = kv.value_ptr.*.keys();
+        const gop = self.modules.getOrPut(mod_name) catch return;
         if (!gop.found_existing) {
             gop.value_ptr.* = Module{
                 .allocator = self.allocator,
-                .name = kv.key_ptr.*,
+                .name = mod_name,
                 .imported_by = mod.name,
             };
             wait_group.start();
-            self.thread_pool.spawn(workerAst, .{
-                self, errwriter, errconfig, wait_group, gop.value_ptr, TreeShakeOptions{
-                    .symbols = kv.value_ptr.*.keys(),
+            const next_tree_shake = if (mod_symbols.len == 0) null else TreeShakeOptions{
+                    .symbols = mod_symbols,
                     .find_symbols = false,
-                },
+            };
+            self.thread_pool.spawn(workerAst, .{
+                self, errwriter, errconfig, wait_group, gop.value_ptr, next_tree_shake
             }) catch {
                 wait_group.finish();
                 continue;

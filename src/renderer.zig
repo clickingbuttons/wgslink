@@ -13,11 +13,8 @@ pub fn Renderer(comptime UnderlyingWriter: type) type {
         pub const Writer = std.io.Writer(*Self, WriteError, write);
         const Idents = std.StringArrayHashMap(usize);
 
-        allocator: Allocator,
         underlying_writer: UnderlyingWriter,
         minify: bool,
-        /// prevent name clashes between different trees
-        idents: Idents,
 
         disabled_offset: ?usize = null,
         indent_count: usize = 0,
@@ -30,18 +27,11 @@ pub fn Renderer(comptime UnderlyingWriter: type) type {
         /// not used until the next line
         indent_next_line: usize = 0,
 
-        pub fn init(allocator: Allocator, underlying_writer: UnderlyingWriter, minify: bool) Self {
+        pub fn init(underlying_writer: UnderlyingWriter, minify: bool) Self {
             return Self{
-                .allocator = allocator,
                 .underlying_writer = underlying_writer,
                 .minify = minify,
-                .idents = Idents.init(allocator),
             };
-        }
-
-        pub fn deinit(self: *Self) void {
-            self.idents.deinit();
-            self.* = undefined;
         }
 
         pub fn writer(self: *Self) Writer {
@@ -213,11 +203,7 @@ pub fn Renderer(comptime UnderlyingWriter: type) type {
         }
 
         fn writeNodeName(self: *Self, tree: Ast, node: Node.Index) !void {
-            const ident = tree.declNameSource(node);
-            try self.writeAll(ident);
-            var gop = try self.idents.getOrPutValue(ident, 1);
-            if (gop.found_existing) try self.print("{d}", .{gop.value_ptr.*});
-            gop.value_ptr.* += 1;
+            try self.writeAll(tree.declNameSource(node));
         }
 
         fn writeNode(self: *Self, tree: Ast, node: Node.Index) !void {
@@ -707,7 +693,7 @@ pub fn Renderer(comptime UnderlyingWriter: type) type {
             const extra = tree.extraData(Node.FnProto, tree.nodeLHS(node));
 
             try self.writeAttributes(tree, extra.attrs);
-            if (extra.attrs != 0) try self.writeByte(' ');
+            if (extra.attrs != 0 and self.minify) try self.writeByte(' ');
 
             try self.writeAll("fn ");
             try self.writeNodeName(tree, node);
@@ -720,7 +706,8 @@ pub fn Renderer(comptime UnderlyingWriter: type) type {
                     try self.writeAttributes(tree, attrs);
 
                     try self.writeNode(tree, p);
-                    try self.writeAll(": ");
+                    try self.writeByte(':');
+                    try self.writeSpace();
                     try self.writeType(tree, tree.nodeRHS(p));
                     if (i != params.len - 1) try self.writeByte(',');
                 }
@@ -738,23 +725,6 @@ pub fn Renderer(comptime UnderlyingWriter: type) type {
         fn writeComment(self: *Self, tree: Ast, node: Node.Index) !void {
             try self.writeNode(tree, node);
         }
-
-        fn writeImport(self: *Self, tree: Ast, node: Node.Index) !void {
-            const imports = tree.nodeLHS(node);
-            const mod_name = tree.tokenSource(tree.nodeRHS(node));
-
-            try self.writeAll("// import ");
-            if (imports != 0) {
-                try self.writeAll("{ ");
-                const list = tree.spanToList(imports);
-                for (list, 0..) |n, i| {
-                    try self.writeNode(tree, n);
-                    if (i != list.len - 1) try self.writeListSep();
-                }
-                try self.writeAll(" } ");
-            }
-            try self.print("from {s};", .{mod_name});
-        }
     };
 }
 
@@ -771,8 +741,7 @@ fn testWrite(
     if (tree.errors.len > 0) try stderr.writer().writeByte('\n');
     for (tree.errors) |e| try tree.renderError(e, stderr.writer(), term, null);
     if (tree.errors.len == 0) {
-        var renderer = Renderer(@TypeOf(writer)).init(allocator, writer, minify);
-        defer renderer.deinit();
+        var renderer = Renderer(@TypeOf(writer)).init(writer, minify);
         try renderer.writeTranslationUnit(tree);
     }
 }

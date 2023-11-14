@@ -283,9 +283,15 @@ pub fn treeShake(tree: *Ast, allocator: Allocator, opts: Options) Allocator.Erro
                 var import_used = false;
                 const lhs = tree.nodeLHS(node);
                 if (lhs != 0) {
-                    for (tree.spanToList(lhs)) |n| {
-                        if (used.get(tree.nodeSource(n))) |_| import_used = true else tree.nodes.items(.tag)[n] = .empty;
+                    for (tree.spanToList(lhs)) |imp| {
+                        if (used.get(tree.aliasName(imp))) |_| {
+                            import_used = true;
+                        } else {
+                            tree.nodes.items(.tag)[imp] = .empty;
+                        }
                     }
+                } else {
+                    import_used = true;
                 }
                 if (!import_used) tree.nodes.items(.tag)[node] = .empty;
             },
