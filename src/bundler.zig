@@ -46,6 +46,7 @@ pub fn render(self: Self, renderer: anytype, visited: *Visited, module: *const M
 pub const Options = struct {
     file: []const u8,
     tree_shake: ?TreeShakeOptions,
+    minify: bool,
 };
 
 pub fn bundle(
@@ -55,7 +56,7 @@ pub fn bundle(
     errconfig: std.io.tty.Config,
     opts: Options,
 ) !void {
-    const resolved = try Module.resolve(self.allocator, "./foo.wgsl", opts.file);
+    const resolved = try Module.resolveFrom(self.allocator, "./foo.wgsl", opts.file);
     defer self.allocator.free(resolved);
     try self.modules.put(resolved, Module{
         .allocator = self.allocator,
@@ -64,19 +65,34 @@ pub fn bundle(
     });
     const mod = self.modules.getPtr(resolved).?;
 
-    // These jobs are to tokenize, parse and scan files for imports
     var wait_group: WaitGroup = .{};
     wait_group.start();
-    try self.thread_pool.spawn(workerAst, .{ self, errwriter, errconfig, &wait_group, mod, opts.tree_shake });
+    try self.thread_pool.spawn(workerAst, .{
+        self,
+        errwriter,
+        errconfig,
+        &wait_group,
+        mod,
+        opts.tree_shake,
+    });
     wait_group.wait();
-    for (self.modules.values()) |v| if (!v.parsed) return error.UnparsedModule;
+    var has_unparsed = false;
+    for (self.modules.values()) |v| {
+        if (!v.parsed) {
+            errwriter.print("error: UnparsedModule {s}\n", .{v.name}) catch {};
+            has_unparsed = true;
+        }
+    }
+    if (has_unparsed) return error.UnparsedModule;
 
-    var renderer = Renderer(@TypeOf(writer)){ .underlying_writer = writer };
+    var renderer = Renderer(@TypeOf(writer)).init(self.allocator, writer, opts.minify);
+    defer renderer.deinit();
     var visited = Visited.init(self.allocator);
     defer visited.deinit();
     try self.render(&renderer, &visited, mod);
 }
 
+/// tokenize, parse and scan files for imports
 fn workerAst(
     self: *Self,
     errwriter: anytype,
@@ -97,13 +113,17 @@ fn workerAst(
                 }
             },
             else => |t| {
-                errwriter.print("error: {s} for {s} (imported by {s})\n", .{ @errorName(t), mod.name, mod.imported_by }) catch {};
+                errwriter.print("error: {s} for {s} (imported by {s})\n", .{
+                    @errorName(t),
+                    mod.name,
+                    mod.imported_by,
+                }) catch {};
                 if (self.modules.get(mod.imported_by)) |imp| {
                     const tree: Ast = imp.file.?.tree;
                     for (tree.spanToList(0)) |node| {
                         if (tree.nodeTag(node) != .import) continue;
                         const mod_name = tree.moduleName(node);
-                        const resolved = Module.resolve(self.allocator, imp.name, mod_name) catch continue;
+                        const resolved = imp.resolve(mod_name) catch continue;
                         defer self.allocator.free(resolved);
                         if (std.mem.eql(u8, resolved, mod.name)) {
                             tree.renderError(Ast.Error{
@@ -112,8 +132,6 @@ fn workerAst(
                             }, errwriter, errconfig, mod.imported_by) catch {};
                         }
                     }
-                } else {
-                    errwriter.print("sad\n", .{}) catch {};
                 }
             },
         }
@@ -164,6 +182,7 @@ fn testBundle(comptime entry: []const u8, comptime expected: [:0]const u8) !void
     try bundler.bundle(buffer.writer(), errbuf.writer(), .no_color, Options{
         .file = entry,
         .tree_shake = TreeShakeOptions{},
+        .minify = false,
     });
 
     try std.testing.expectEqualStrings(expected ++ "\n", buffer.items);
@@ -210,6 +229,19 @@ test "type alias bundle" {
         \\}
         \\@vertex fn main() -> @location(0) vec4f {
         \\  return vec4f(two_pi());
+        \\}
+    );
+}
+
+test "ident clash bundle" {
+    try testBundle("./test/bundle-ident-clash/a.wgsl",
+        \\// test/bundle-ident-clash/b.wgsl
+        \\var a = 2.0;
+        \\var b = a + 3.0;
+        \\// test/bundle-ident-clash/a.wgsl
+        \\var a2 = 1.0 + b;
+        \\@vertex fn main() -> @location(0) vec4f {
+        \\  return vec4f(a);
         \\}
     );
 }

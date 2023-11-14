@@ -31,7 +31,7 @@ pub const File = struct {
             if (tree.nodeTag(node) != .import) continue;
 
             const mod_name = tree.moduleName(node);
-            const resolved = try resolve(allocator, path, mod_name);
+            const resolved = try resolveFrom(allocator, path, mod_name);
             const mod_imports = try import_table.getOrPut(allocator, resolved);
             if (!mod_imports.found_existing) mod_imports.value_ptr.* = StringSet{};
             const lhs = tree.nodeLHS(node);
@@ -100,14 +100,19 @@ pub fn init(self: *Self, tree_shake: ?TreeShaker.Options) !void {
 
 pub fn render(self: Self, renderer: anytype) !void {
     if (self.file) |f| {
-        try renderer.print("// {s}\n", .{self.name});
+        if (!renderer.minify) try renderer.print("// {s}\n", .{self.name});
         try renderer.writeTranslationUnit(f.tree);
-        try renderer.writeByte('\n');
+        try renderer.newline();
     }
 }
 
 /// Caller owns returned slice
-pub fn resolve(allocator: Allocator, from_file: []const u8, relpath: []const u8) ![]const u8 {
+pub fn resolveFrom(allocator: Allocator, from_file: []const u8, relpath: []const u8) ![]const u8 {
     const dirname = std.fs.path.dirname(from_file).?;
     return try std.fs.path.resolve(allocator, &[_][]const u8{ dirname, relpath });
+}
+
+/// Caller owns returned slice
+pub fn resolve(self: Self, relpath: []const u8) ![]const u8 {
+    return try resolveFrom(self.allocator, self.name, relpath);
 }

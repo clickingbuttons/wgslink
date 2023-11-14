@@ -3,7 +3,6 @@ const Ast = @import("./wgsl/Ast.zig");
 const Node = @import("./wgsl/Node.zig");
 
 const Allocator = std.mem.Allocator;
-const Self = @This();
 const Used = std.StringHashMap(void);
 
 fn findSymbols(used: *Used, tree: *Ast) !void {

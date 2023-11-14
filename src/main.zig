@@ -12,6 +12,7 @@ const stderr = std.io.getStdErr().writer();
 pub fn main() !void {
     const params = comptime clap.parseParamsComptime(
         \\-h, --help             Display this help and exit.
+        \\-m, --minify           Rename variables to be shorter and remove whitespace
         \\<str>...               Entry WGSL files
         \\
     );
@@ -35,12 +36,15 @@ pub fn main() !void {
     var bundler = try Bundler.init(allocator, &thread_pool);
     defer bundler.deinit();
 
-    for (res.positionals) |pos| try bundler.bundle(
+    for (res.positionals) |pos| bundler.bundle(
         stdout,
         stderr,
         std.io.tty.detectConfig(std.io.getStdErr()),
-        .{ .file = pos, .tree_shake = .{} },
-    );
+        .{ .file = pos, .tree_shake = .{}, .minify = res.args.minify != 0 },
+    ) catch |err| {
+        stderr.print("error: {s} when bundling {s}\n", .{ @errorName(err), pos }) catch {};
+        continue;
+    };
 }
 
 test "renderer" {
