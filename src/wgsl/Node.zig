@@ -1,12 +1,51 @@
 const std = @import("std");
 const Token = @import("Token.zig");
 
+// pub const Index = union {
+//     token: Token.Index,
+//     node: u31,
+//     extra: u31,
+//
+//     comptime {
+//         std.debug.assert(@bitSizeOf(@This()) == @sizeOf(u31));
+//     }
+// };
+pub const Index = u32;
+
 tag: Tag,
+// For error reporting and rendering
 main_token: Token.Index,
 lhs: Index = 0,
 rhs: Index = 0,
 
+pub const Attribute = enum(u32) {
+    @"align",
+    binding,
+    builtin,
+    @"const",
+    compute,
+    diagnostic,
+    fragment,
+    group,
+    id,
+    interpolate,
+    invariant,
+    location,
+    must_use,
+    size,
+    vertex,
+    workgroup_size,
+};
+
+pub const Severity = enum(u32) {
+    @"error",
+    warning,
+    info,
+    off,
+};
+
 pub const Tag = enum {
+    empty,
     span,
     global_var,
     override,
@@ -53,22 +92,7 @@ pub const Tag = enum {
     external_texture_type,
     storage_texture_type,
     depth_texture_type,
-    attr_align,
-    attr_binding,
-    attr_builtin,
-    attr_compute,
-    attr_const,
-    attr_diagnostic,
-    attr_fragment,
-    attr_group,
-    attr_id,
-    attr_interpolate,
-    attr_invariant,
-    attr_location,
-    attr_must_use,
-    attr_size,
-    attr_vertex,
-    attr_workgroup_size,
+    attribute,
     mul,
     div,
     mod,
@@ -105,7 +129,6 @@ pub const Tag = enum {
     requires_directive,
     import,
     alias,
-    empty,
 
     comptime {
         // Goal is to keep this under one byte for efficiency.
@@ -113,20 +136,16 @@ pub const Tag = enum {
     }
 };
 
-pub const Index = u32;
-
 pub const GlobalVar = struct {
     attrs: Index = 0,
     name: Token.Index,
-    addr_space: Token.Index = 0,
-    access_mode: Token.Index = 0,
+    template_list: Token.Index = 0,
     type: Index = 0,
 };
 
 pub const Var = struct {
     name: Token.Index,
-    addr_space: Token.Index = 0,
-    access_mode: Token.Index = 0,
+    template_list: Token.Index = 0,
     type: Index = 0,
 };
 
@@ -160,99 +179,13 @@ pub const ForHeader = struct {
     update: Index,
 };
 
-pub const DiagnosticRule = struct {
+pub const DiagnosticControl = struct {
+    severity: Index,
     name: Index,
     field: Index = 0,
 };
 
-/// https://www.w3.org/TR/WGSL/#built-in-values
-pub const Builtin = enum {
-    vertex_index,
-    instance_index,
-    position,
-    front_facing,
-    frag_depth,
-    sample_index,
-    sample_mask,
-    local_invocation_id,
-    local_invocation_index,
-    global_invocation_id,
-    workgroup_id,
-    num_workgroups,
+pub const Interpolation = struct {
+    type: Index,
+    sampling: Index = 0,
 };
-
-/// https://www.w3.org/TR/WGSL/#interpolation
-pub const InterpolationType = enum {
-    perspective,
-    linear,
-    flat,
-};
-pub const InterpolationSample = enum {
-    center,
-    centroid,
-    sample,
-};
-
-pub const AddressSpace = enum {
-    function,
-    private,
-    workgroup,
-    uniform,
-    storage,
-    handle,
-};
-
-pub const AccessMode = enum {
-    read,
-    write,
-    read_write,
-};
-
-pub const Attribute = enum {
-    @"align",
-    binding,
-    builtin,
-    @"const",
-    compute,
-    diagnostic,
-    fragment,
-    group,
-    id,
-    interpolate,
-    invariant,
-    location,
-    must_use,
-    size,
-    vertex,
-    workgroup_size,
-};
-
-pub const TexelFormat = enum {
-    rgba8unorm,
-    rgba8snorm,
-    rgba8uint,
-    rgba8sint,
-    rgba16uint,
-    rgba16sint,
-    rgba16float,
-    r32uint,
-    r32sint,
-    r32float,
-    rg32uint,
-    rg32sint,
-    rg32float,
-    rgba32uint,
-    rgba32sint,
-    rgba32float,
-    bgra8unorm,
-};
-
-pub const EnableExtensions = struct {
-    f16: bool = false,
-};
-
-pub const LangExtensions = struct {
-    readonly_and_readwrite_storage_textures: bool = false,
-};
-
-pub const Severity = enum { @"error", warning, info, off };

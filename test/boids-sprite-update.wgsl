@@ -1,4 +1,20 @@
 // test/boids-sprite-update.wgsl
+struct Particle {
+  pos: vec2<f32>,
+  vel: vec2<f32>,
+}
+struct SimParams {
+  deltaT: f32,
+  rule1Distance: f32,
+  rule2Distance: f32,
+  rule3Distance: f32,
+  rule1Scale: f32,
+  rule2Scale: f32,
+  rule3Scale: f32,
+};
+struct Particles {
+  particles: array<Particle>,
+}
 @binding(0) @group(0) var<uniform> params: SimParams;
 @binding(1) @group(0) var<storage,read> particlesA: Particles;
 @binding(2) @group(0) var<storage,read_write> particlesB: Particles;

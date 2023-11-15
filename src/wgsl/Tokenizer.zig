@@ -17,7 +17,10 @@ pub const Tokenizer = struct {
 
     // For debugging
     pub fn dump(self: *Tokenizer, token: Token) void {
-        std.debug.print("{s} \"{s}\"\n", .{ @tagName(token.tag), self.buffer[token.loc.start..token.loc.end] });
+        std.debug.print("{s} \"{s}\"\n", .{
+            @tagName(token.tag),
+            self.buffer[token.loc.start..token.loc.end],
+        });
     }
 
     pub fn peek(self: *Tokenizer) Token {
@@ -48,6 +51,7 @@ pub const Tokenizer = struct {
             @"*",
             @"^",
             _,
+            __,
             @"'",
             @"\"",
         };
@@ -169,17 +173,21 @@ pub const Tokenizer = struct {
                 },
                 ._ => switch (c) {
                     'a'...'z', 'A'...'Z', '0'...'9' => state = .ident,
-                    '_' => {
-                        result.tag = .invalid;
-                        index += 1;
-                        break;
-                    },
+                    '_' => state = .__,
                     else => {
                         result.tag = ._;
                         break;
                     },
                 },
+                .__ => switch (c) {
+                    'a'...'z', 'A'...'Z', '0'...'9', '_' => {},
+                    else => {
+                        result.tag = .invalid;
+                        break;
+                    },
+                },
                 .number => |*number| {
+                    // https://www.w3.org/TR/WGSL/#numeric-literals
                     result.tag = .number;
                     switch (c) {
                         '0'...'9' => {},
@@ -343,8 +351,6 @@ pub const Tokenizer = struct {
                     },
                     '0'...'9' => {
                         // workaround for x-1 being tokenized as [x] [-1]
-                        // TODO: maybe it's user fault? :^)
-                        // duplicated at .@"+" too
                         if (index >= 2 and std.ascii.isAlphabetic(self.buffer[index - 2])) {
                             result.tag = .@"-";
                             break;
@@ -402,6 +408,7 @@ pub const Tokenizer = struct {
                         break;
                     },
                     '0'...'9' => {
+                        // workaround for x+1 being tokenized as [x] [+1]
                         if (index >= 2 and std.ascii.isAlphabetic(self.buffer[index - 2])) {
                             result.tag = .@"+";
                             break;
@@ -499,6 +506,7 @@ test "identifiers" {
     try testTokenize("iden0i", &.{.ident});
     try testTokenize("_", &.{._});
     try testTokenize("__", &.{.invalid});
+    try testTokenize("__a", &.{.invalid});
     try testTokenize("_iden", &.{.ident});
 }
 

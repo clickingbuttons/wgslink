@@ -18,11 +18,6 @@ pub const Error = struct {
         invalid_attribute,
         invalid_attributes,
         invalid_element_count,
-        invalid_address_space,
-        invalid_access_mode,
-        invalid_builtin,
-        invalid_interpolation_type,
-        invalid_interpolation_sample,
         invalid_initializer,
         invalid_assignment_op,
         invalid_severity,
@@ -49,12 +44,11 @@ pub const Error = struct {
 
 source: [:0]const u8,
 tokens: TokenList.Slice,
-/// The root AST node is assumed to be index 0. Since there can be no
-/// references to the root node, this means 0 is available to indicate null.
+/// Node 0 is a span of directives followed by declarations. Since there can be no
+/// references to this root node, 0 is available to indicate null.
 nodes: NodeList.Slice,
 extra: []Node.Index,
-enable_extensions: Node.EnableExtensions,
-lang_extensions: Node.LangExtensions,
+/// Point to source.
 errors: []const Error,
 
 pub fn init(allocator: std.mem.Allocator, source: [:0]const u8) Allocator.Error!Self {
@@ -79,8 +73,6 @@ pub fn init(allocator: std.mem.Allocator, source: [:0]const u8) Allocator.Error!
         .tokens = tokens.toOwnedSlice(),
         .nodes = parser.nodes.toOwnedSlice(),
         .extra = try parser.extra.toOwnedSlice(allocator),
-        .enable_extensions = parser.enable_extensions,
-        .lang_extensions = parser.lang_extensions,
         .errors = try parser.errors.toOwnedSlice(allocator),
     };
 }
@@ -100,10 +92,9 @@ pub fn rootDecls(self: Self) []const Node.Index {
 }
 
 pub fn extraData(self: Self, comptime T: type, index: Node.Index) T {
-    const fields = std.meta.fields(T);
+    const fields: []const std.builtin.Type.StructField = std.meta.fields(T);
     var result: T = undefined;
     inline for (fields, 0..) |field, i| {
-        comptime std.debug.assert(field.type == Node.Index);
         @field(result, field.name) = self.extra[index + i];
     }
     return result;
@@ -256,26 +247,6 @@ pub fn renderError(self: Self, err: Error, writer: anytype, term: std.io.tty.Con
         },
         .invalid_attributes => writer.writeAll("unexpected attribute list"),
         .invalid_element_count => writer.writeAll("invalid element count"),
-        .invalid_address_space => {
-            try writer.writeAll("invalid address space");
-            try renderList(writer, Node.AddressSpace);
-        },
-        .invalid_access_mode => {
-            try writer.writeAll("invalid access mode");
-            try renderList(writer, Node.AccessMode);
-        },
-        .invalid_builtin => {
-            try writer.writeAll("invalid builtin");
-            try renderList(writer, Node.Builtin);
-        },
-        .invalid_interpolation_type => {
-            try writer.writeAll("invalid interpolation type");
-            try renderList(writer, Node.InterpolationType);
-        },
-        .invalid_interpolation_sample => {
-            try writer.writeAll("invalid interpolation sample");
-            try renderList(writer, Node.InterpolationSample);
-        },
         .invalid_initializer => writer.writeAll("variable requires a type or initializer"),
         .invalid_assignment_op => writer.writeAll("invalid assignment op"),
         .invalid_severity => {

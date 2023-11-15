@@ -202,7 +202,7 @@ pub fn Renderer(comptime UnderlyingWriter: type) type {
             }
         }
 
-        fn writeNodeName(self: *Self, tree: Ast, node: Node.Index) !void {
+        fn writeGlobalIdent(self: *Self, tree: Ast, node: Node.Index) !void {
             try self.writeAll(tree.declNameSource(node));
         }
 
@@ -239,44 +239,30 @@ pub fn Renderer(comptime UnderlyingWriter: type) type {
             }
         }
 
-        fn writeDiagnosticRule(self: *Self, tree: Ast, node: Node.Index) !void {
-            try self.writeToken(tree, tree.nodeLHS(node));
+        fn writeDiagnosticControl(self: *Self, tree: Ast, node: Node.Index) !void {
+            const control = tree.extraData(Node.DiagnosticControl, node);
+            const severity: Node.Severity = @enumFromInt(control.severity);
+            try self.writeAll(@tagName(severity));
             try self.writeListSep();
-            const rule = tree.extraData(Node.DiagnosticRule, tree.nodeRHS(node));
-            try self.writeToken(tree, rule.name);
-            if (rule.field != 0) {
+            try self.writeToken(tree, control.name);
+            if (control.field != 0) {
                 try self.writeByte('.');
-                try self.writeToken(tree, rule.field);
+                try self.writeToken(tree, control.field);
             }
         }
 
         fn writeGlobalDiagnostic(self: *Self, tree: Ast, node: Node.Index) !void {
             try self.writeNode(tree, node);
             try self.writeByte('(');
-            try self.writeDiagnosticRule(tree, node);
+            try self.writeDiagnosticControl(tree, tree.nodeLHS(node));
             try self.writeByte(')');
         }
 
         fn writeVar(self: *Self, tree: Ast, extra: anytype, node: Node.Index) !void {
             try self.writeAll("var");
-
-            if (extra.addr_space != 0) {
-                try self.writeByte('<');
-                try self.writeAll(tree.tokenSource(extra.addr_space));
-            }
-
-            if (extra.access_mode != 0) {
-                try self.writeByte(',');
-                try self.writeAll(tree.tokenSource(extra.access_mode));
-            }
-
-            if (extra.addr_space != 0) {
-                try self.writeByte('>');
-                try self.writeSpace();
-            } else {
-                try self.writeByte(' ');
-            }
-            try self.writeNodeName(tree, node);
+            try self.writeTemplateList(tree, extra.template_list);
+            if (self.minify and extra.template_list == 0) try self.writeByte(' ') else try self.writeSpace();
+            try self.writeGlobalIdent(tree, node);
 
             if (extra.type != 0) {
                 try self.writeByte(':');
@@ -297,18 +283,20 @@ pub fn Renderer(comptime UnderlyingWriter: type) type {
             try self.writeVar(tree, extra, node);
         }
 
+        fn writeTemplateList(self: *Self, tree: Ast, node: Node.Index) !void {
+            if (node == 0) return;
+            try self.writeByte('<');
+            const args = tree.spanToList(node);
+            for (args, 0..) |n, i| {
+                try self.writeExpr(tree, n);
+                if (i != args.len - 1) try self.writeByte(',');
+            }
+            try self.writeByte('>');
+        }
+
         fn writeTemplateElaboratedIdent(self: *Self, tree: Ast, node: Node.Index) !void {
             try self.writeNode(tree, node);
-            const lhs = tree.nodeLHS(node);
-            if (lhs != 0) {
-                try self.writeByte('<');
-                const args = tree.spanToList(lhs);
-                for (args, 0..) |n, i| {
-                    try self.writeExpr(tree, n);
-                    if (i != args.len - 1) try self.writeByte(',');
-                }
-                try self.writeByte('>');
-            }
+            try self.writeTemplateList(tree, tree.nodeLHS(node));
         }
 
         fn writeType(self: *Self, tree: Ast, node: Node.Index) !void {
@@ -320,7 +308,7 @@ pub fn Renderer(comptime UnderlyingWriter: type) type {
             const rhs = tree.nodeRHS(node);
             try self.writeNode(tree, node);
             try self.writeByte(' ');
-            try self.writeNodeName(tree, node);
+            try self.writeGlobalIdent(tree, node);
             if (lhs != 0) {
                 try self.writeByte(':');
                 try self.writeSpace();
@@ -416,17 +404,23 @@ pub fn Renderer(comptime UnderlyingWriter: type) type {
             if (attrs == 0) return;
             for (tree.spanToList(attrs)) |attr| {
                 try self.writeByte('@');
-                const tag = tree.nodeTag(attr);
-                const attr_name = @tagName(tag)["attr_".len..];
-                try self.writeAll(attr_name);
-                const lhs = tree.nodeLHS(attr);
-                if (lhs != 0) {
+                const attribute: Node.Attribute = @enumFromInt(tree.nodeLHS(attr));
+                try self.writeAll(@tagName(attribute));
+                const rhs = tree.nodeRHS(attr);
+                if (rhs != 0) {
                     try self.writeByte('(');
-                    switch (tag) {
-                        .attr_builtin, .attr_interpolate => try self.writeToken(tree, lhs),
-                        .attr_diagnostic => try self.writeDiagnosticRule(tree, attr),
-                        .attr_workgroup_size => {
-                            const extra = tree.extraData(Node.WorkgroupSize, lhs);
+                    switch (attribute) {
+                        .@"align", .binding, .builtin, .group, .id, .location, .size => {
+                            try self.writeExpr(tree, rhs);
+                        },
+                        .diagnostic => try self.writeDiagnosticControl(tree, rhs),
+                        .interpolate => {
+                            const interpolation = tree.extraData(Node.Interpolation, rhs);
+                            try self.writeExpr(tree, interpolation.type);
+                            try self.writeExpr(tree, interpolation.sampling);
+                        },
+                        .workgroup_size => {
+                            const extra = tree.extraData(Node.WorkgroupSize, rhs);
                             try self.writeExpr(tree, extra.x);
                             if (extra.y != 0) {
                                 try self.writeByte(',');
@@ -437,7 +431,7 @@ pub fn Renderer(comptime UnderlyingWriter: type) type {
                                 try self.writeExpr(tree, extra.z);
                             }
                         },
-                        else => try self.writeNode(tree, lhs),
+                        else => {},
                     }
                     try self.writeByte(')');
                 }
@@ -447,7 +441,7 @@ pub fn Renderer(comptime UnderlyingWriter: type) type {
 
         fn writeStruct(self: *Self, tree: Ast, node: Node.Index) !void {
             try self.writeAll("struct ");
-            try self.writeNodeName(tree, node);
+            try self.writeGlobalIdent(tree, node);
             try self.writeSpace();
             try self.writeByte('{');
             self.pushIndentNextLine();
@@ -487,7 +481,7 @@ pub fn Renderer(comptime UnderlyingWriter: type) type {
             try self.writeAttributes(tree, extra.attrs);
 
             try self.writeAll("override ");
-            try self.writeNodeName(tree, node);
+            try self.writeGlobalIdent(tree, node);
 
             if (extra.type != 0) {
                 try self.writeByte(':');
@@ -504,7 +498,7 @@ pub fn Renderer(comptime UnderlyingWriter: type) type {
 
         fn writeTypeAlias(self: *Self, tree: Ast, node: Node.Index) !void {
             try self.writeAll("alias ");
-            try self.writeNodeName(tree, node);
+            try self.writeGlobalIdent(tree, node);
             try self.writeSpaced("=");
             try self.writeNode(tree, tree.nodeLHS(node));
         }
@@ -696,7 +690,7 @@ pub fn Renderer(comptime UnderlyingWriter: type) type {
             if (extra.attrs != 0 and self.minify) try self.writeByte(' ');
 
             try self.writeAll("fn ");
-            try self.writeNodeName(tree, node);
+            try self.writeGlobalIdent(tree, node);
             try self.writeByte('(');
 
             if (extra.params != 0) {

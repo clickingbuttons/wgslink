@@ -13,8 +13,9 @@ fn findSymbols(used: *Used, tree: *Ast) !void {
         if (extra.attrs == 0) continue;
 
         for (tree.spanToList(extra.attrs)) |a| {
-            switch (tree.nodeTag(a)) {
-                .attr_vertex, .attr_fragment, .attr_compute => {
+            const attr: Node.Attribute = @enumFromInt(tree.nodeLHS(a));
+            switch (attr) {
+                .vertex, .fragment, .compute => {
                     try used.put(tree.declNameSource(node), {});
                     break;
                 },
@@ -53,9 +54,7 @@ fn visitIf(tree: *Ast, used: *Used, node: Node.Index) Allocator.Error!void {
 
 fn visitVar(tree: *Ast, used: *Used, extra: anytype, node: Node.Index) Allocator.Error!void {
     if (extra.type != 0) try visitType(tree, used, extra.type);
-
-    const rhs = tree.nodeRHS(node);
-    try visitExpr(tree, used, rhs);
+    try visitExpr(tree, used, tree.nodeRHS(node));
 }
 
 fn visitConst(tree: *Ast, used: *Used, node: Node.Index) Allocator.Error!void {
@@ -245,6 +244,7 @@ fn visitGlobal(tree: *Ast, used: *Used, node: Node.Index) Allocator.Error!void {
         .comment => {},
         else => |t| {
             std.debug.print("could not prune node {s}\n", .{@tagName(t)});
+            unreachable;
         },
     }
 }
