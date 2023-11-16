@@ -47,7 +47,8 @@ tokens: TokenList.Slice,
 /// Node 0 is a span of directives followed by declarations. Since there can be no
 /// references to this root node, 0 is available to indicate null.
 nodes: NodeList.Slice,
-extra: []Node.Index,
+spans: []Node.Index,
+extra: []?Node.Index,
 /// Point to source.
 errors: []const Error,
 
@@ -72,6 +73,7 @@ pub fn init(allocator: std.mem.Allocator, source: [:0]const u8) Allocator.Error!
         .source = source,
         .tokens = tokens.toOwnedSlice(),
         .nodes = parser.nodes.toOwnedSlice(),
+        .spans = try parser.spans.toOwnedSlice(allocator),
         .extra = try parser.extra.toOwnedSlice(allocator),
         .errors = try parser.errors.toOwnedSlice(allocator),
     };
@@ -80,6 +82,7 @@ pub fn init(allocator: std.mem.Allocator, source: [:0]const u8) Allocator.Error!
 pub fn deinit(self: *Self, allocator: Allocator) void {
     self.tokens.deinit(allocator);
     self.nodes.deinit(allocator);
+    allocator.free(self.spans);
     allocator.free(self.extra);
     allocator.free(self.errors);
     self.* = undefined;
@@ -95,7 +98,11 @@ pub fn extraData(self: Self, comptime T: type, index: Node.Index) T {
     const fields: []const std.builtin.Type.StructField = std.meta.fields(T);
     var result: T = undefined;
     inline for (fields, 0..) |field, i| {
-        @field(result, field.name) = self.extra[index + i];
+        var f = &@field(result, field.name);
+        f.* = if (field.type == ?Node.Index)
+            self.extra[index + i]
+        else
+            self.extra[index + i].?;
     }
     return result;
 }
@@ -121,11 +128,11 @@ pub fn nodeToken(self: Self, i: Node.Index) Token.Index {
     return self.nodes.items(.main_token)[i];
 }
 
-pub fn nodeLHS(self: Self, i: Node.Index) Node.Index {
+pub fn nodeLHS(self: Self, i: Node.Index) ?Node.Index {
     return self.nodes.items(.lhs)[i];
 }
 
-pub fn nodeRHS(self: Self, i: Node.Index) Node.Index {
+pub fn nodeRHS(self: Self, i: Node.Index) ?Node.Index {
     return self.nodes.items(.rhs)[i];
 }
 
@@ -133,7 +140,7 @@ pub fn nodeSource(self: Self, i: Node.Index) []const u8 {
     var loc = self.tokenLoc(self.nodeToken(i));
     switch (self.nodeTag(i)) {
         .deref, .addr_of => {
-            const lhs = self.nodeLHS(i);
+            const lhs = self.nodeLHS(i).?;
             const lhs_token = self.nodeToken(lhs);
             const lhs_loc = self.tokenLoc(lhs_token);
             loc.end = lhs_loc.end;
@@ -157,8 +164,8 @@ pub fn aliasName(self: Self, i: Node.Index) []const u8 {
 
 fn declNameLoc(self: Self, i: Node.Index) ?Token.Loc {
     const token: Token.Index = switch (self.nodeTag(i)) {
-        .global_var => self.extraData(Node.GlobalVar, self.nodeLHS(i)).name,
-        .@"var" => self.extraData(Node.Var, self.nodeLHS(i)).name,
+        .global_var => self.extraData(Node.GlobalVar, self.nodeLHS(i).?).name,
+        .@"var" => self.extraData(Node.Var, self.nodeLHS(i).?).name,
         .@"struct",
         .@"fn",
         .@"const",
@@ -177,14 +184,17 @@ pub fn declNameSource(self: Self, i: Node.Index) []const u8 {
     return self.source[loc.start..loc.end];
 }
 
-pub fn spanToList(self: Self, i: Node.Index) []const Node.Index {
-    std.debug.assert(self.nodeTag(i) == .span);
-    return @ptrCast(self.extra[self.nodeLHS(i)..self.nodeRHS(i)]);
+pub fn spanToList(self: Self, i: ?Node.Index) []const Node.Index {
+    if (i) |s| {
+        std.debug.assert(self.nodeTag(s) == .span);
+        return self.spans[self.nodeLHS(s).?..self.nodeRHS(s).?];
+    }
+    return &.{};
 }
 
 pub fn moduleName(self: Self, i: Node.Index) []const u8 {
     std.debug.assert(self.nodeTag(i) == .import);
-    const token = self.tokenSource(self.nodeRHS(i));
+    const token = self.tokenSource(self.nodeRHS(i).?);
     return token[1 .. token.len - 1];
 }
 

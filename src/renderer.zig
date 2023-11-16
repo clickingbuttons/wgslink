@@ -74,12 +74,9 @@ pub fn Renderer(comptime UnderlyingWriter: type) type {
         }
 
         fn writeNoIndent(self: *Self, bytes: []const u8) WriteError!usize {
-            if (bytes.len == 0)
-                return @as(usize, 0);
-
+            if (bytes.len == 0) return 0;
             if (self.disabled_offset == null) try self.underlying_writer.writeAll(bytes);
-            if (bytes[bytes.len - 1] == '\n')
-                self.resetLine();
+            if (bytes[bytes.len - 1] == '\n') self.resetLine();
             return bytes.len;
         }
 
@@ -245,81 +242,81 @@ pub fn Renderer(comptime UnderlyingWriter: type) type {
             try self.writeAll(@tagName(severity));
             try self.writeListSep();
             try self.writeToken(tree, control.name);
-            if (control.field != 0) {
+            if (control.field) |f| {
                 try self.writeByte('.');
-                try self.writeToken(tree, control.field);
+                try self.writeToken(tree, f);
             }
         }
 
         fn writeGlobalDiagnostic(self: *Self, tree: Ast, node: Node.Index) !void {
             try self.writeNode(tree, node);
             try self.writeByte('(');
-            try self.writeDiagnosticControl(tree, tree.nodeLHS(node));
+            try self.writeDiagnosticControl(tree, tree.nodeLHS(node).?);
             try self.writeByte(')');
         }
 
         fn writeVar(self: *Self, tree: Ast, extra: anytype, node: Node.Index) !void {
             try self.writeAll("var");
             try self.writeTemplateList(tree, extra.template_list);
-            if (self.minify and extra.template_list == 0) try self.writeByte(' ') else try self.writeSpace();
+            if (self.minify and extra.template_list == null) try self.writeByte(' ') else try self.writeSpace();
             try self.writeGlobalIdent(tree, node);
 
-            if (extra.type != 0) {
+            if (extra.type) |t| {
                 try self.writeByte(':');
                 try self.writeSpace();
-                try self.writeType(tree, extra.type);
+                try self.writeType(tree, t);
             }
 
-            const rhs = tree.nodeRHS(node);
-            if (rhs != 0) {
+            if (tree.nodeRHS(node)) |rhs| {
                 try self.writeSpaced("=");
                 try self.writeExpr(tree, rhs);
             }
         }
 
         fn writeGlobalVar(self: *Self, tree: Ast, node: Node.Index) !void {
-            const extra = tree.extraData(Node.GlobalVar, tree.nodeLHS(node));
-            if (extra.attrs != 0) try self.writeAttributes(tree, extra.attrs);
+            const extra = tree.extraData(Node.GlobalVar, tree.nodeLHS(node).?);
+            try self.writeAttributes(tree, extra.attrs);
             try self.writeVar(tree, extra, node);
         }
 
-        fn writeTemplateList(self: *Self, tree: Ast, node: Node.Index) !void {
-            if (node == 0) return;
+        fn writeTemplateList(self: *Self, tree: Ast, node: ?Node.Index) !void {
+            const list = tree.spanToList(node);
+            if (list.len == 0) return;
             try self.writeByte('<');
-            const args = tree.spanToList(node);
-            for (args, 0..) |n, i| {
+            for (list, 0..) |n, i| {
                 try self.writeExpr(tree, n);
-                if (i != args.len - 1) try self.writeByte(',');
+                if (i != list.len - 1) try self.writeByte(',');
             }
             try self.writeByte('>');
         }
 
-        fn writeTemplateElaboratedIdent(self: *Self, tree: Ast, node: Node.Index) !void {
-            try self.writeNode(tree, node);
-            try self.writeTemplateList(tree, tree.nodeLHS(node));
+        fn writeTemplateElaboratedIdent(self: *Self, tree: Ast, node: ?Node.Index) !void {
+            if (node) |n| {
+                try self.writeNode(tree, n);
+                try self.writeTemplateList(tree, tree.nodeLHS(n));
+            }
         }
 
-        fn writeType(self: *Self, tree: Ast, node: Node.Index) !void {
+        fn writeType(self: *Self, tree: Ast, node: ?Node.Index) !void {
             try self.writeTemplateElaboratedIdent(tree, node);
         }
 
         fn writeConst(self: *Self, tree: Ast, node: Node.Index) !void {
-            const lhs = tree.nodeLHS(node);
-            const rhs = tree.nodeRHS(node);
             try self.writeNode(tree, node);
             try self.writeByte(' ');
             try self.writeGlobalIdent(tree, node);
-            if (lhs != 0) {
+            if (tree.nodeLHS(node)) |lhs| {
                 try self.writeByte(':');
                 try self.writeSpace();
                 try self.writeType(tree, lhs);
             }
             try self.writeSpaced("=");
-            try self.writeExpr(tree, rhs);
+            try self.writeExpr(tree, tree.nodeRHS(node).?);
         }
 
-        fn writeExpr(self: *Self, tree: Ast, node: Node.Index) !void {
-            if (node == 0) return;
+        fn writeExpr(self: *Self, tree: Ast, n: ?Node.Index) !void {
+            if (n == null) return;
+            const node = n.?;
             const tag = tree.nodeTag(node);
             const lhs = tree.nodeLHS(node);
             const rhs = tree.nodeRHS(node);
@@ -327,11 +324,11 @@ pub fn Renderer(comptime UnderlyingWriter: type) type {
                 .number, .ident, .true, .false => try self.writeNode(tree, node),
                 .not, .negate, .deref => {
                     try self.writeNode(tree, node);
-                    try self.writeExpr(tree, lhs);
+                    try self.writeExpr(tree, lhs.?);
                 },
                 .addr_of => {
                     try self.writeByte('&');
-                    try self.writeExpr(tree, lhs);
+                    try self.writeExpr(tree, lhs.?);
                 },
                 .mul,
                 .div,
@@ -352,7 +349,7 @@ pub fn Renderer(comptime UnderlyingWriter: type) type {
                 .greater_than,
                 .greater_than_equal,
                 => |t| {
-                    try self.writeExpr(tree, lhs);
+                    try self.writeExpr(tree, lhs.?);
                     try self.writeSpaced(switch (t) {
                         .mul => "*",
                         .div => "/",
@@ -374,23 +371,23 @@ pub fn Renderer(comptime UnderlyingWriter: type) type {
                         .greater_than_equal => ">=",
                         else => "",
                     });
-                    try self.writeExpr(tree, rhs);
+                    try self.writeExpr(tree, rhs.?);
                 },
                 .index_access => {
-                    try self.writeExpr(tree, lhs);
+                    try self.writeExpr(tree, lhs.?);
                     try self.writeByte('[');
-                    try self.writeExpr(tree, rhs);
+                    try self.writeExpr(tree, rhs.?);
                     try self.writeByte(']');
                 },
                 .field_access => {
-                    try self.writeExpr(tree, lhs);
+                    try self.writeExpr(tree, lhs.?);
                     try self.writeByte('.');
-                    try self.writeToken(tree, rhs);
+                    try self.writeToken(tree, rhs.?);
                 },
                 .call => try self.writeCall(tree, node),
                 .paren_expr => {
                     try self.writeByte('(');
-                    try self.writeExpr(tree, lhs);
+                    try self.writeExpr(tree, lhs.?);
                     try self.writeByte(')');
                 },
                 else => |t| {
@@ -400,19 +397,15 @@ pub fn Renderer(comptime UnderlyingWriter: type) type {
             }
         }
 
-        fn writeAttributes(self: *Self, tree: Ast, attrs: Node.Index) !void {
-            if (attrs == 0) return;
+        fn writeAttributes(self: *Self, tree: Ast, attrs: ?Node.Index) !void {
             for (tree.spanToList(attrs)) |attr| {
                 try self.writeByte('@');
-                const attribute: Node.Attribute = @enumFromInt(tree.nodeLHS(attr));
+                const attribute: Node.Attribute = @enumFromInt(tree.nodeLHS(attr).?);
                 try self.writeAll(@tagName(attribute));
-                const rhs = tree.nodeRHS(attr);
-                if (rhs != 0) {
+                if (tree.nodeRHS(attr)) |rhs| {
                     try self.writeByte('(');
                     switch (attribute) {
-                        .@"align", .binding, .builtin, .group, .id, .location, .size => {
-                            try self.writeExpr(tree, rhs);
-                        },
+                        .@"align", .binding, .builtin, .group, .id, .location, .size => try self.writeExpr(tree, rhs),
                         .diagnostic => try self.writeDiagnosticControl(tree, rhs),
                         .interpolate => {
                             const interpolation = tree.extraData(Node.Interpolation, rhs);
@@ -422,13 +415,13 @@ pub fn Renderer(comptime UnderlyingWriter: type) type {
                         .workgroup_size => {
                             const extra = tree.extraData(Node.WorkgroupSize, rhs);
                             try self.writeExpr(tree, extra.x);
-                            if (extra.y != 0) {
+                            if (extra.y) |y| {
                                 try self.writeByte(',');
-                                try self.writeExpr(tree, extra.y);
+                                try self.writeExpr(tree, y);
                             }
-                            if (extra.z != 0) {
+                            if (extra.z) |z| {
                                 try self.writeByte(',');
-                                try self.writeExpr(tree, extra.z);
+                                try self.writeExpr(tree, z);
                             }
                         },
                         else => {},
@@ -462,35 +455,32 @@ pub fn Renderer(comptime UnderlyingWriter: type) type {
         }
 
         fn writeCall(self: *Self, tree: Ast, node: Node.Index) WriteError!void {
-            try self.writeTemplateElaboratedIdent(tree, tree.nodeLHS(node));
+            try self.writeTemplateElaboratedIdent(tree, tree.nodeLHS(node).?);
             try self.writeByte('(');
-            const args = tree.nodeRHS(node);
-            if (args != 0) {
-                const list = tree.spanToList(args);
-                for (list, 0..) |arg, i| {
+            if (tree.nodeRHS(node)) |rhs| {
+                const args = tree.spanToList(rhs);
+                for (args, 0..) |arg, i| {
                     try self.writeExpr(tree, arg);
-                    if (i != list.len - 1) try self.writeListSep();
+                    if (i != args.len - 1) try self.writeListSep();
                 }
             }
             try self.writeByte(')');
         }
 
         fn writeOverride(self: *Self, tree: Ast, node: Node.Index) !void {
-            const extra = tree.extraData(Node.Override, tree.nodeLHS(node));
+            const extra = tree.extraData(Node.Override, tree.nodeLHS(node).?);
 
             try self.writeAttributes(tree, extra.attrs);
 
             try self.writeAll("override ");
             try self.writeGlobalIdent(tree, node);
 
-            if (extra.type != 0) {
+            if (extra.type) |t| {
                 try self.writeByte(':');
                 try self.writeSpace();
-                try self.writeType(tree, extra.type);
+                try self.writeType(tree, t);
             }
-
-            const rhs = tree.nodeRHS(node);
-            if (rhs != 0) {
+            if (tree.nodeRHS(node)) |rhs| {
                 try self.writeSpaced("=");
                 try self.writeExpr(tree, rhs);
             }
@@ -500,7 +490,7 @@ pub fn Renderer(comptime UnderlyingWriter: type) type {
             try self.writeAll("alias ");
             try self.writeGlobalIdent(tree, node);
             try self.writeSpaced("=");
-            try self.writeNode(tree, tree.nodeLHS(node));
+            try self.writeNode(tree, tree.nodeLHS(node).?);
         }
 
         fn writeClause(self: *Self, tree: Ast, expr: Node.Index) !void {
@@ -510,28 +500,32 @@ pub fn Renderer(comptime UnderlyingWriter: type) type {
 
         fn writeIf(self: *Self, tree: Ast, node: Node.Index) !void {
             try self.writeAll("if");
-            try self.writeClause(tree, tree.nodeLHS(node));
+            try self.writeClause(tree, tree.nodeLHS(node).?);
             try self.writeSpace();
-            try self.writeCompoundStatement(tree, tree.nodeRHS(node));
+            try self.writeCompoundStatement(tree, tree.nodeRHS(node).?);
         }
 
         fn writeCaseSelector(self: *Self, tree: Ast, node: Node.Index) !void {
-            const lhs = tree.nodeLHS(node);
-            if (lhs != 0) try self.writeExpr(tree, lhs) else try self.writeAll("default");
+            if (tree.nodeLHS(node)) |lhs| {
+                try self.writeExpr(tree, lhs);
+            } else {
+                try self.writeAll("default");
+            }
         }
 
         fn writeSwitchClause(self: *Self, tree: Ast, node: Node.Index) !void {
-            const selectors = tree.nodeLHS(node);
-            if (selectors == 0) try self.writeAll("default") else {
+            if (tree.nodeLHS(node)) |lhs| {
                 try self.writeAll("case ");
-                const list = tree.spanToList(selectors);
+                const list = tree.spanToList(lhs);
                 for (list, 0..) |s, i| {
                     try self.writeCaseSelector(tree, s);
                     if (i != list.len - 1) try self.writeListSep();
                 }
+            } else {
+                try self.writeAll("default");
             }
             try self.writeSpace();
-            try self.writeCompoundStatement(tree, tree.nodeRHS(node));
+            try self.writeCompoundStatement(tree, tree.nodeRHS(node).?);
         }
 
         fn writeSwitchBody(self: *Self, tree: Ast, node: Node.Index) !void {
@@ -549,54 +543,55 @@ pub fn Renderer(comptime UnderlyingWriter: type) type {
             try self.writeByte('}');
         }
 
-        fn writeStatement(self: *Self, tree: Ast, node: Node.Index) WriteError!void {
-            if (node == 0) return;
+        fn writeStatement(self: *Self, tree: Ast, n: ?Node.Index) WriteError!void {
+            if (n == null) return;
+            const node = n.?;
             const lhs = tree.nodeLHS(node);
             const rhs = tree.nodeRHS(node);
 
             switch (tree.nodeTag(node)) {
                 .compound_assign => {
-                    try self.writeExpr(tree, lhs);
+                    try self.writeExpr(tree, lhs.?);
                     try self.writeSpaced("=");
-                    try self.writeExpr(tree, rhs);
+                    try self.writeExpr(tree, rhs.?);
                 },
                 .phony_assign => {
                     try self.writeByte('_');
                     try self.writeSpaced("=");
-                    try self.writeExpr(tree, lhs);
+                    try self.writeExpr(tree, lhs.?);
                 },
                 .call => try self.writeCall(tree, node),
                 .@"return" => {
                     try self.writeAll("return");
-                    if (lhs != 0) {
+                    if (lhs) |l| {
                         try self.writeByte(' ');
-                        try self.writeExpr(tree, lhs);
+                        try self.writeExpr(tree, l);
                     }
                 },
                 .comment => try self.writeComment(tree, node),
                 .break_if => {
                     try self.writeAll("break if");
-                    try self.writeClause(tree, lhs);
+                    try self.writeClause(tree, lhs.?);
                 },
                 .@"if" => try self.writeIf(tree, node),
                 .else_if => {
-                    try self.writeIf(tree, lhs);
+                    try self.writeIf(tree, lhs.?);
                     try self.writeSpaced("else");
-                    try self.writeStatement(tree, rhs);
+                    try self.writeStatement(tree, rhs.?);
                 },
                 .@"else" => {
-                    try self.writeIf(tree, lhs);
+                    try self.writeIf(tree, lhs.?);
                     try self.writeSpaced("else");
-                    try self.writeCompoundStatement(tree, rhs);
+                    try self.writeCompoundStatement(tree, rhs.?);
                 },
                 .@"while" => {
                     try self.writeAll("while");
-                    try self.writeClause(tree, lhs);
+                    try self.writeClause(tree, lhs.?);
                     try self.writeSpace();
-                    try self.writeCompoundStatement(tree, rhs);
+                    try self.writeCompoundStatement(tree, rhs.?);
                 },
                 .@"for" => {
-                    const extra = tree.extraData(Node.ForHeader, tree.nodeLHS(node));
+                    const extra = tree.extraData(Node.ForHeader, lhs.?);
                     try self.writeAttributes(tree, extra.attrs);
                     try self.writeAll("for");
                     try self.writeSpace();
@@ -610,34 +605,34 @@ pub fn Renderer(comptime UnderlyingWriter: type) type {
                     try self.writeStatement(tree, extra.update);
                     try self.writeByte(')');
                     try self.writeSpace();
-                    try self.writeCompoundStatement(tree, rhs);
+                    try self.writeCompoundStatement(tree, rhs.?);
                 },
                 .@"switch" => {
                     try self.writeAll("switch");
-                    try self.writeClause(tree, lhs);
+                    try self.writeClause(tree, lhs.?);
                     try self.writeSpace();
-                    try self.writeSwitchBody(tree, rhs);
+                    try self.writeSwitchBody(tree, rhs.?);
                 },
                 .loop => {
                     try self.writeAttributes(tree, lhs);
                     try self.writeAll("loop ");
-                    try self.writeCompoundStatement(tree, rhs);
+                    try self.writeCompoundStatement(tree, rhs.?);
                 },
                 .compound_statement => try self.writeCompoundStatement(tree, node),
                 .continuing => {
                     try self.writeAll("continuing ");
-                    try self.writeCompoundStatement(tree, lhs);
+                    try self.writeCompoundStatement(tree, lhs.?);
                 },
                 .discard => try self.writeAll("discard"),
                 .@"break" => try self.writeAll("break"),
                 .@"continue" => try self.writeAll("continue"),
                 .increase, .decrease => {
-                    try self.writeExpr(tree, lhs);
+                    try self.writeExpr(tree, lhs.?);
                     try self.writeNode(tree, node);
                 },
                 .@"const", .let => try self.writeConst(tree, node),
                 .@"var" => {
-                    const extra = tree.extraData(Node.Var, tree.nodeLHS(node));
+                    const extra = tree.extraData(Node.Var, lhs.?);
                     try self.writeVar(tree, extra, node);
                 },
                 else => |t| {
@@ -648,14 +643,11 @@ pub fn Renderer(comptime UnderlyingWriter: type) type {
         }
 
         fn writeCompoundStatement(self: *Self, tree: Ast, node: Node.Index) WriteError!void {
-            const lhs = tree.nodeLHS(node);
-            const rhs = tree.nodeRHS(node);
-
-            try self.writeAttributes(tree, lhs);
+            try self.writeAttributes(tree, tree.nodeLHS(node));
             try self.writeByte('{');
             self.pushIndentNextLine();
 
-            if (rhs != 0) {
+            if (tree.nodeRHS(node)) |rhs| {
                 const statements = tree.spanToList(rhs);
                 if (statements.len > 0) try self.newline();
                 for (statements) |n| {
@@ -684,18 +676,18 @@ pub fn Renderer(comptime UnderlyingWriter: type) type {
         }
 
         fn writeFn(self: *Self, tree: Ast, node: Node.Index) !void {
-            const extra = tree.extraData(Node.FnProto, tree.nodeLHS(node));
+            const extra = tree.extraData(Node.FnProto, tree.nodeLHS(node).?);
 
             try self.writeAttributes(tree, extra.attrs);
-            if (extra.attrs != 0 and self.minify) try self.writeByte(' ');
+            if (extra.attrs != null and self.minify) try self.writeByte(' ');
 
             try self.writeAll("fn ");
             try self.writeGlobalIdent(tree, node);
             try self.writeByte('(');
 
-            if (extra.params != 0) {
-                const params = tree.spanToList(extra.params);
-                for (params, 0..) |p, i| {
+            if (extra.params) |params| {
+                const list = tree.spanToList(params);
+                for (list, 0..) |p, i| {
                     const attrs = tree.nodeLHS(p);
                     try self.writeAttributes(tree, attrs);
 
@@ -703,17 +695,17 @@ pub fn Renderer(comptime UnderlyingWriter: type) type {
                     try self.writeByte(':');
                     try self.writeSpace();
                     try self.writeType(tree, tree.nodeRHS(p));
-                    if (i != params.len - 1) try self.writeByte(',');
+                    if (i != list.len - 1) try self.writeByte(',');
                 }
             }
             try self.writeByte(')');
-            if (extra.return_type != 0) {
+            if (extra.return_type) |t| {
                 try self.writeSpaced("->");
                 try self.writeAttributes(tree, extra.return_attrs);
-                try self.writeType(tree, extra.return_type);
+                try self.writeType(tree, t);
             }
             try self.writeSpace();
-            try self.writeCompoundStatement(tree, tree.nodeRHS(node));
+            try self.writeCompoundStatement(tree, tree.nodeRHS(node).?);
         }
 
         fn writeComment(self: *Self, tree: Ast, node: Node.Index) !void {

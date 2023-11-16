@@ -86,13 +86,14 @@ pub fn bundle(
     }
     if (has_unparsed) return error.UnparsedModule;
 
-    var aliaser = try Aliaser.init(self.allocator, opts.minify);
-    var visited = Visited.init(self.allocator);
-    defer visited.deinit();
-    try self.alias(&aliaser, &visited, mod);
-    const ast = try aliaser.finish();
-    var renderer = Renderer(@TypeOf(writer)).init(writer, opts.minify);
-    try renderer.writeTranslationUnit(ast);
+    _ = writer;
+    // var aliaser = try Aliaser.init(self.allocator, opts.minify);
+    // var visited = Visited.init(self.allocator);
+    // defer visited.deinit();
+    // try self.alias(&aliaser, &visited, mod);
+    // const ast = try aliaser.finish();
+    // var renderer = Renderer(@TypeOf(writer)).init(writer, opts.minify);
+    // try renderer.writeTranslationUnit(ast);
 }
 
 /// tokenize, parse and scan files for imports
@@ -131,7 +132,7 @@ fn workerAst(
                         if (std.mem.eql(u8, resolved, mod.name)) {
                             tree.renderError(Ast.Error{
                                 .tag = .unresolved_module,
-                                .token = tree.nodeRHS(node),
+                                .token = tree.nodeRHS(node).?,
                             }, errwriter, errconfig, mod.imported_by) catch {};
                         }
                     }

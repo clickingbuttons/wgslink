@@ -15,8 +15,8 @@ pub const Index = u32;
 tag: Tag,
 // For error reporting and rendering
 main_token: Token.Index,
-lhs: Index = 0,
-rhs: Index = 0,
+lhs: ?Index = null,
+rhs: ?Index = null,
 
 pub const Attribute = enum(u32) {
     @"align",
@@ -137,55 +137,50 @@ pub const Tag = enum {
 };
 
 pub const GlobalVar = struct {
-    attrs: Index = 0,
     name: Token.Index,
-    template_list: Token.Index = 0,
-    type: Index = 0,
+    attrs: ?Index = null,
+    template_list: ?Index = null,
+    type: ?Index = null,
 };
 
 pub const Var = struct {
     name: Token.Index,
-    template_list: Token.Index = 0,
-    type: Index = 0,
+    template_list: ?Index = null,
+    type: ?Index = null,
 };
 
 pub const Override = struct {
-    attrs: Index = 0,
-    type: Index = 0,
-};
-
-pub const PtrType = struct {
-    addr_space: Token.Index,
-    access_mode: Token.Index,
+    attrs: ?Index = null,
+    type: ?Index = null,
 };
 
 pub const WorkgroupSize = struct {
     x: Index,
-    y: Index = 0,
-    z: Index = 0,
+    y: ?Index = null,
+    z: ?Index = null,
 };
 
 pub const FnProto = struct {
-    attrs: Index = 0,
-    params: Index = 0,
-    return_attrs: Index = 0,
-    return_type: Index = 0,
+    attrs: ?Index = null,
+    params: ?Index = null,
+    return_attrs: ?Index = null,
+    return_type: ?Index = null,
 };
 
 pub const ForHeader = struct {
-    attrs: Index,
-    init: Index,
-    cond: Index,
-    update: Index,
+    attrs: ?Index = null,
+    init: ?Index = null,
+    cond: ?Index = null,
+    update: ?Index = null,
 };
 
 pub const DiagnosticControl = struct {
     severity: Index,
     name: Index,
-    field: Index = 0,
+    field: ?Index = null,
 };
 
 pub const Interpolation = struct {
     type: Index,
-    sampling: Index = 0,
+    sampling: ?Index = null,
 };

@@ -26,7 +26,8 @@ pub const File = struct {
         var tree = try Ast.init(allocator, source);
 
         var import_table = ImportTable{};
-        if (tree_shake) |opts| try TreeShaker.treeShake(&tree, allocator, opts);
+        _ = tree_shake;
+        // if (tree_shake) |opts| try TreeShaker.treeShake(&tree, allocator, opts);
         for (tree.spanToList(0)) |node| {
             if (tree.nodeTag(node) != .import) continue;
 
