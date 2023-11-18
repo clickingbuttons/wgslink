@@ -6,6 +6,7 @@ const Node = @import("Node.zig");
 const Self = @This();
 const Allocator = std.mem.Allocator;
 const Error = error{ OutOfMemory, Parsing };
+const Data = Node.Data;
 const max_template_depth = 16;
 
 allocator: Allocator,
@@ -18,7 +19,7 @@ tok_i: Token.Index = 0,
 // Main data structure
 nodes: Ast.NodeList = .{},
 spans: std.ArrayListUnmanaged(Node.Index) = .{},
-extra: std.ArrayListUnmanaged(?Node.Index) = .{},
+extra: std.ArrayListUnmanaged(Node.Index) = .{},
 // Used to build lists
 scratch: std.ArrayListUnmanaged(Node.Index) = .{},
 errors: std.ArrayListUnmanaged(Ast.Error) = .{},
@@ -40,13 +41,16 @@ pub fn deinit(self: *Self, allocator: Allocator) void {
     defer self.scratch.deinit(allocator);
 }
 
+pub const root_token_i = std.math.maxInt(Token.Index);
+
 /// global_directive* global_decl*
 pub fn parseTranslationUnit(p: *Self) error{OutOfMemory}!void {
     try p.parameterizeTemplates();
     // Root node must be index 0.
-    p.nodes.appendAssumeCapacity(.{
+    p.nodes.appendAssumeCapacity(Node{
         .tag = .span,
-        .main_token = 0,
+        .token = root_token_i,
+        .data = Data{ .span = .{ .from = 0, .to = 0 } },
     });
 
     while (p.peekToken(.tag, 0) != .eof) {
@@ -72,8 +76,9 @@ pub fn parseTranslationUnit(p: *Self) error{OutOfMemory}!void {
     }
 
     try p.spans.appendSlice(p.allocator, p.scratch.items);
-    p.nodes.items(.lhs)[0] = @intCast(p.spans.items.len - p.scratch.items.len);
-    p.nodes.items(.rhs)[0] = @intCast(p.spans.items.len);
+    var span = &p.nodes.items(.data)[0].span;
+    span.from = @intCast(p.spans.items.len - p.scratch.items.len);
+    span.to = @intCast(p.spans.items.len);
 }
 
 /// Disambiguate templates (since WGSL chose < and >)
@@ -144,26 +149,45 @@ fn parameterizeTemplates(p: *Self) error{OutOfMemory}!void {
     }
 }
 
-fn listToSpan(p: *Self, list: []const Node.Index) error{OutOfMemory}!?Node.Index {
-    if (list.len == 0) return null;
+fn listToSpan(
+    p: *Self,
+    start_tok: Token.Index,
+    list: []const Node.Index,
+) error{OutOfMemory}!Node.Index {
+    if (list.len == 0) return 0;
     try p.spans.appendSlice(p.allocator, list);
-    const res: ?Node.Index = try p.addNode(.{
-        .tag = .span,
-        .main_token = undefined,
-        .lhs = @intCast(p.spans.items.len - list.len),
-        .rhs = @intCast(p.spans.items.len),
+    return try p.addNode(start_tok, Data.Span{
+        .from = @intCast(p.spans.items.len - list.len),
+        .to = @intCast(p.spans.items.len),
     });
-    return res;
 }
 
 fn spanToList(self: Self, i: Node.Index) []const Node.Index {
-    std.debug.assert(self.nodes.items(.tag)[i] == .span);
-    return @ptrCast(self.spans.items[self.nodes.items(.lhs)[i].?..self.nodes.items(.rhs)[i].?]);
+    const span = self.nodes.items(.data)[i].span;
+    return self.spans.items[span.from..span.to];
 }
 
-fn addNode(p: *Self, node: Node) error{OutOfMemory}!Node.Index {
+fn addNode(p: *Self, token: Token.Index, data_member: anytype) error{OutOfMemory}!Node.Index {
     const i: Node.Index = @intCast(p.nodes.len);
-    try p.nodes.append(p.allocator, node);
+    const field_name: []const u8 = brk: {
+        const info = @typeInfo(Data).Union;
+        comptime for (info.fields) |f| {
+            if (f.type == @TypeOf(data_member)) {
+                break :brk f.name;
+            }
+        };
+        std.debug.print("could not find member {any} in {any}\n", .{ data_member, Data });
+        unreachable;
+    };
+    const tag = std.meta.stringToEnum(Node.Tag, field_name).?;
+    // If this is hit check that every field in Data has a unique type.
+    std.debug.assert(tag != .empty);
+
+    try p.nodes.append(p.allocator, Node{
+        .tag = tag,
+        .token = token,
+        .data = @unionInit(Data, field_name, data_member),
+    });
     return i;
 }
 
@@ -172,7 +196,6 @@ fn addExtra(p: *Self, extra: anytype) error{OutOfMemory}!Node.Index {
     try p.extra.ensureUnusedCapacity(p.allocator, fields.len);
     const result: Node.Index = @intCast(p.extra.items.len);
     inline for (fields) |field| {
-        comptime std.debug.assert(field.type == Node.Index or field.type == ?Node.Index or field.type == Token.Index);
         p.extra.appendAssumeCapacity(@field(extra, field.name));
     }
     return result;
@@ -241,14 +264,14 @@ fn expectAttribEnd(p: *Self) Error!void {
 fn expectDiagnosticControl(p: *Self) Error!Node.Index {
     _ = try p.expectToken(.@"(");
     const sev_tok = try p.expectToken(.ident);
-    const severity = std.meta.stringToEnum(Node.Severity, p.tokenSource(sev_tok)) orelse {
+    _ = std.meta.stringToEnum(Node.Severity, p.tokenSource(sev_tok)) orelse {
         try p.addError(.invalid_severity, sev_tok);
         return Error.Parsing;
     };
     _ = try p.expectToken(.@",");
 
     var control = Node.DiagnosticControl{
-        .severity = @intFromEnum(severity),
+        .severity = sev_tok,
         .name = try p.expectToken(.ident),
     };
     if (p.eatToken(.@".")) |_| control.field = try p.expectToken(.ident);
@@ -260,20 +283,17 @@ fn expectDiagnosticControl(p: *Self) Error!Node.Index {
 // 'diagnostic' diagnostic_control ';'
 fn diagnosticDirective(p: *Self) Error!?Node.Index {
     const main_token = p.eatToken(.k_diagnostic) orelse return null;
-    const diag = try p.expectDiagnosticControl();
+    const control = try p.expectDiagnosticControl();
     _ = try p.expectToken(.@";");
-    return try p.addNode(.{
-        .main_token = main_token,
-        .tag = .diagnostic_directive,
-        .lhs = diag,
-    });
+    return try p.addNode(main_token, Data.DiagnosticDirective{ .control = control });
 }
 
 /// | enable_extension_list :
 ///   enable_extension_name ( ',' enable_extension_name ) * ',' ?
 /// | software_extension_list :
 ///   software_extension_name ( `','` software_extension_name ) * `','` ?
-fn identTokenList(p: *Self) Error!?Node.Index {
+fn identTokenList(p: *Self) Error!Node.Index {
+    const span_start = p.tok_i;
     const scratch_top = p.scratch.items.len;
     defer p.scratch.shrinkRetainingCapacity(scratch_top);
     while (true) {
@@ -282,7 +302,7 @@ fn identTokenList(p: *Self) Error!?Node.Index {
         if (p.eatToken(.@",") == null) break;
     }
     _ = p.eatToken(.@",");
-    return try p.listToSpan(p.scratch.items[scratch_top..]);
+    return try p.listToSpan(span_start, p.scratch.items[scratch_top..]);
 }
 
 /// 'enable' enable_extension_list ';'
@@ -290,11 +310,7 @@ fn enableDirective(p: *Self) Error!?Node.Index {
     const main_token = p.eatToken(.k_enable) orelse return null;
     const extensions = try p.identTokenList();
     _ = try p.expectToken(.@";");
-    return try p.addNode(.{
-        .main_token = main_token,
-        .tag = .enable_directive,
-        .lhs = extensions,
-    });
+    return try p.addNode(main_token, Data.EnableDirective{ .ident_tokens = extensions });
 }
 
 /// 'requires' software_extension_list ';'
@@ -302,11 +318,7 @@ fn requiresDirective(p: *Self) Error!?Node.Index {
     const main_token = p.eatToken(.k_requires) orelse return null;
     const extensions = try p.identTokenList();
     _ = try p.expectToken(.@";");
-    return try p.addNode(.{
-        .main_token = main_token,
-        .tag = .requires_directive,
-        .lhs = extensions,
-    });
+    return try p.addNode(main_token, Data.RequiresDirective{ .ident_tokens = extensions });
 }
 
 /// diagnostic_directive | enable_directive | requires_directive
@@ -332,11 +344,11 @@ fn findNextGlobalDirective(p: *Self) void {
 /// ;
 /// | global_variable_decl ;
 /// | override_decl ;
-/// | const_decl ;
 /// | function_decl
+/// | const_decl ;
 /// | type_alias_decl ;
-/// | struct_decl
 /// | const_assert_statement ;
+/// | struct_decl
 fn globalDecl(p: *Self) Error!?Node.Index {
     if (p.eatToken(.@";")) |_| return null; // Skip empty decls
 
@@ -347,13 +359,13 @@ fn globalDecl(p: *Self) Error!?Node.Index {
     }
     if (try p.fnDecl(attrs)) |node| return node;
 
-    if (attrs) |a| {
-        try p.addError(.invalid_attributes, p.nodes.items(.main_token)[p.spanToList(a)[0]]);
+    if (attrs != 0) {
+        try p.addError(.invalid_attributes, p.nodes.items(.token)[p.spanToList(attrs)[0]]);
         return Error.Parsing;
     }
     if (try p.constDecl() orelse
         try p.typeAliasDecl() orelse
-        try p.constAssert() orelse
+        try p.constAssertStatement() orelse
         try p.importDecl()) |node|
     {
         _ = try p.expectToken(.@";");
@@ -428,38 +440,37 @@ fn findNextGlobalDecl(p: *Self) void {
 /// | '@' 'workgroup_size' '(' expression ',' expression attrib_end
 /// | '@' 'workgroup_size' '(' expression ',' expression ',' expression attrib_end
 fn attribute(p: *Self) Error!?Node.Index {
-    const attr_token = p.eatToken(.@"@") orelse return null;
+    const main_token = p.eatToken(.@"@") orelse return null;
     const ident_token = p.eatToken(.k_diagnostic) orelse try p.expectToken(.ident);
     const str = p.tokenSource(ident_token);
-    const tag = std.meta.stringToEnum(Node.Attribute, str) orelse {
+    const tag = std.meta.stringToEnum(Node.Attribute.Tag, str) orelse {
         try p.addError(.invalid_attribute, ident_token);
         return Error.Parsing;
     };
 
-    var node = Node{
-        .tag = .attribute,
-        .main_token = attr_token,
-        .lhs = @intFromEnum(tag),
-    };
+    var attr = Data.Attr{ .tag = tag, .data = undefined };
 
     switch (tag) {
-        .compute, .@"const", .fragment, .invariant, .must_use, .vertex => {},
-        .@"align", .binding, .builtin, .group, .id, .location, .size => {
-            _ = try p.expectToken(.@"(");
-            node.rhs = try p.expectExpression();
-            try p.expectAttribEnd();
+        inline .compute, .@"const", .fragment, .invariant, .must_use, .vertex => |t| {
+            attr.data = @unionInit(Node.Attribute, @tagName(t), {});
         },
-        .diagnostic => node.rhs = try p.expectDiagnosticControl(),
+        inline .@"align", .binding, .builtin, .group, .id, .location, .size => |t| {
+            _ = try p.expectToken(.@"(");
+            const e = try p.expectExpression();
+            try p.expectAttribEnd();
+            attr.data = @unionInit(Node.Attribute, @tagName(t), e);
+        },
+        .diagnostic => attr.data = .{ .diagnostic = try p.expectDiagnosticControl() },
         .interpolate => {
             _ = try p.expectToken(.@"(");
             var interpolation = Node.Interpolation{
                 .type = try p.expectExpression(),
             };
             if (p.eatToken(.@",") != null and p.peekToken(.tag, 0) != .@")") {
-                interpolation.sampling = try p.expectExpression();
+                interpolation.sampling_expr = try p.expectExpression();
             }
             try p.expectAttribEnd();
-            node.rhs = try p.addExtra(interpolation);
+            attr.data = .{ .interpolate = try p.addExtra(interpolation) };
         },
         .workgroup_size => {
             _ = try p.expectToken(.@"(");
@@ -474,27 +485,28 @@ fn attribute(p: *Self) Error!?Node.Index {
                 }
             }
             try p.expectAttribEnd();
-            node.rhs = try p.addExtra(workgroup_size);
+            attr.data = .{ .workgroup_size = try p.addExtra(workgroup_size) };
         },
     }
 
-    return try p.addNode(node);
+    return try p.addNode(main_token, attr);
 }
 
-/// attribute *
-fn attributeList(p: *Self) Error!?Node.Index {
+/// attribute*
+fn attributeList(p: *Self) Error!Node.Index {
+    const start_tok = p.tok_i;
     const scratch_top = p.scratch.items.len;
     defer p.scratch.shrinkRetainingCapacity(scratch_top);
     while (true) {
         if (try p.attribute()) |a| try p.scratch.append(p.allocator, a) else break;
     }
-    return try p.listToSpan(p.scratch.items[scratch_top..]);
+    return try p.listToSpan(start_tok, p.scratch.items[scratch_top..]);
 }
 
 const Ident = struct {
     name: Token.Index,
-    type: ?Node.Index = null,
-    initializer: ?Node.Index = null,
+    type: Node.Index = 0,
+    initializer: Node.Index = 0,
 };
 
 /// ident ( ':' type_specifier )?
@@ -509,7 +521,7 @@ fn expectOptionallyTypedIdent(p: *Self) Error!Ident {
 fn expectOptionallyTypedIdentWithInitializer(p: *Self) Error!Ident {
     var res = try p.expectOptionallyTypedIdent();
     if (p.eatToken(.@"=")) |_| res.initializer = try p.expectExpression();
-    if (res.initializer == null and res.type == null) {
+    if (res.initializer == 0 and res.type == 0) {
         try p.addError(.invalid_initializer, res.name);
         return Error.Parsing;
     }
@@ -518,8 +530,8 @@ fn expectOptionallyTypedIdentWithInitializer(p: *Self) Error!Ident {
 }
 
 /// attribute* 'var' template_list? optionally_typed_ident ( '=' expression )?
-fn globalVariableDecl(p: *Self, attrs: ?Node.Index) Error!?Node.Index {
-    const var_token = p.eatToken(.k_var) orelse return null;
+fn globalVariableDecl(p: *Self, attrs: Node.Index) Error!?Node.Index {
+    const main_token = p.eatToken(.k_var) orelse return null;
     const template_list = try p.templateList();
     const ident = try p.expectOptionallyTypedIdentWithInitializer();
     const extra = try p.addExtra(Node.GlobalVar{
@@ -528,58 +540,47 @@ fn globalVariableDecl(p: *Self, attrs: ?Node.Index) Error!?Node.Index {
         .template_list = template_list,
         .type = ident.type,
     });
-    return try p.addNode(.{
-        .tag = .global_var,
-        .main_token = var_token,
-        .lhs = extra,
-        .rhs = ident.initializer,
+    return try p.addNode(main_token, Data.GlobalVar{
+        .global_var = extra,
+        .initializer = ident.initializer,
     });
 }
 
 /// attribute * 'override' optionally_typed_ident ( '=' expression ) ?
-fn globalOverrideDecl(p: *Self, attrs: ?Node.Index) Error!?Node.Index {
-    const override_token = p.eatToken(.k_override) orelse return null;
+fn globalOverrideDecl(p: *Self, attrs: Node.Index) Error!?Node.Index {
+    const main_token = p.eatToken(.k_override) orelse return null;
     const ident = try p.expectOptionallyTypedIdentWithInitializer();
-
     const extra = try p.addExtra(Node.Override{
         .attrs = attrs,
         .type = ident.type,
     });
-    return try p.addNode(.{
-        .tag = .override,
-        .main_token = override_token,
-        .lhs = extra,
-        .rhs = ident.initializer,
+    return try p.addNode(main_token, Data.Override{
+        .override = extra,
+        .initializer = ident.initializer,
     });
 }
 
 /// 'alias' ident '=' type_specifier
 fn typeAliasDecl(p: *Self) Error!?Node.Index {
-    const type_token = p.eatToken(.k_alias) orelse return null;
+    const main_token = p.eatToken(.k_alias) orelse return null;
     _ = try p.expectToken(.ident);
     _ = try p.expectToken(.@"=");
     const value = try p.expectTypeSpecifier();
-    return try p.addNode(.{
-        .tag = .type_alias,
-        .main_token = type_token,
-        .lhs = value,
-    });
+    return try p.addNode(main_token, Data.TypeAlias{ .value = value });
 }
 
-/// attribute * member_ident `':'` type_specifier
-fn structMember(p: *Self, attrs: ?Node.Index) Error!?Node.Index {
-    const name_token = p.eatToken(.ident) orelse return null;
+/// attribute* member_ident ':' type_specifier
+fn structMember(p: *Self, attrs: Node.Index) Error!?Node.Index {
+    const main_token = p.eatToken(.ident) orelse return null;
     _ = try p.expectToken(.@":");
     const member_type = try p.expectTypeSpecifier();
-    return try p.addNode(.{
-        .tag = .struct_member,
-        .main_token = name_token,
-        .lhs = attrs,
-        .rhs = member_type,
+    return try p.addNode(main_token, Data.StructMember{
+        .attributes = attrs,
+        .type = member_type,
     });
 }
 
-/// 'struct' ident `'{'` struct_member ( `','` struct_member ) * `','` ? `'}'`
+/// 'struct' ident '{' struct_member ( ',' struct_member ) * ',' ? '}'
 fn structDecl(p: *Self) Error!?Node.Index {
     const main_token = p.eatToken(.k_struct) orelse return null;
     const name_token = try p.expectToken(.ident);
@@ -590,7 +591,7 @@ fn structDecl(p: *Self) Error!?Node.Index {
     while (true) {
         const attrs = try p.attributeList();
         const member = try p.structMember(attrs) orelse {
-            if (attrs != null) {
+            if (attrs != 0) {
                 try p.addError(.expected_struct_member, null);
                 return Error.Parsing;
             }
@@ -606,33 +607,26 @@ fn structDecl(p: *Self) Error!?Node.Index {
         try p.addError(.empty_struct, name_token);
         return Error.Parsing;
     }
+    const start_tok = p.nodes.items(.token)[members[0]];
 
-    return try p.addNode(.{
-        .tag = .@"struct",
-        .main_token = main_token,
-        .lhs = try p.listToSpan(members),
-    });
+    return try p.addNode(main_token, Data.Struct{ .members = try p.listToSpan(start_tok, members) });
 }
 
 /// 'const_assert' expression
-fn constAssert(p: *Self) Error!?Node.Index {
+fn constAssertStatement(p: *Self) Error!?Node.Index {
     const main_token = p.eatToken(.k_const_assert) orelse return null;
     const expr = try p.expectExpression();
-    return try p.addNode(.{
-        .tag = .const_assert,
-        .main_token = main_token,
-        .lhs = expr,
-    });
+    return try p.addNode(main_token, Data.ConstAssert{ .expr = expr });
 }
 
 /// ident '(' param_list ? ')' ( '->' attribute * template_elaborated_ident ) ?
-fn fnHeader(p: *Self, attrs: ?Node.Index) Error!Node.Index {
+fn fnHeader(p: *Self, attrs: Node.Index) Error!Node.Index {
     _ = try p.expectToken(.ident);
-    _ = try p.expectToken(.@"(");
-    const params = try p.parameterList();
+    const start_tok = try p.expectToken(.@"(");
+    const params = try p.fnParameterList(start_tok);
     _ = try p.expectToken(.@")");
 
-    var proto = Node.FnProto{
+    var proto = Node.FnHeader{
         .attrs = attrs,
         .params = params,
     };
@@ -644,32 +638,23 @@ fn fnHeader(p: *Self, attrs: ?Node.Index) Error!Node.Index {
 }
 
 /// attribute* 'fn' function_header compound_statement
-fn fnDecl(p: *Self, attrs: ?Node.Index) Error!?Node.Index {
-    const fn_token = p.eatToken(.k_fn) orelse return null;
+fn fnDecl(p: *Self, attrs: Node.Index) Error!?Node.Index {
+    const main_token = p.eatToken(.k_fn) orelse return null;
     const fn_header = try p.fnHeader(attrs);
     const body = try p.expectCompoundStatement(try p.attributeList());
-    return try p.addNode(.{
-        .tag = .@"fn",
-        .main_token = fn_token,
-        .lhs = fn_header,
-        .rhs = body,
-    });
+    return try p.addNode(main_token, Data.Fn{ .fn_header = fn_header, .body = body });
 }
 
 // ident ('as' ident)?
 fn importAlias(p: *Self) Error!?Node.Index {
     const main_token = try p.expectToken(.ident);
-    const lhs = if (p.eatToken(.k_as)) |_| try p.expectToken(.ident) else null;
-    return try p.addNode(.{
-        .main_token = main_token,
-        .tag = .alias,
-        .lhs = lhs,
-    });
+    const alias = if (p.eatToken(.k_as)) |_| try p.expectToken(.ident) else 0;
+    return try p.addNode(main_token, Data.Alias{ .alias = alias });
 }
 
 // '{' import_alias (',' import_alias)* ','? '}'
-fn importList(p: *Self) Error!?Node.Index {
-    _ = p.eatToken(.@"{") orelse return null;
+fn importList(p: *Self) Error!Node.Index {
+    const start_tok = p.eatToken(.@"{") orelse return 0;
     const scratch_top = p.scratch.items.len;
     defer p.scratch.shrinkRetainingCapacity(scratch_top);
     while (true) {
@@ -678,29 +663,27 @@ fn importList(p: *Self) Error!?Node.Index {
     }
     _ = try p.expectToken(.@"}");
     const imports = p.scratch.items[scratch_top..];
-    return try p.listToSpan(imports);
+    return try p.listToSpan(start_tok, imports);
 }
 
 /// 'import' (import_list 'from')? string_literal ';'?
 fn importDecl(p: *Self) Error!?Node.Index {
-    const import_token = p.eatToken(.k_import) orelse return null;
+    const main_token = p.eatToken(.k_import) orelse return null;
     const imports = try p.importList();
-    if (imports != null) _ = try p.expectToken(.k_from);
+    if (imports != 0) _ = try p.expectToken(.k_from);
     const mod_token = try p.expectToken(.string_literal);
 
-    return try p.addNode(.{
-        .tag = .import,
-        .main_token = import_token,
-        .lhs = imports,
-        .rhs = mod_token,
+    return try p.addNode(main_token, Data.Import{
+        .aliases = imports,
+        .module = mod_token,
     });
 }
 
 /// attribute* ident ':' type_specifier
-fn parameter(p: *Self) Error!?Node.Index {
+fn fnParameter(p: *Self) Error!?Node.Index {
     const attrs = try p.attributeList();
     const main_token = p.eatToken(.ident) orelse {
-        if (attrs != null) {
+        if (attrs != 0) {
             try p.addError(.expected_function_parameter, null);
             return Error.Parsing;
         }
@@ -708,23 +691,18 @@ fn parameter(p: *Self) Error!?Node.Index {
     };
     _ = try p.expectToken(.@":");
     const param_type = try p.expectTypeSpecifier();
-    return try p.addNode(.{
-        .tag = .fn_param,
-        .main_token = main_token,
-        .lhs = attrs,
-        .rhs = param_type,
-    });
+    return try p.addNode(main_token, Data.FnParam{ .attributes = attrs, .type = param_type });
 }
 
 /// param ( ',' param )* ','?
-fn parameterList(p: *Self) Error!?Node.Index {
+fn fnParameterList(p: *Self, start_tok: Token.Index) Error!Node.Index {
     const scratch_top = p.scratch.items.len;
     defer p.scratch.shrinkRetainingCapacity(scratch_top);
     while (true) {
-        if (try p.parameter()) |pa| try p.scratch.append(p.allocator, pa);
+        if (try p.fnParameter()) |pa| try p.scratch.append(p.allocator, pa);
         if (p.eatToken(.@",") == null) break;
     }
-    return try p.listToSpan(p.scratch.items[scratch_top..]);
+    return try p.listToSpan(start_tok, p.scratch.items[scratch_top..]);
 }
 
 /// | ';'
@@ -750,8 +728,8 @@ fn statement(p: *Self) Error!?Node.Index {
         try p.compoundStatement(attrs) orelse
         try p.forStatement(attrs)) |node| return node;
 
-    if (attrs) |a| {
-        try p.addError(.invalid_attributes, p.nodes.items(.main_token)[p.spanToList(a)[0]]);
+    if (attrs != 0) {
+        try p.addError(.invalid_attributes, p.nodes.items(.token)[p.spanToList(attrs)[0]]);
         return Error.Parsing;
     }
 
@@ -765,7 +743,7 @@ fn statement(p: *Self) Error!?Node.Index {
         try p.continueStatement() orelse
         try p.discardStatement() orelse
         try p.variableUpdatingStatement() orelse
-        try p.constAssert()) |node|
+        try p.constAssertStatement()) |node|
     {
         _ = try p.expectToken(.@";");
         return node;
@@ -828,15 +806,11 @@ fn variableOrValueStatement(p: *Self) Error!?Node.Index {
 /// 'return' expression ?
 fn returnStatement(p: *Self) Error!?Node.Index {
     const main_token = p.eatToken(.k_return) orelse return null;
-    const expr = try p.expression();
-    return try p.addNode(.{
-        .tag = .@"return",
-        .main_token = main_token,
-        .lhs = expr,
-    });
+    const expr = try p.expression() orelse 0;
+    return try p.addNode(main_token, Data.Return{ .expr = expr });
 }
 
-/// attribute * if_clause else_if_clause * else_clause ?
+/// attribute* if_clause else_if_clause* else_clause?
 /// if_clause :
 ///  'if' expression compound_statement
 /// else_if_clause :
@@ -844,34 +818,25 @@ fn returnStatement(p: *Self) Error!?Node.Index {
 /// else_clause :
 ///  'else' compound_statement
 fn ifStatement(p: *Self) Error!?Node.Index {
-    const if_token = p.eatToken(.k_if) orelse return null;
+    const main_token = p.eatToken(.k_if) orelse return null;
 
-    const cond = try p.expectExpression();
+    const condition = try p.expectExpression();
     const body = try p.expectCompoundStatement(try p.attributeList());
-    const if_node = try p.addNode(.{
-        .tag = .@"if",
-        .main_token = if_token,
-        .lhs = cond,
-        .rhs = body,
-    });
+    const if_node = try p.addNode(main_token, Data.If{ .condition = condition, .body = body });
 
     if (p.eatToken(.k_else)) |else_token| {
         if (p.peekToken(.tag, 0) == .k_if) {
             // Instead of building a list of "else if" clauses, use recursion.
             const else_if = try p.ifStatement() orelse unreachable;
-            return try p.addNode(.{
-                .tag = .else_if,
-                .main_token = else_token,
-                .lhs = if_node,
-                .rhs = else_if,
+            return try p.addNode(else_token, Data.ElseIf{
+                .if1 = if_node,
+                .if2 = else_if,
             });
         } else {
             const else_body = try p.expectCompoundStatement(try p.attributeList());
-            return try p.addNode(.{
-                .tag = .@"else",
-                .main_token = else_token,
-                .lhs = if_node,
-                .rhs = else_body,
+            return try p.addNode(else_token, Data.Else{
+                .@"if" = if_node,
+                .body = else_body,
             });
         }
     }
@@ -879,8 +844,8 @@ fn ifStatement(p: *Self) Error!?Node.Index {
     return if_node;
 }
 
-/// attribute * '{' statement * last_statement ? '}'
-fn compoundStatementExtra(p: *Self, attrs: ?Node.Index, last_statement: anytype) Error!?Node.Index {
+/// attribute* '{' statement* last_statement? '}'
+fn compoundStatementExtra(p: *Self, attrs: Node.Index, last_statement: anytype) Error!?Node.Index {
     const main_token = p.eatToken(.@"{") orelse return null;
     const scratch_top = p.scratch.items.len;
     defer p.scratch.shrinkRetainingCapacity(scratch_top);
@@ -889,11 +854,9 @@ fn compoundStatementExtra(p: *Self, attrs: ?Node.Index, last_statement: anytype)
     }
     if (try last_statement(p)) |s| try p.scratch.append(p.allocator, s);
     _ = try p.expectToken(.@"}");
-    return try p.addNode(.{
-        .tag = .compound_statement,
-        .main_token = main_token,
-        .lhs = attrs,
-        .rhs = try p.listToSpan(p.scratch.items[scratch_top..]),
+    return try p.addNode(main_token, Data.Compound{
+        .attributes = attrs,
+        .statements = try p.listToSpan(main_token, p.scratch.items[scratch_top..]),
     });
 }
 
@@ -903,11 +866,11 @@ fn emptyNode(p: *Self) Error!?Node.Index {
 }
 
 /// attribute * '{' statement * '}'
-fn compoundStatement(p: *Self, attrs: ?Node.Index) Error!?Node.Index {
+fn compoundStatement(p: *Self, attrs: Node.Index) Error!?Node.Index {
     return p.compoundStatementExtra(attrs, emptyNode);
 }
 
-fn expectCompoundStatement(p: *Self, attrs: ?Node.Index) Error!Node.Index {
+fn expectCompoundStatement(p: *Self, attrs: Node.Index) Error!Node.Index {
     return try p.compoundStatement(attrs) orelse {
         try p.addError(.expected_compound_statement, null);
         return Error.Parsing;
@@ -917,7 +880,7 @@ fn expectCompoundStatement(p: *Self, attrs: ?Node.Index) Error!Node.Index {
 /// 'break'
 fn breakStatement(p: *Self) Error!?Node.Index {
     if (p.peekToken(.tag, 0) == .k_break and p.peekToken(.tag, 1) != .k_if) {
-        return try p.addNode(.{ .tag = .@"break", .main_token = p.advanceToken() });
+        return try p.addNode(p.advanceToken(), Data.Break);
     }
     return null;
 }
@@ -931,11 +894,7 @@ fn breakIfStatement(p: *Self) Error!?Node.Index {
         _ = p.advanceToken();
         const cond = try p.expectExpression();
         _ = try p.expectToken(.@";");
-        return try p.addNode(.{
-            .tag = .break_if,
-            .main_token = main_token,
-            .lhs = cond,
-        });
+        return try p.addNode(main_token, Data.BreakIf{ .condition = cond });
     }
     return null;
 }
@@ -943,7 +902,7 @@ fn breakIfStatement(p: *Self) Error!?Node.Index {
 /// 'continue'
 fn continueStatement(p: *Self) Error!?Node.Index {
     const main_token = p.eatToken(.k_continue) orelse return null;
-    return try p.addNode(.{ .tag = .@"continue", .main_token = main_token });
+    return try p.addNode(main_token, Data.Continue{});
 }
 
 /// attribute * '{' statement * break_if_statement ? '}'
@@ -962,16 +921,12 @@ fn expectContinuingCompoundStatement(p: *Self) Error!Node.Index {
 fn continuingStatement(p: *Self) Error!?Node.Index {
     const main_token = p.eatToken(.k_continuing) orelse return null;
     const body = try p.expectContinuingCompoundStatement();
-    return try p.addNode(.{
-        .tag = .continuing,
-        .main_token = main_token,
-        .lhs = body,
-    });
+    return try p.addNode(main_token, Data.Continuing{ .body = body });
 }
 
 fn discardStatement(p: *Self) Error!?Node.Index {
     const main_token = p.eatToken(.k_discard) orelse return null;
-    return try p.addNode(.{ .tag = .discard, .main_token = main_token });
+    return try p.addNode(main_token, Data.Discard);
 }
 
 /// | variable_or_value_statement
@@ -984,16 +939,16 @@ fn forInit(p: *Self) Error!?Node.Index {
 /// | variable_updating_statement
 /// | func_call_statement
 fn forUpdate(p: *Self) Error!?Node.Index {
-    return try p.variableUpdatingStatement() orelse try p.callPhrase();
+    return try p.variableUpdatingStatement() orelse try p.callPhrase() orelse 0;
 }
 
 /// for_init ? ';' expression ? ';' for_update ?
-fn expectForHeader(p: *Self, attrs: ?Node.Index) Error!Node.Index {
-    const for_init = try p.forInit();
+fn expectForHeader(p: *Self, attrs: Node.Index) Error!Node.Index {
+    const for_init = try p.forInit() orelse 0;
     _ = try p.expectToken(.@";");
-    const for_cond = try p.expression();
+    const for_cond = try p.expression() orelse 0;
     _ = try p.expectToken(.@";");
-    const for_update = try p.forUpdate();
+    const for_update = try p.forUpdate() orelse 0;
     return try p.addExtra(Node.ForHeader{
         .attrs = attrs,
         .init = for_init,
@@ -1002,45 +957,35 @@ fn expectForHeader(p: *Self, attrs: ?Node.Index) Error!Node.Index {
     });
 }
 
-/// attribute * 'for' '(' for_header ')' compound_statement
-fn forStatement(p: *Self, attrs: ?Node.Index) Error!?Node.Index {
+/// attribute* 'for' '(' for_header ')' compound_statement
+fn forStatement(p: *Self, attrs: Node.Index) Error!?Node.Index {
     const main_token = p.eatToken(.k_for) orelse return null;
     _ = try p.expectToken(.@"(");
     const header = try p.expectForHeader(attrs);
     _ = try p.expectToken(.@")");
     const body = try p.expectCompoundStatement(try p.attributeList());
 
-    return try p.addNode(.{
-        .tag = .@"for",
-        .main_token = main_token,
-        .lhs = header,
-        .rhs = body,
-    });
+    return try p.addNode(main_token, Data.For{ .for_header = header, .body = body });
 }
 
-// attribute * 'loop' attribute * '{' statement * continuing_statement ? '}'
-fn loopStatement(p: *Self, attrs: ?Node.Index) Error!?Node.Index {
+// attribute* 'loop' attribute* '{' statement * continuing_statement ? '}'
+fn loopStatement(p: *Self, attrs: Node.Index) Error!?Node.Index {
     const main_token = p.eatToken(.k_loop) orelse return null;
-    const compound = try p.compoundStatementExtra(try p.attributeList(), continuingStatement) orelse {
+    const body = try p.compoundStatementExtra(try p.attributeList(), continuingStatement) orelse {
         try p.addError(.expected_compound_statement, null);
         return Error.Parsing;
     };
-    return try p.addNode(.{
-        .tag = .loop,
-        .main_token = main_token,
-        .lhs = attrs,
-        .rhs = compound,
-    });
+    return try p.addNode(main_token, Data.Loop{ .attributes = attrs, .body = body });
 }
 
 /// 'default' | expression
 fn caseSelector(p: *Self) Error!?Node.Index {
     if (p.eatToken(.k_default)) |t| {
-        return try p.addNode(.{ .main_token = t, .tag = .case_selector });
+        return try p.addNode(t, Data.CaseSelector{ .expression = 0 });
     } else {
         const main_token = p.tok_i;
         if (try p.expression()) |e| {
-            return try p.addNode(.{ .main_token = main_token, .tag = .case_selector, .lhs = e });
+            return try p.addNode(main_token, Data.CaseSelector{ .expression = e });
         }
     }
     return null;
@@ -1062,22 +1007,22 @@ fn caseClause(p: *Self) Error!?Node.Index {
         if (try p.caseSelector()) |c| try p.scratch.append(p.allocator, c) else break;
     }
     _ = p.eatToken(.@":");
-    return try p.addNode(.{
-        .tag = .case_clause,
-        .main_token = main_token,
-        .lhs = try p.listToSpan(p.scratch.items[scratch_top..]),
-        .rhs = try p.expectCompoundStatement(try p.attributeList()),
+    return try p.addNode(main_token, Data.CaseClause{
+        .selectors = try p.listToSpan(main_token, p.scratch.items[scratch_top..]),
+        .body = try p.expectCompoundStatement(try p.attributeList()),
     });
 }
 
-/// 'default' ':' ? compound_statement
+/// 'default' ':'? compound_statement
 fn defaultAloneClause(p: *Self) Error!?Node.Index {
     const main_token = p.eatToken(.k_default) orelse return null;
     _ = p.eatToken(.@":");
-    return try p.addNode(.{
-        .tag = .case_clause,
-        .main_token = main_token,
-        .rhs = try p.expectCompoundStatement(try p.attributeList()),
+    const scratch_top = p.scratch.items.len;
+    defer p.scratch.shrinkRetainingCapacity(scratch_top);
+    try p.scratch.append(p.allocator, 0);
+    return try p.addNode(main_token, Data.CaseClause{
+        .selectors = try p.listToSpan(main_token, p.scratch.items[scratch_top..]),
+        .body = try p.expectCompoundStatement(try p.attributeList()),
     });
 }
 
@@ -1097,11 +1042,9 @@ fn switchBody(p: *Self) Error!Node.Index {
     }
     _ = try p.expectToken(.@"}");
 
-    return try p.addNode(.{
-        .tag = .switch_body,
-        .main_token = main_token,
-        .lhs = attrs,
-        .rhs = try p.listToSpan(p.scratch.items[scratch_top..]),
+    return try p.addNode(main_token, Data.SwitchBody{
+        .attributes = attrs,
+        .clauses = try p.listToSpan(main_token, p.scratch.items[scratch_top..]),
     });
 }
 
@@ -1110,12 +1053,7 @@ fn switchStatement(p: *Self) Error!?Node.Index {
     const main_token = p.eatToken(.k_switch) orelse return null;
     const expr = try p.expectExpression();
     const body = try p.switchBody();
-    return try p.addNode(.{
-        .tag = .@"switch",
-        .main_token = main_token,
-        .lhs = expr,
-        .rhs = body,
-    });
+    return try p.addNode(main_token, Data.Switch{ .expr = expr, .body = body });
 }
 
 // | 'var' template_list? optionally_typed_ident
@@ -1129,23 +1067,9 @@ fn variableDecl(p: *Self) Error!?Node.Index {
         .template_list = template_list,
         .type = ident.type,
     });
-    return try p.addNode(.{
-        .tag = .@"var",
-        .main_token = main_token,
-        .lhs = extra,
-        .rhs = ident.initializer,
-    });
-}
-
-/// 'const' optionally_typed_ident '=' expression
-fn constDecl(p: *Self) Error!?Node.Index {
-    const main_token = p.eatToken(.k_const) orelse return null;
-    const ident = try p.expectOptionallyTypedIdentWithInitializer();
-    return try p.addNode(.{
-        .tag = .@"const",
-        .main_token = main_token,
-        .lhs = ident.type,
-        .rhs = ident.initializer,
+    return try p.addNode(main_token, Data.Var{
+        .@"var" = extra,
+        .initializer = ident.initializer,
     });
 }
 
@@ -1153,11 +1077,19 @@ fn constDecl(p: *Self) Error!?Node.Index {
 fn letDecl(p: *Self) Error!?Node.Index {
     const main_token = p.eatToken(.k_let) orelse return null;
     const ident = try p.expectOptionallyTypedIdentWithInitializer();
-    return try p.addNode(.{
-        .tag = .let,
-        .main_token = main_token,
-        .lhs = ident.type,
-        .rhs = ident.initializer,
+    return try p.addNode(main_token, Data.Let{
+        .type = ident.type,
+        .initializer = ident.initializer,
+    });
+}
+
+/// 'const' optionally_typed_ident '=' expression
+fn constDecl(p: *Self) Error!?Node.Index {
+    const main_token = p.eatToken(.k_const) orelse return null;
+    const ident = try p.expectOptionallyTypedIdentWithInitializer();
+    return try p.addNode(main_token, Data.Const{
+        .type = ident.type,
+        .initializer = ident.initializer,
     });
 }
 
@@ -1167,14 +1099,15 @@ fn letDecl(p: *Self) Error!?Node.Index {
 /// | lhs_expression '--'
 fn variableUpdatingStatement(p: *Self) Error!?Node.Index {
     if (p.eatToken(._)) |_| {
-        const equal_token = try p.expectToken(.@"=");
-        const expr = try p.expectExpression();
-        return try p.addNode(.{ .tag = .phony_assign, .main_token = equal_token, .lhs = expr });
+        const main_token = try p.expectToken(.@"=");
+        return try p.addNode(main_token, Data.VariableUpdating{
+            .lhs_expr = 0,
+            .rhs_expr = try p.expectExpression(),
+        });
     } else if (try p.lhsExpression()) |lhs| {
-        const op_token = p.advanceToken();
-        return switch (p.tokens.items(.tag)[op_token]) {
-            .@"++" => try p.addNode(.{ .tag = .increase, .main_token = op_token, .lhs = lhs }),
-            .@"--" => try p.addNode(.{ .tag = .decrease, .main_token = op_token, .lhs = lhs }),
+        const main_token = p.advanceToken();
+        switch (p.tokens.items(.tag)[main_token]) {
+            .@"++", .@"--" => {},
             .@"=",
             .@"+=",
             .@"-=",
@@ -1186,17 +1119,15 @@ fn variableUpdatingStatement(p: *Self) Error!?Node.Index {
             .@"^=",
             .@"<<=",
             .@">>=",
-            => try p.addNode(.{
-                .tag = .compound_assign,
-                .main_token = op_token,
-                .lhs = lhs,
-                .rhs = try p.expectExpression(),
+            => return try p.addNode(main_token, Data.VariableUpdating{
+                .lhs_expr = lhs,
+                .rhs_expr = try p.expectExpression(),
             }),
             else => {
-                try p.addError(.invalid_assignment_op, op_token);
+                try p.addError(.invalid_assignment_op, main_token);
                 return Error.Parsing;
             },
-        };
+        }
     }
 
     return null;
@@ -1206,17 +1137,20 @@ fn whileStatement(p: *Self) Error!?Node.Index {
     const main_token = p.eatToken(.k_while) orelse return null;
     const cond = try p.expectExpression();
     const body = try p.expectCompoundStatement(try p.attributeList());
-    return try p.addNode(.{
-        .tag = .@"while",
-        .main_token = main_token,
-        .lhs = cond,
-        .rhs = body,
+    return try p.addNode(main_token, Data.While{
+        .condition = cond,
+        .body = body,
     });
 }
 
 /// template_elaborated_ident
 fn typeSpecifier(p: *Self) Error!?Node.Index {
-    return try p.templateElaboratedIdent();
+    if (try p.templateElaboratedIdent()) |n| {
+        p.nodes.items(.data)[n] = .{ .type = Data.Type{ .template_list = p.nodes.items(.data)[n].ident.template_list } };
+        p.nodes.items(.tag)[n] = .type;
+        return n;
+    }
+    return null;
 }
 
 fn expectTypeSpecifier(p: *Self) Error!Node.Index {
@@ -1231,15 +1165,11 @@ fn parenExpr(p: *Self) Error!?Node.Index {
     const main_token = p.eatToken(.@"(") orelse return null;
     const expr = try p.expectExpression();
     _ = try p.expectToken(.@")");
-    return try p.addNode(.{
-        .tag = .paren_expr,
-        .main_token = main_token,
-        .lhs = expr,
-    });
+    return try p.addNode(main_token, Data.ParenExpr{ .expr = expr });
 }
 
 /// expression ( ',' expression ) * ',' ?
-fn expressionCommaList(p: *Self) Error!?Node.Index {
+fn expressionCommaList(p: *Self, start_tok: Token.Index) Error!Node.Index {
     const scratch_top = p.scratch.items.len;
     defer p.scratch.shrinkRetainingCapacity(scratch_top);
     while (true) {
@@ -1247,13 +1177,13 @@ fn expressionCommaList(p: *Self) Error!?Node.Index {
         try p.scratch.append(p.allocator, expr);
         if (p.eatToken(.@",") == null) break;
     }
-    return try p.listToSpan(p.scratch.items[scratch_top..]);
+    return try p.listToSpan(start_tok, p.scratch.items[scratch_top..]);
 }
 
 /// '(' expression_comma_list ? ')'
-fn expectArgumentExpressionList(p: *Self) Error!?Node.Index {
-    _ = try p.expectToken(.@"(");
-    const res = try p.expressionCommaList();
+fn expectArgumentExpressionList(p: *Self) Error!Node.Index {
+    const start_tok = try p.expectToken(.@"(");
+    const res = try p.expressionCommaList(start_tok);
     try p.expectAttribEnd();
     return res;
 }
@@ -1261,17 +1191,15 @@ fn expectArgumentExpressionList(p: *Self) Error!?Node.Index {
 /// template_elaborated_ident argument_expression_list
 fn callPhrase(p: *Self) Error!?Node.Index {
     const main_token = p.tok_i;
-    const lhs = try p.templateElaboratedIdent() orelse return null;
+    const ident = try p.templateElaboratedIdent() orelse return null;
     // Unfortunately need lookbehind since sometimes other `templateElaboratedIdent` rules follow.
     if (p.peekToken(.tag, 0) != .@"(") {
         p.tok_i = main_token;
         return null;
     }
-    return try p.addNode(.{
-        .tag = .call,
-        .main_token = main_token,
-        .lhs = lhs,
-        .rhs = try p.expectArgumentExpressionList(),
+    return try p.addNode(main_token, Data.Call{
+        .ident = ident,
+        .arguments = try p.expectArgumentExpressionList(),
     });
 }
 
@@ -1282,8 +1210,8 @@ fn callPhrase(p: *Self) Error!?Node.Index {
 fn expression(p: *Self) Error!?Node.Index {
     const lhs_unary = try p.unaryExpr() orelse return null;
     if (try p.bitwiseExpr(lhs_unary)) |bitwise| return bitwise;
-    const lhs = try p.expectRelationalExpr(lhs_unary);
-    return try p.expectShortCircuitExpr(lhs);
+    const lhs = try p.relationalExpr(lhs_unary);
+    return try p.shortCircuitExpr(lhs);
 }
 
 fn expectExpression(p: *Self) Error!Node.Index {
@@ -1293,37 +1221,33 @@ fn expectExpression(p: *Self) Error!Node.Index {
     };
 }
 
-/// | core_lhs_expression component_or_swizzle_specifier?
-/// | '*' lhs_expression
-/// | '&' lhs_expression
-///
-/// core_lhs_expression :
-///  | ident
-///  | '(' lhs_expression ')'
-fn lhsExpression(p: *Self) Error!?Node.Index {
-    if (p.eatToken(.ident)) |ident_token| return try p.expectComponentOrSwizzle(
-        try p.addNode(.{ .tag = .ident, .main_token = ident_token }),
-    );
-
+/// | ident
+/// | '(' lhs_expression ')'
+fn coreLhsExpression(p: *Self) Error!?Node.Index {
+    if (p.eatToken(.ident)) |tok| {
+        return try p.addNode(tok, Data.Ident{ .template_list = 0 });
+    }
     if (p.eatToken(.@"(")) |_| {
         const expr = try p.expectLhsExpression();
         _ = try p.expectToken(.@")");
-        return try p.expectComponentOrSwizzle(expr);
+        return expr;
     }
-
-    if (p.eatToken(.@"*")) |star_token| return try p.addNode(.{
-        .tag = .deref,
-        .main_token = star_token,
-        .lhs = try p.expectLhsExpression(),
-    });
-
-    if (p.eatToken(.@"&")) |addr_of_token| return try p.addNode(.{
-        .tag = .addr_of,
-        .main_token = addr_of_token,
-        .lhs = try p.expectLhsExpression(),
-    });
-
     return null;
+}
+
+/// | core_lhs_expression component_or_swizzle_specifier?
+/// | '*' lhs_expression
+/// | '&' lhs_expression
+fn lhsExpression(p: *Self) Error!?Node.Index {
+    if (try p.coreLhsExpression()) |e| return try p.componentOrSwizzle(e);
+
+    switch (p.peekToken(.tag, 0)) {
+        .@"*", .@"&" => {
+            const main_token = p.advanceToken();
+            return try p.addNode(main_token, .{ .lhs_expr = try p.expectLhsExpression() });
+        },
+        else => return null,
+    }
 }
 
 fn expectLhsExpression(p: *Self) Error!Node.Index {
@@ -1333,10 +1257,10 @@ fn expectLhsExpression(p: *Self) Error!Node.Index {
     };
 }
 
-/// primary_expression component_or_swizzle_specifier ?
+/// primary_expression component_or_swizzle_specifier?
 fn singularExpr(p: *Self) Error!?Node.Index {
     const prefix = try p.primaryExpr() orelse return null;
-    return try p.expectComponentOrSwizzle(prefix);
+    return try p.componentOrSwizzle(prefix);
 }
 
 /// | literal
@@ -1344,28 +1268,15 @@ fn singularExpr(p: *Self) Error!?Node.Index {
 /// | call_expression
 /// | template_elaborated_ident
 fn primaryExpr(p: *Self) Error!?Node.Index {
-    if (try p.literal() orelse try p.parenExpr()) |node| return node;
-
-    const main_token = p.tok_i;
-    if (try p.templateElaboratedIdent()) |ident| {
-        if (p.peekToken(.tag, 0) == .@"(") {
-            return try p.addNode(.{
-                .tag = .call,
-                .main_token = main_token,
-                .lhs = ident,
-                .rhs = try p.expectArgumentExpressionList(),
-            });
-        }
-
-        return ident;
-    }
-
-    return null;
+    return try p.literal() orelse
+        try p.parenExpr() orelse
+        try p.callPhrase() orelse
+        try p.templateElaboratedIdent();
 }
 
 /// '<' expression ( ',' expression ) * ',' ? '>'
-fn templateList(p: *Self) Error!?Node.Index {
-    _ = p.eatToken(.template_args_start) orelse return null;
+fn templateList(p: *Self) Error!Node.Index {
+    const start_tok = p.eatToken(.template_args_start) orelse return 0;
     const scratch_top = p.scratch.items.len;
     defer p.scratch.shrinkRetainingCapacity(scratch_top);
     const expr = try p.expectExpression();
@@ -1374,31 +1285,23 @@ fn templateList(p: *Self) Error!?Node.Index {
         if (try p.expression()) |e| try p.scratch.append(p.allocator, e) else break;
     }
     _ = try p.expectToken(.template_args_end);
-    return try p.listToSpan(p.scratch.items[scratch_top..]);
+    return try p.listToSpan(start_tok, p.scratch.items[scratch_top..]);
 }
 
 /// ident template_list ?
 fn templateElaboratedIdent(p: *Self) Error!?Node.Index {
     const main_token = p.eatToken(.ident) orelse return null;
-    return try p.addNode(.{ .tag = .ident, .main_token = main_token, .lhs = try p.templateList() });
+    return try p.addNode(main_token, Data.Ident{ .template_list = try p.templateList() });
 }
 
 /// | int_literal
 /// | float_literal
 /// | bool_literal
 fn literal(p: *Self) Error!?Node.Index {
-    return switch (p.tokens.items(.tag)[p.tok_i]) {
-        .k_true, .k_false, .number => |t| try p.addNode(.{
-            .tag = switch (t) {
-                .k_true => .true,
-                .k_false => .false,
-                .number => .number,
-                else => unreachable,
-            },
-            .main_token = p.advanceToken(),
-        }),
-        else => null,
-    };
+    if (p.eatToken(.k_true)) |t| return try p.addNode(t, Data.True{});
+    if (p.eatToken(.k_false)) |t| return try p.addNode(t, Data.False{});
+    if (p.eatToken(.number)) |t| return try p.addNode(t, Data.Number{});
+    return null;
 }
 
 /// | singular_expression
@@ -1408,22 +1311,12 @@ fn literal(p: *Self) Error!?Node.Index {
 /// | `'*'` unary_expression
 /// | `'&'` unary_expression
 fn unaryExpr(p: *Self) Error!?Node.Index {
-    const op_token = p.tok_i;
-    const op: Node.Tag = switch (p.tokens.items(.tag)[op_token]) {
-        .@"!", .@"~" => .not,
-        .@"-" => .negate,
-        .@"*" => .deref,
-        .@"&" => .addr_of,
+    switch (p.peekToken(.tag, 0)) {
+        .@"!", .@"~", .@"-", .@"*", .@"&" => {},
         else => return p.singularExpr(),
-    };
-    _ = p.advanceToken();
-
-    const expr = try p.expectUnaryExpr();
-    return try p.addNode(.{
-        .tag = op,
-        .main_token = op_token,
-        .lhs = expr,
-    });
+    }
+    const main_token = p.advanceToken();
+    return try p.addNode(main_token, Data.UnaryExpr{ .expr = try p.expectUnaryExpr() });
 }
 
 fn expectUnaryExpr(p: *Self) Error!Node.Index {
@@ -1440,51 +1333,39 @@ fn expectUnaryExpr(p: *Self) Error!Node.Index {
 /// | shift_expression _greater_than_equal shift_expression
 /// | shift_expression '==' shift_expression
 /// | shift_expression '!=' shift_expression
-fn expectRelationalExpr(p: *Self, lhs_unary: Node.Index) Error!Node.Index {
-    const lhs = try p.expectShiftExpr(lhs_unary);
-    const op_token = p.tok_i;
-    const op: Node.Tag = switch (p.tokens.items(.tag)[op_token]) {
-        .@"==" => .equal,
-        .@"!=" => .not_equal,
-        .@">" => .greater_than,
-        .@">=" => .greater_than_equal,
-        .@"<" => .less_than,
-        .@"<=" => .less_than_equal,
+fn relationalExpr(p: *Self, lhs_unary: Node.Index) Error!Node.Index {
+    const lhs = try p.shiftExpr(lhs_unary);
+    switch (p.peekToken(.tag, 0)) {
+        .@"<", .@">", .@"<=", .@">=", .@"==", .@"!=" => {},
         else => return lhs,
-    };
-    _ = p.advanceToken();
-
-    const rhs_unary = try p.expectUnaryExpr();
-    const rhs = try p.expectShiftExpr(rhs_unary);
-    return try p.addNode(.{
-        .tag = op,
-        .main_token = op_token,
-        .lhs = lhs,
-        .rhs = rhs,
+    }
+    const main_token = p.advanceToken();
+    const rhs = try p.shiftExpr(try p.expectUnaryExpr());
+    return try p.addNode(main_token, Data.RelationalExpr{
+        .lhs_shift_expr = lhs,
+        .rhs_shift_expr = rhs,
     });
 }
 
-fn expectShortCircuitExpr(p: *Self, lhs_relational: Node.Index) Error!Node.Index {
-    var lhs = lhs_relational;
-
+/// | relational_expression `'||'` relational_expression
+/// | relational_expression `'&&'` relational_expression
+fn shortCircuitExpr(p: *Self, lhs_relational: Node.Index) Error!Node.Index {
     const op_token = p.tok_i;
-    const op: Node.Tag = switch (p.tokens.items(.tag)[op_token]) {
-        .@"&&" => .logical_and,
-        .@"||" => .logical_or,
-        else => return lhs,
-    };
+    switch (p.tokens.items(.tag)[op_token]) {
+        .@"&&", .@"||" => {},
+        else => return lhs_relational,
+    }
 
+    var lhs = lhs_relational;
     while (p.peekToken(.tag, 0) == p.tokens.items(.tag)[op_token]) {
         _ = p.advanceToken();
 
         const rhs_unary = try p.expectUnaryExpr();
-        const rhs = try p.expectRelationalExpr(rhs_unary);
+        const rhs = try p.relationalExpr(rhs_unary);
 
-        lhs = try p.addNode(.{
-            .tag = op,
-            .main_token = op_token,
-            .lhs = lhs,
-            .rhs = rhs,
+        lhs = try p.addNode(op_token, Data.ShortCircuitExpr{
+            .lhs_relational_expr = lhs,
+            .rhs_relational_expr = rhs,
         });
     }
 
@@ -1495,99 +1376,79 @@ fn expectShortCircuitExpr(p: *Self, lhs_relational: Node.Index) Error!Node.Index
 /// | binary_or_expression `'|'` unary_expression
 /// | binary_xor_expression `'^'` unary_expression
 fn bitwiseExpr(p: *Self, lhs: Node.Index) Error!?Node.Index {
-    const op_token = p.tok_i;
-    const op: Node.Tag = switch (p.tokens.items(.tag)[op_token]) {
-        .@"&" => .@"and",
-        .@"|" => .@"or",
-        .@"^" => .xor,
+    switch (p.peekToken(.tag, 0)) {
+        .@"&", .@"|", .@"^" => {},
         else => return null,
-    };
-    _ = p.advanceToken();
+    }
+    const main_token = p.advanceToken();
 
     var lhs_result = lhs;
     while (true) {
         const rhs = try p.expectUnaryExpr();
-
-        lhs_result = try p.addNode(.{
-            .tag = op,
-            .main_token = op_token,
-            .lhs = lhs_result,
-            .rhs = rhs,
+        lhs_result = try p.addNode(main_token, Data.BitwiseExpr{
+            .lhs_bitwise_expr = lhs_result,
+            .rhs_unary_expr = rhs,
         });
 
-        if (p.peekToken(.tag, 0) != p.tokens.items(.tag)[op_token]) return lhs_result;
+        if (p.peekToken(.tag, 0) != p.tokens.items(.tag)[main_token]) return lhs_result;
     }
 }
 
 /// | additive_expression
 /// | unary_expression _shift_left unary_expression
 /// | unary_expression _shift_right unary_expression
-fn expectShiftExpr(p: *Self, lhs: Node.Index) Error!Node.Index {
-    const op_token = p.tok_i;
-    const op: Node.Tag = switch (p.tokens.items(.tag)[op_token]) {
-        .@"<<" => .shl,
-        .@">>" => .shr,
-        else => return try p.expectMathExpr(lhs),
-    };
-    _ = p.advanceToken();
-
-    const rhs = try p.expectUnaryExpr();
-
-    return try p.addNode(.{
-        .tag = op,
-        .main_token = op_token,
-        .lhs = lhs,
-        .rhs = rhs,
+fn shiftExpr(p: *Self, lhs: Node.Index) Error!Node.Index {
+    switch (p.peekToken(.tag, 0)) {
+        .@"<<", .@">>" => {},
+        else => return try p.mathExpr(lhs),
+    }
+    const main_token = p.advanceToken();
+    return try p.addNode(main_token, Data.ShiftExpr{
+        .lhs_unary_expr = lhs,
+        .rhs_unary_expr = try p.expectUnaryExpr(),
     });
 }
 
-fn expectMathExpr(p: *Self, left: Node.Index) Error!Node.Index {
-    const right = try p.expectMultiplicativeExpr(left);
-    return p.expectAdditiveExpr(right);
+fn mathExpr(p: *Self, left: Node.Index) Error!Node.Index {
+    const right = try p.multiplicativeExpr(left);
+    return p.additiveExpr(right);
 }
 
 /// | multiplicative_expression
-/// | additive_expression additive_operator multiplicative_expression
-fn expectAdditiveExpr(p: *Self, lhs_mul: Node.Index) Error!Node.Index {
+/// | additive_expression '+' multiplicative_expression
+/// | additive_expression '-' multiplicative_expression
+fn additiveExpr(p: *Self, lhs_mul: Node.Index) Error!Node.Index {
     var lhs = lhs_mul;
     while (true) {
-        const op_token = p.tok_i;
-        const op: Node.Tag = switch (p.tokens.items(.tag)[op_token]) {
-            .@"+" => .add,
-            .@"-" => .sub,
+        switch (p.peekToken(.tag, 0)) {
+            .@"+", .@"-" => {},
             else => return lhs,
-        };
-        _ = p.advanceToken();
+        }
+        const main_token = p.advanceToken();
         const unary = try p.expectUnaryExpr();
-        const rhs = try p.expectMultiplicativeExpr(unary);
-        lhs = try p.addNode(.{
-            .tag = op,
-            .main_token = op_token,
-            .lhs = lhs,
-            .rhs = rhs,
+        const rhs = try p.multiplicativeExpr(unary);
+        lhs = try p.addNode(main_token, Data.AdditiveExpr{
+            .lhs_additive_expr = lhs,
+            .rhs_mul_expr = rhs,
         });
     }
 }
 
 /// | unary_expression
-/// | multiplicative_expression multiplicative_operator unary_expression
-fn expectMultiplicativeExpr(p: *Self, lhs_unary: Node.Index) Error!Node.Index {
+/// | multiplicative_expression '*' unary_expression
+/// | multiplicative_expression '/' unary_expression
+/// | multiplicative_expression '%' unary_expression
+fn multiplicativeExpr(p: *Self, lhs_unary: Node.Index) Error!Node.Index {
     var lhs = lhs_unary;
     while (true) {
-        const op_token = p.tok_i;
-        const node_tag: Node.Tag = switch (p.peekToken(.tag, 0)) {
-            .@"*" => .mul,
-            .@"/" => .div,
-            .@"%" => .mod,
+        switch (p.peekToken(.tag, 0)) {
+            .@"*", .@"/", .@"%" => {},
             else => return lhs,
-        };
-        _ = p.advanceToken();
-        const rhs = try p.expectUnaryExpr();
-        lhs = try p.addNode(.{
-            .tag = node_tag,
-            .main_token = op_token,
-            .lhs = lhs,
-            .rhs = rhs,
+        }
+        const main_token = p.advanceToken();
+        lhs = try p.addNode(main_token, Data.MultiplicativeExpr{
+            .lhs_multiplicative_expr = lhs,
+            .rhs_unary_expr = try p.expectUnaryExpr(),
         });
     }
 }
@@ -1595,25 +1456,20 @@ fn expectMultiplicativeExpr(p: *Self, lhs_unary: Node.Index) Error!Node.Index {
 /// | '[' expression ']' component_or_swizzle_specifier ?
 /// | '.' member_ident component_or_swizzle_specifier ?
 /// | '.' swizzle_name component_or_swizzle_specifier ?
-fn expectComponentOrSwizzle(p: *Self, prefix: Node.Index) Error!Node.Index {
+fn componentOrSwizzle(p: *Self, prefix: Node.Index) Error!Node.Index {
     var prefix_result = prefix;
     while (true) {
         if (p.eatToken(.@".")) |t| {
-            const member_token = try p.expectToken(.ident);
-            prefix_result = try p.addNode(.{
-                .tag = .field_access,
-                .main_token = t,
-                .lhs = prefix_result,
-                .rhs = member_token,
+            prefix_result = try p.addNode(t, Data.FieldAccess{
+                .lhs_expr = prefix_result,
+                .member = try p.expectToken(.ident),
             });
         } else if (p.eatToken(.@"[")) |t| {
             const index_expr = try p.expectExpression();
             _ = try p.expectToken(.@"]");
-            prefix_result = try p.addNode(.{
-                .tag = .index_access,
-                .main_token = t,
-                .lhs = prefix_result,
-                .rhs = index_expr,
+            prefix_result = try p.addNode(t, Data.IndexAccess{
+                .lhs_expr = prefix_result,
+                .index_expr = index_expr,
             });
         } else return prefix_result;
     }

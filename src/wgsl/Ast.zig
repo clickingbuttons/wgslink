@@ -48,7 +48,7 @@ tokens: TokenList.Slice,
 /// references to this root node, 0 is available to indicate null.
 nodes: NodeList.Slice,
 spans: []Node.Index,
-extra: []?Node.Index,
+extra: []Node.Index,
 /// Point to source.
 errors: []const Error,
 
@@ -98,11 +98,7 @@ pub fn extraData(self: Self, comptime T: type, index: Node.Index) T {
     const fields: []const std.builtin.Type.StructField = std.meta.fields(T);
     var result: T = undefined;
     inline for (fields, 0..) |field, i| {
-        var f = &@field(result, field.name);
-        f.* = if (field.type == ?Node.Index)
-            self.extra[index + i]
-        else
-            self.extra[index + i].?;
+        @field(result, field.name) = self.extra[index + i];
     }
     return result;
 }
@@ -125,77 +121,34 @@ pub fn nodeTag(self: Self, i: Node.Index) Node.Tag {
 }
 
 pub fn nodeToken(self: Self, i: Node.Index) Token.Index {
-    return self.nodes.items(.main_token)[i];
+    return self.nodes.items(.token)[i];
 }
 
-pub fn nodeLHS(self: Self, i: Node.Index) ?Node.Index {
-    return self.nodes.items(.lhs)[i];
-}
-
-pub fn nodeRHS(self: Self, i: Node.Index) ?Node.Index {
-    return self.nodes.items(.rhs)[i];
+pub fn nodeData(self: Self, comptime T: type, index: Node.Index) T {
+    const field_name: []const u8 = brk: {
+        const info = @typeInfo(Node.Data).Union;
+        comptime for (info.fields) |f| {
+            if (f.type == T) {
+                break :brk f.name;
+            }
+        };
+        unreachable;
+    };
+    return @field(self.nodes.items(.data)[index], field_name);
 }
 
 pub fn nodeSource(self: Self, i: Node.Index) []const u8 {
     var loc = self.tokenLoc(self.nodeToken(i));
-    switch (self.nodeTag(i)) {
-        .deref, .addr_of => {
-            const lhs = self.nodeLHS(i).?;
-            const lhs_token = self.nodeToken(lhs);
-            const lhs_loc = self.tokenLoc(lhs_token);
-            loc.end = lhs_loc.end;
-        },
-        .field_access => {
-            const component_loc = self.tokenLoc(self.nodeToken(i) + 1);
-            loc.end = component_loc.end;
-        },
-        else => {},
-    }
-    return self.source[loc.start..loc.end];
-}
-
-pub fn aliasName(self: Self, i: Node.Index) []const u8 {
-    std.debug.assert(self.nodeTag(i) == .alias);
-    const lhs = self.nodeLHS(i);
-    if (lhs != 0) return self.tokenSource(lhs);
-
-    return self.nodeSource(i);
-}
-
-fn declNameLoc(self: Self, i: Node.Index) ?Token.Loc {
-    const token: Token.Index = switch (self.nodeTag(i)) {
-        .global_var => self.extraData(Node.GlobalVar, self.nodeLHS(i).?).name,
-        .@"var" => self.extraData(Node.Var, self.nodeLHS(i).?).name,
-        .@"struct",
-        .@"fn",
-        .@"const",
-        .let,
-        .override,
-        .type_alias,
-        => self.nodeToken(i) + 1,
-        .struct_member, .fn_param => self.nodeToken(i),
-        else => return null,
-    };
-    return self.tokens.items(.loc)[token];
-}
-
-pub fn declNameSource(self: Self, i: Node.Index) []const u8 {
-    const loc = self.declNameLoc(i).?;
     return self.source[loc.start..loc.end];
 }
 
 pub fn spanToList(self: Self, i: ?Node.Index) []const Node.Index {
     if (i) |s| {
         std.debug.assert(self.nodeTag(s) == .span);
-        return self.spans[self.nodeLHS(s).?..self.nodeRHS(s).?];
+        const span = self.nodeData(Node.Data.Span, s);
+        return self.spans[span.from..span.to];
     }
     return &.{};
-}
-
-pub fn moduleName(self: Self, i: Node.Index) []const u8 {
-    std.debug.assert(self.nodeTag(i) == .import);
-    const token = self.tokenSource(self.nodeRHS(i).?);
-    return token[1 .. token.len - 1];
 }
 
 fn renderList(writer: anytype, Enum: anytype) !void {
@@ -253,7 +206,7 @@ pub fn renderError(self: Self, err: Error, writer: anytype, term: std.io.tty.Con
         .expected_type_specifier => writer.writeAll("expected type specifier"),
         .invalid_attribute => {
             try writer.writeAll("invalid attribute");
-            try renderList(writer, Node.Attribute);
+            try renderList(writer, Node.Attribute.Tag);
         },
         .invalid_attributes => writer.writeAll("unexpected attribute list"),
         .invalid_element_count => writer.writeAll("invalid element count"),

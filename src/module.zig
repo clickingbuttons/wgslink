@@ -30,17 +30,18 @@ pub const File = struct {
         // if (tree_shake) |opts| try TreeShaker.treeShake(&tree, allocator, opts);
         for (tree.spanToList(0)) |node| {
             if (tree.nodeTag(node) != .import) continue;
+            const data = tree.nodeData(Node.Data.Import, node);
+            const mod_tok = tree.tokenSource(data.module);
+            const mod_name = mod_tok[1 .. mod_tok.len - 1];
+            const aliases = tree.spanToList(if (data.aliases != 0) data.aliases else null);
 
-            const mod_name = tree.moduleName(node);
             const resolved = try resolveFrom(allocator, path, mod_name);
             const mod_imports = try import_table.getOrPut(allocator, resolved);
             if (!mod_imports.found_existing) mod_imports.value_ptr.* = StringSet{};
-            const lhs = tree.nodeLHS(node);
-            if (lhs != 0) {
-                for (tree.spanToList(lhs)) |n| {
-                    if (tree.nodeTag(n) == .empty) continue;
-                    try mod_imports.value_ptr.*.put(allocator, tree.nodeSource(n), {});
-                }
+
+            for (tree.spanToList(aliases)) |n| {
+                if (tree.nodeTag(n) == .empty) continue;
+                try mod_imports.value_ptr.*.put(allocator, tree.nodeSource(n), {});
             }
         }
         return File{
