@@ -4,15 +4,38 @@ const Node = @import("./Node.zig");
 const Token = @import("./Token.zig");
 const Data = Node.Data;
 
+const max_span_len = 100;
+
 pub const VisitData = union(enum) {
     node: Node.Index,
     token: Token.Index,
+    token_tag: Token.Tag, // For required syntax
     span_start: Token.Index,
     span_sep: Token.Index,
     span_end: Token.Index,
 };
 
-fn visitDiagnosticControl(ctx: anytype, span_start: Token.Index, node: Node.ExtraIndex) !void {
+fn visitNodeList(ctx: anytype, span_start: Token.Index, span: []const Node.Index) @typeInfo(@TypeOf(ctx.visitor)).Fn.return_type.? {
+    try ctx.visitor(ctx, VisitData{ .span_start = span_start });
+    var filtered = std.BoundedArray(Node.Index, max_span_len){};
+    for (span) |s| if (s != 0) filtered.appendAssumeCapacity(s);
+    for (filtered.slice(), 0..) |n, i| {
+        try visit(ctx, n);
+        if (i != span.len - 1) try ctx.visitor(ctx, VisitData{ .span_sep = span_start });
+    }
+    try ctx.visitor(ctx, VisitData{ .span_end = span_start });
+}
+
+fn visitTokenList(ctx: anytype, span_start: Token.Index, span: []const Token.Index) @typeInfo(@TypeOf(ctx.visitor)).Fn.return_type.? {
+    try ctx.visitor(ctx, VisitData{ .span_start = span_start });
+    for (span, 0..) |t, i| {
+        try ctx.visitor(ctx, VisitData{ .token = t });
+        if (i != span.len - 1) try ctx.visitor(ctx, VisitData{ .span_sep = span_start });
+    }
+    try ctx.visitor(ctx, VisitData{ .span_end = span_start });
+}
+
+fn visitDiagnosticControl(ctx: anytype, span_start: Token.Index, node: Node.ExtraIndex) @typeInfo(@TypeOf(ctx.visitor)).Fn.return_type.? {
     const tree: Ast = ctx.tree;
     const visitor = ctx.visitor;
     const control = tree.extraData(Node.DiagnosticControl, node);
@@ -21,52 +44,42 @@ fn visitDiagnosticControl(ctx: anytype, span_start: Token.Index, node: Node.Extr
     try visitor(ctx, VisitData{ .span_sep = span_start });
     try visitor(ctx, VisitData{ .token = control.name });
     if (control.field != 0) {
-        try visitor(ctx, VisitData{ .token = control.field - 1 }); // .
+        try visitor(ctx, VisitData{ .token_tag = .@"." });
         try visitor(ctx, VisitData{ .token = control.field });
     }
     try visitor(ctx, VisitData{ .span_end = span_start });
 }
 
+fn visitInitializer(ctx: anytype, initializer: Node.Index) @typeInfo(@TypeOf(ctx.visitor)).Fn.return_type.? {
+    if (initializer == 0) return;
+    try ctx.visitor(ctx, VisitData{ .token_tag = .@"=" });
+    try visit(ctx, initializer);
+}
+
 /// Visits nodes in source order.
-pub fn visit(ctx: anytype, node: Node.Index) !void {
+pub fn visit(ctx: anytype, node: Node.Index) @typeInfo(@TypeOf(ctx.visitor)).Fn.return_type.? {
     const tree: Ast = ctx.tree;
     const visitor = ctx.visitor;
-    const span_start = tree.nodeToken(node);
+    const token = tree.nodeToken(node);
     const tag = tree.nodeTag(node);
-    std.debug.print("node {d} tag {}\n", .{ node, tag });
     switch (tag) {
         .empty => {},
-        .span => {
-            const nodes = tree.spanToList(node);
-            try visitor(ctx, VisitData{ .span_start = span_start });
-            for (nodes, 0..) |n, i| {
-                std.debug.print("node {d}\n", .{i});
-                try visit(ctx, n);
-                if (i != nodes.len - 1) try visitor(ctx, VisitData{ .span_sep = span_start });
-            }
-            try visitor(ctx, VisitData{ .span_end = span_start });
-        },
+        .span => try visitNodeList(ctx, token, tree.spanToList(node)),
         // Directives
         .diagnostic_directive => {
             const data = tree.nodeData(Data.DiagnosticDirective, node);
             try visitor(ctx, VisitData{ .node = node });
-            try visitDiagnosticControl(ctx, span_start, data.control);
+            try visitDiagnosticControl(ctx, token + 1, data.control);
         },
         .enable_directive => {
             const data = tree.nodeData(Data.EnableDirective, node);
             try visitor(ctx, VisitData{ .node = node });
-            try visitor(ctx, VisitData{ .span_start = span_start });
-            const idents = tree.spanToList(data.ident_tokens);
-            for (idents, 0..) |t, i| {
-                try visitor(ctx, VisitData{ .token = t });
-                if (i != idents.len - 1) try visitor(ctx, VisitData{ .span_sep = span_start });
-            }
-            try visitor(ctx, VisitData{ .span_end = span_start });
+            try visitTokenList(ctx, token, tree.spanToList(data.ident_tokens));
         },
         .requires_directive => {
             const data = tree.nodeData(Data.RequiresDirective, node);
             try visitor(ctx, VisitData{ .node = node });
-            for (tree.spanToList(data.ident_tokens)) |t| try visitor(ctx, VisitData{ .token = t });
+            try visitTokenList(ctx, token, tree.spanToList(data.ident_tokens));
         },
         // Global declarations
         .global_var => {
@@ -74,31 +87,31 @@ pub fn visit(ctx: anytype, node: Node.Index) !void {
             const global_var = tree.extraData(Node.GlobalVar, data.global_var);
             if (global_var.attrs != 0) try visit(ctx, global_var.attrs);
             try visitor(ctx, VisitData{ .node = node });
-            try visitor(ctx, VisitData{ .token = global_var.name });
             if (global_var.template_list != 0) try visit(ctx, global_var.template_list);
+            try visitor(ctx, VisitData{ .token = global_var.name });
             if (global_var.type != 0) try visit(ctx, global_var.type);
-            if (data.initializer != 0) {
-                const equals_tok = tree.nodeToken(data.initializer) - 1;
-                try visitor(ctx, VisitData{ .token = equals_tok });
-                try visit(ctx, data.initializer);
-            }
+            try visitInitializer(ctx, data.initializer);
         },
         .override => {
             const data = tree.nodeData(Data.Override, node);
             const override = tree.extraData(Node.Override, data.override);
             if (override.attrs != 0) try visit(ctx, override.attrs);
             try visitor(ctx, VisitData{ .node = node });
-            try visitor(ctx, VisitData{ .token = tree.nodeToken(node) + 1 });
+            try visitor(ctx, VisitData{ .token = token + 1 });
             if (override.type != 0) try visit(ctx, override.type);
-            if (data.initializer != 0) try visit(ctx, data.initializer);
+            try visitInitializer(ctx, data.initializer);
         },
         .@"fn" => {
             const data = tree.nodeData(Data.Fn, node);
             const header = tree.extraData(Node.FnHeader, data.fn_header);
             if (header.attrs != 0) try visit(ctx, header.attrs);
-            try visitor(ctx, VisitData{ .node = node });
-            try visitor(ctx, VisitData{ .token = tree.nodeToken(node) + 1 });
-            if (header.params != 0) try visit(ctx, header.params);
+            try visitor(ctx, VisitData{ .node = node }); // fn
+            try visitor(ctx, VisitData{ .token = token + 1 }); // main
+            const param_list = tree.spanToList(if (header.params == 0) null else header.params);
+            try visitNodeList(ctx, token + 2, param_list);
+            if (header.return_attrs != 0 or header.return_type != 0) {
+                try visitor(ctx, VisitData{ .token_tag = .@"->" });
+            }
             if (header.return_attrs != 0) try visit(ctx, header.return_attrs);
             if (header.return_type != 0) try visit(ctx, header.return_type);
             try visit(ctx, data.body);
@@ -108,7 +121,7 @@ pub fn visit(ctx: anytype, node: Node.Index) !void {
             try visitor(ctx, VisitData{ .node = node });
             try visitor(ctx, VisitData{ .token = tree.nodeToken(node) + 1 });
             if (data.type != 0) try visit(ctx, data.type);
-            if (data.initializer != 0) try visit(ctx, data.initializer);
+            try visitInitializer(ctx, data.initializer);
         },
         .type_alias => {
             const data = tree.nodeData(Data.TypeAlias, node);
@@ -125,18 +138,19 @@ pub fn visit(ctx: anytype, node: Node.Index) !void {
         .@"struct" => {
             const data = tree.nodeData(Data.Struct, node);
             try visitor(ctx, VisitData{ .node = node });
-            try visitor(ctx, VisitData{ .token = tree.nodeToken(node) + 1 });
-            try visit(ctx, data.members);
+            try visitor(ctx, VisitData{ .token = token + 1 });
+            try visitNodeList(ctx, token, tree.spanToList(data.members));
         },
         // Global declaration helpers
         .attr => {
             const attr = tree.nodeData(Data.Attr, node);
             try visitor(ctx, VisitData{ .node = node });
+            const span_start = token + 2;
             switch (attr.tag) {
                 .compute, .@"const", .fragment, .invariant, .must_use, .vertex => {},
                 inline .@"align", .binding, .builtin, .group, .id, .location, .size => |t| {
                     const single_expr = @field(attr.data, @tagName(t));
-                    try visit(ctx, single_expr);
+                    try visitNodeList(ctx, span_start, &.{single_expr});
                 },
                 .diagnostic => {
                     const diag: Node.Attribute.DiagnosticControl = attr.data.diagnostic;
@@ -145,15 +159,15 @@ pub fn visit(ctx: anytype, node: Node.Index) !void {
                 .interpolate => {
                     const interpolate: Node.Attribute.Interpolate = attr.data.interpolate;
                     const interpolation = tree.extraData(Node.Interpolation, interpolate);
-                    try visit(ctx, interpolation.type);
-                    if (interpolation.sampling_expr != 0) try visit(ctx, interpolation.sampling_expr);
+                    try visitNodeList(ctx, span_start, &.{
+                        interpolation.type,
+                        interpolation.sampling_expr,
+                    });
                 },
                 .workgroup_size => {
                     const workgroup_size: Node.Attribute.WorkgroupSize = attr.data.workgroup_size;
                     const size = tree.extraData(Node.WorkgroupSize, workgroup_size);
-                    try visit(ctx, size.x);
-                    if (size.y != 0) try visit(ctx, size.y);
-                    if (size.z != 0) try visit(ctx, size.z);
+                    try visitNodeList(ctx, span_start, &.{ size.x, size.y, size.z });
                 },
             }
         },
@@ -164,8 +178,9 @@ pub fn visit(ctx: anytype, node: Node.Index) !void {
         },
         .type => {
             const data = tree.nodeData(Data.Type, node);
+            const prev_tok = tree.nodeToken(node) - 1;
+            if (tree.tokenTag(prev_tok) == .@":") try visitor(ctx, VisitData{ .token_tag = .@":" });
             try visitor(ctx, VisitData{ .node = node });
-            try visitor(ctx, VisitData{ .token = tree.nodeToken(node) });
             if (data.template_list != 0) try visit(ctx, data.template_list);
         },
         .alias => {
@@ -182,14 +197,14 @@ pub fn visit(ctx: anytype, node: Node.Index) !void {
         },
         .fn_param => {
             const data = tree.nodeData(Data.FnParam, node);
-            try visit(ctx, data.attributes);
+            if (data.attributes != 0) try visit(ctx, data.attributes);
             try visitor(ctx, VisitData{ .token = tree.nodeToken(node) });
             try visit(ctx, data.type);
         },
         // Statements
         .loop => {
             const data = tree.nodeData(Data.Loop, node);
-            try visit(ctx, data.attributes);
+            if (data.attributes != 0) try visit(ctx, data.attributes);
             try visitor(ctx, VisitData{ .node = node });
             try visit(ctx, data.body);
         },
@@ -197,7 +212,13 @@ pub fn visit(ctx: anytype, node: Node.Index) !void {
             const data = tree.nodeData(Data.Compound, node);
             if (data.attributes != 0) try visit(ctx, data.attributes);
             try visitor(ctx, VisitData{ .node = node });
-            if (data.statements != 0) try visit(ctx, data.statements);
+            const end_tok = if (data.statements != 0) brk: {
+                try visit(ctx, data.statements);
+                const nodes = tree.spanToList(node);
+                const last_statement = nodes[nodes.len - 1];
+                break :brk tree.nodeToken(last_statement) + 1;
+            } else tree.nodeToken(node) + 1;
+            try visitor(ctx, VisitData{ .token = end_tok });
         },
         .@"for" => {
             const data = tree.nodeData(Data.For, node);
@@ -235,7 +256,12 @@ pub fn visit(ctx: anytype, node: Node.Index) !void {
         .call => {
             const data = tree.nodeData(Data.Call, node);
             try visit(ctx, data.ident);
-            if (data.arguments != 0) try visit(ctx, data.arguments);
+            if (data.arguments != 0)
+                try visit(ctx, data.arguments)
+            else {
+                try visitor(ctx, VisitData{ .token = tree.nodeToken(node) + 1 }); // (
+                try visitor(ctx, VisitData{ .token = tree.nodeToken(node) + 2 }); // )
+            }
         },
         .@"var" => {
             const data = tree.nodeData(Data.Var, node);
@@ -244,13 +270,13 @@ pub fn visit(ctx: anytype, node: Node.Index) !void {
             if (extra.template_list != 0) try visit(ctx, extra.template_list);
             if (extra.type != 0) try visit(ctx, extra.type);
             try visitor(ctx, VisitData{ .token = tree.nodeToken(extra.name) });
-            if (data.initializer != 0) try visit(ctx, data.initializer);
+            try visitInitializer(ctx, data.initializer);
         },
         .let => {
             const data = tree.nodeData(Data.Let, node);
             try visitor(ctx, VisitData{ .node = node });
             if (data.type != 0) try visit(ctx, data.type);
-            if (data.initializer != 0) try visit(ctx, data.initializer);
+            try visitInitializer(ctx, data.initializer);
         },
         .@"break", .@"continue", .discard => try visitor(ctx, VisitData{ .node = node }),
         .variable_updating => {
@@ -309,6 +335,7 @@ pub fn visit(ctx: anytype, node: Node.Index) !void {
             const data = tree.nodeData(Data.ParenExpr, node);
             try visitor(ctx, VisitData{ .node = node });
             try visit(ctx, data.expr);
+            try visitor(ctx, VisitData{ .token_tag = .@")" });
         },
         .unary_expr => {
             const data = tree.nodeData(Data.UnaryExpr, node);

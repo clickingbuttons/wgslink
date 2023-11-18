@@ -189,7 +189,7 @@ pub fn Renderer(comptime UnderlyingWriter: type) type {
             try self.writeSpace();
         }
 
-        fn visit(ctx: anytype, visit_data: AstUtils.VisitData) !void {
+        fn visit(ctx: anytype, visit_data: AstUtils.VisitData) WriteError!void {
             const self: *Self = ctx.ctx;
             const tree = ctx.tree;
             switch (visit_data) {
@@ -200,15 +200,28 @@ pub fn Renderer(comptime UnderlyingWriter: type) type {
                             const data = tree.nodeData(Node.Data.GlobalVar, n);
                             const global_var = tree.extraData(Node.GlobalVar, data.global_var);
                             try self.writeNode(tree, n);
-                            if (global_var.template_list == 0) try self.writeByte(' ') else try self.writeSpace();
+                            if (global_var.template_list == 0) try self.writeByte(' ');
                         },
-                        .type => {
-                            try self.writeByte(':');
-                            try self.writeSpace();
-                        },
-                        .enable_directive => {
+                        .enable_directive,
+                        .requires_directive,
+                        .@"fn",
+                        .@"const",
+                        .const_assert,
+                        .@"struct",
+                        .override,
+                        => {
                             try self.writeNode(tree, n);
                             try self.writeByte(' ');
+                        },
+                        .compound => {
+                            try self.writeSpace();
+                            self.pushIndentNextLine();
+                            try self.writeNode(tree, n);
+                        },
+                        .attr => {
+                            const attr = tree.nodeData(Node.Data.Attr, n);
+                            try self.writeNode(tree, n);
+                            try self.writeAll(@tagName(attr.tag));
                         },
                         else => try self.writeNode(tree, n),
                     }
@@ -228,33 +241,50 @@ pub fn Renderer(comptime UnderlyingWriter: type) type {
                 },
                 .token => |t| {
                     const token = tree.tokenSource(t);
-                    switch (tree.tokens.items(.tag)[t]) {
-                        .@"=" => try self.writeSpaced(token),
+                    try self.writeAll(token);
+                },
+                .token_tag => |token| {
+                    switch (token) {
+                        .@"=", .@"->" => try self.writeSpaced(@tagName(token)),
+                        .@":" => {
+                            try self.writeAll(@tagName(token));
+                            try self.writeSpace();
+                        },
                         else => {
-                            try self.writeAll(token);
+                            try self.writeAll(@tagName(token));
                         },
                     }
                 },
                 .span_start => |span_start| {
                     if (span_start == root_token_i) return;
-                    switch (tree.tokens.items(.tag)[span_start]) {
+                    switch (tree.tokenTag(span_start)) {
                         .@"<", .template_args_start, .@"(" => {
                             const token = tree.tokenSource(span_start);
                             try self.writeAll(token);
                         },
-                        .k_diagnostic => try self.writeByte('('),
-                        .k_enable => {},
+                        .k_struct => {
+                            self.pushIndentNextLine();
+                            try self.writeSpace();
+                            try self.writeAll("{\n");
+                        },
+                        .k_enable, .k_requires, .@"@" => {},
                         else => |t| std.debug.print("unknown span start {any}\n", .{t}),
                     }
                 },
                 .span_sep => |span_start| {
                     if (span_start == root_token_i) {
                         if (self.span_sep_needs_semi) try self.writeByte(';');
+                        try self.newline();
                         return;
                     }
                     switch (tree.tokens.items(.tag)[span_start]) {
                         .@"<", .template_args_start => try self.writeByte(','),
-                        .@"(", .k_enable, .k_diagnostic => try self.writeListSep(),
+                        .@"(", .k_enable, .k_requires => try self.writeListSep(),
+                        .k_struct => {
+                            try self.writeByte(',');
+                            try self.newline();
+                        },
+                        .@"@" => try self.writeSpace(),
                         else => |t| std.debug.print("unknown span sep {any}\n", .{t}),
                     }
                 },
@@ -263,10 +293,20 @@ pub fn Renderer(comptime UnderlyingWriter: type) type {
                         if (self.span_sep_needs_semi) try self.writeByte(';');
                         return;
                     }
-                    switch (tree.tokens.items(.tag)[span_start]) {
-                        .@"<", .template_args_start => try self.writeByte('>'),
-                        .@"(", .k_diagnostic => try self.writeByte(')'),
-                        .k_enable => {},
+                    switch (tree.tokenTag(span_start)) {
+                        .@"<", .template_args_start => {
+                            try self.writeByte('>');
+                            if (span_start > 0 and tree.tokenTag(span_start - 1) == .k_var) {
+                                try self.writeSpace();
+                            }
+                        },
+                        .@"(" => try self.writeByte(')'),
+                        .@"@" => try self.writeByte(' '),
+                        .k_enable, .k_requires => {},
+                        .k_struct => {
+                            self.popIndent();
+                            try self.writeAll("\n}");
+                        },
                         else => |t| {
                             std.debug.print("unknown span end {any}\n", .{t});
                         },
@@ -308,8 +348,34 @@ fn testCanonical(comptime source: [:0]const u8) !void {
     try testRender(source, source, false);
 }
 
-test "array type" {
-    try testCanonical("var a: array<u32,3> = array<u32,3>(0u, 1u, 2u);");
+test "var" {
+    try testCanonical("var a: u32 = 0u;");
+    try testCanonical("var<uniform> a: u32 = 0u;");
+    try testCanonical("@group(g_scene) @binding(0) var<uniform> view: View;");
+}
+
+test "const" {
+    try testCanonical("const a: u32 = 0u;");
+}
+
+test "const assert" {
+    try testCanonical("const_assert true;");
+    try testCanonical("const_assert (true);");
+}
+
+test "comments" {
+    try testRender(
+        \\// Hello there
+        \\const a: u32 = 0u;
+        \\// Goodbye there
+        \\const b: u32 = 1u;
+        \\/* Block here */
+        \\const c: u32 = 2u;
+    ,
+        \\const a: u32 = 0u;
+        \\const b: u32 = 1u;
+        \\const c: u32 = 2u;
+    , false);
 }
 
 test "enable" {
@@ -324,85 +390,62 @@ test "diagnostic" {
 
 test "fn" {
     try testCanonical("fn main() {}");
-    try testCanonical("@vertex fn main() {}");
-    try testCanonical("@diagnostic(error, foo.bar) fn main() {}");
+    try testCanonical("fn main(a: u32) {}");
+    try testCanonical("fn main(a: u32) -> u32 {}");
+    try testCanonical("@vertex fn main() -> @location(0) u32 {}");
 }
 
-// test "requires" {
-//     try testCanonical("requires readonly_and_readwrite_storage_textures;");
-//     try testCanonical("requires foo, bar;");
-// }
-//
-// test "const" {
-//     try testCanonical("const a: u32 = 0u;");
-//     try testCanonical("const b: Foo = Foo();");
-//     try testCanonical("const c: vec2f = vec2f();");
-//     try testCanonical("const d: vec2f = vec2f(1.0);");
-// }
-//
-// test "struct" {
-//     const foo =
-//         \\struct Foo {
-//         \\  bar: u32,
-//         \\  baz: i32,
-//         \\}
-//     ;
-//     try testCanonical(foo);
-//
-//     try testRender(foo ++ ";", foo, false);
-//
-//     try testCanonical(
-//         \\struct Foo {
-//         \\  @align(16) @size(4) bar: u32,
-//         \\  baz: i32,
-//         \\}
-//     );
-//
-//     try testCanonical(
-//         \\struct VertexInput {
-//         \\  @builtin(vertex_index) vertex: u32,
-//         \\  @builtin(instance_index) instance: u32,
-//         \\}
-//         \\struct VertexOutput {
-//         \\  @builtin(position) position: vec4f,
-//         \\  @location(0) color: vec4f,
-//         \\  @location(1) worldPos: vec4f,
-//         \\  @location(2) normal: vec3f,
-//         \\}
-//     );
-// }
-//
-// test "global var" {
-//     try testCanonical("@group(g_scene) @binding(0) var<uniform> view: View;");
-// }
-//
-// test "var types" {
-//     try testCanonical("var a: vec2<Test>;");
-//     try testCanonical("var b: array<i32>;");
-//     try testCanonical("var b: mat4x4<f32>;");
-//     try testCanonical("var b: mat4x4f;");
-//
-//     try testCanonical("var ptr_int: ptr<function,i32>;");
-//     try testCanonical("var ptr_int2: ptr<function,i32,read>;");
-//
-//     try testCanonical("var sam: sampler;");
-//     try testCanonical("var tex: texture_2d<f32>;");
-//
-//     try testCanonical("var tex2: texture_multisampled_2d<i32>;");
-//     try testCanonical("var tex3: texture_depth_multisampled_2d;");
-//
-//     try testCanonical("var tex4: texture_storage_2d<rgba8unorm,read>;");
-//
-//     try testCanonical("var tex5: texture_depth_2d;");
-//     try testCanonical("var tex6: texture_external;");
-//
-//     try testCanonical("var a<uniform,read_only>: vec3f;");
-// }
-//
-// test "override" {
-//     try testCanonical("@id(0) override wireframe: bool = false;");
-// }
-//
+test "attributes" {
+    try testCanonical("@location(0) var a: u32;");
+    try testCanonical("@interpolate(perspective, center) var a: u32;");
+    try testCanonical("@workgroup_size(1, 2, 3) var a: u32;");
+}
+
+test "requires" {
+    try testCanonical("requires foo;");
+    try testCanonical("requires foo, bar;");
+}
+
+test "call" {
+    try testCanonical("const b: Foo = Foo();");
+}
+
+test "struct" {
+    const foo =
+        \\struct Foo {
+        \\  bar: u32,
+        \\  baz: i32
+        \\}
+    ;
+    try testCanonical(foo);
+
+    try testRender(foo ++ ";", foo, false);
+
+    try testCanonical(
+        \\struct Foo {
+        \\  @align(16) @size(4) bar: u32,
+        \\  baz: i32
+        \\}
+    );
+
+    try testCanonical(
+        \\struct VertexInput {
+        \\  @builtin(vertex_index) vertex: u32,
+        \\  @builtin(instance_index) instance: u32
+        \\}
+        \\struct VertexOutput {
+        \\  @builtin(position) position: vec4f,
+        \\  @location(0) color: vec4f,
+        \\  @location(1) worldPos: vec4f,
+        \\  @location(2) normal: vec3f
+        \\}
+    );
+}
+
+test "override" {
+    try testCanonical("@id(0) override wireframe: bool = false;");
+}
+
 // test "type alias" {
 //     try testCanonical("alias single = f32;");
 // }
@@ -411,21 +454,7 @@ test "fn" {
 //     try testCanonical("var a = b.c[d].e;");
 // }
 //
-// test "comments" {
-//     try testRender(
-//         \\// Hello there
-//         \\const a: u32 = 0u;
-//         \\// Goodbye there
-//         \\const b: u32 = 0u;
-//         \\/* Block here */
-//         \\const c: u32 = 0u;
-//     ,
-//         \\const a: u32 = 0u;
-//         \\const b: u32 = 0u;
-//         \\const c: u32 = 0u;
-//     , false);
-// }
-//
+
 // test "function" {
 //     try testCanonical(
 //         \\fn view32() -> @location(0) mat4x4f {

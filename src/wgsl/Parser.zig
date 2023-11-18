@@ -1288,7 +1288,7 @@ fn templateList(p: *Self) Error!Node.Index {
     return try p.listToSpan(start_tok, p.scratch.items[scratch_top..]);
 }
 
-/// ident template_list ?
+/// ident template_list?
 fn templateElaboratedIdent(p: *Self) Error!?Node.Index {
     const main_token = p.eatToken(.ident) orelse return null;
     return try p.addNode(main_token, Data.Ident{ .template_list = try p.templateList() });

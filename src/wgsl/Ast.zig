@@ -103,7 +103,7 @@ pub fn extraData(self: Self, comptime T: type, index: Node.Index) T {
     return result;
 }
 
-fn tokenTag(self: Self, i: Token.Index) Token.Tag {
+pub fn tokenTag(self: Self, i: Token.Index) Token.Tag {
     return self.tokens.items(.tag)[i];
 }
 
