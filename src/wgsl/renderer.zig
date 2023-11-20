@@ -1,9 +1,8 @@
 const std = @import("std");
-const Ast = @import("./wgsl/Ast.zig");
-const Node = @import("./wgsl/Node.zig");
-const Token = @import("./wgsl/Token.zig");
-const AstUtils = @import("./wgsl/AstUtils.zig");
-const root_token_i = @import("./wgsl/Parser.zig").root_token_i;
+const Ast = @import("../ast/Ast.zig");
+const Node = @import("../ast/Node.zig");
+const Token = @import("./Token.zig");
+const AstUtils = @import("../ast/AstUtils.zig");
 
 const Allocator = std.mem.Allocator;
 

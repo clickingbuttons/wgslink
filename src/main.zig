@@ -1,6 +1,6 @@
 const std = @import("std");
 const clap = @import("clap");
-const Ast = @import("./wgsl/Ast.zig");
+const Ast = @import("./ast/Ast.zig");
 const Module = @import("./module.zig");
 const Bundler = @import("./bundler.zig");
 
@@ -48,7 +48,7 @@ pub fn main() !void {
 }
 
 test "renderer" {
-    _ = @import("./renderer.zig");
+    _ = @import("./wgsl/renderer.zig");
 }
 
 test "bundler" {

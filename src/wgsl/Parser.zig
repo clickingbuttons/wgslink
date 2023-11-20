@@ -1,7 +1,7 @@
 const std = @import("std");
-const Ast = @import("Ast.zig");
-const Token = @import("Token.zig");
-const Node = @import("Node.zig");
+const Ast = @import("../ast/Ast.zig");
+const Token = @import("./Token.zig");
+const Node = @import("../ast/Node.zig");
 
 const Self = @This();
 const Allocator = std.mem.Allocator;
@@ -18,7 +18,6 @@ tokens: Ast.TokenList,
 tok_i: Token.Index = 0,
 // Main data structure
 nodes: Ast.NodeList = .{},
-spans: std.ArrayListUnmanaged(Node.Index) = .{},
 extra: std.ArrayListUnmanaged(Node.Index) = .{},
 // Used to build lists
 scratch: std.ArrayListUnmanaged(Node.Index) = .{},
@@ -73,10 +72,10 @@ pub fn parseTranslationUnit(p: *Self) error{OutOfMemory}!void {
         if (decl) |d| try p.scratch.append(p.allocator, d);
     }
 
-    try p.spans.appendSlice(p.allocator, p.scratch.items);
+    try p.extra.appendSlice(p.allocator, p.scratch.items);
     var span = &p.nodes.items(.data)[0].span;
-    span.from = @intCast(p.spans.items.len - p.scratch.items.len);
-    span.to = @intCast(p.spans.items.len);
+    span.from = @intCast(p.extra.items.len - p.scratch.items.len);
+    span.to = @intCast(p.extra.items.len);
 }
 
 /// Disambiguate templates (since WGSL chose < and >)
@@ -153,16 +152,16 @@ fn listToSpan(
     list: []const Node.Index,
 ) error{OutOfMemory}!Node.Index {
     if (list.len == 0) return 0;
-    try p.spans.appendSlice(p.allocator, list);
+    try p.extra.appendSlice(p.allocator, list);
     return try p.addNode(@intFromEnum(tag), Data.Span{
-        .from = @intCast(p.spans.items.len - list.len),
-        .to = @intCast(p.spans.items.len),
+        .from = @intCast(p.extra.items.len - list.len),
+        .to = @intCast(p.extra.items.len),
     });
 }
 
 fn spanToList(self: Self, i: Node.Index) []const Node.Index {
     const span = self.nodes.items(.data)[i].span;
-    return self.spans.items[span.from..span.to];
+    return self.extra.items[span.from..span.to];
 }
 
 fn addNode(p: *Self, token: Token.Index, data_member: anytype) error{OutOfMemory}!Node.Index {

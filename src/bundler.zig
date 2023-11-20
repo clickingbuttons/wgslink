@@ -1,9 +1,9 @@
 const std = @import("std");
 const Module = @import("module.zig");
-const Renderer = @import("renderer.zig").Renderer;
-const TreeShakeOptions = @import("./tree_shaker.zig").Options;
-const Ast = @import("./wgsl/Ast.zig");
-const Aliaser = @import("./aliaser.zig");
+const Renderer = @import("./wgsl/renderer.zig").Renderer;
+const TreeShakeOptions = @import("./ast/tree_shaker.zig").Options;
+const Ast = @import("./ast/Ast.zig");
+const Aliaser = @import("./ast/aliaser.zig");
 
 const Self = @This();
 const Allocator = std.mem.Allocator;

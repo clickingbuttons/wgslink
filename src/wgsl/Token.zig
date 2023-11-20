@@ -1,13 +1,14 @@
 const std = @import("std");
 
+// Maximum number of tokens per file.
+pub const Index = u32;
+
 tag: Tag,
 loc: Loc,
 
-pub const Index = u32;
-
 pub const Loc = struct {
-    start: u32,
-    end: u32,
+    start: Index,
+    end: Index,
 
     const Extra = struct {
         line: u32,
@@ -43,7 +44,7 @@ pub const Loc = struct {
     }
 };
 
-pub const Tag = enum {
+pub const Tag = enum(u8) {
     eof,
     invalid,
     ident,

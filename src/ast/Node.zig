@@ -1,5 +1,5 @@
 const std = @import("std");
-const Token = @import("Token.zig");
+const Token = @import("../wgsl/Token.zig");
 
 pub const Index = u32;
 pub const ExtraIndex = u32;
@@ -23,7 +23,7 @@ pub const SpanTag = enum {
 
 tag: Tag,
 /// For spans stores `SpanTag`.
-/// For other nodes store the token used for error reporting, identifiers, and operators.
+/// For other nodes store the identifier or operator token.
 token: Token.Index,
 // Can't use a tagged union because this goes into a MultiArrayList which will use 7 more bytes
 // per Node.

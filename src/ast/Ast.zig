@@ -1,8 +1,8 @@
 const std = @import("std");
-const Parser = @import("Parser.zig");
-const Token = @import("Token.zig");
-const Node = @import("Node.zig");
-const Tokenizer = @import("Tokenizer.zig").Tokenizer;
+const Node = @import("./Node.zig");
+const Parser = @import("../wgsl/Parser.zig");
+const Token = @import("../wgsl/Token.zig");
+const Tokenizer = @import("../wgsl/Tokenizer.zig").Tokenizer;
 
 const Allocator = std.mem.Allocator;
 const Self = @This();
@@ -42,14 +42,14 @@ pub const Error = struct {
     };
 };
 
+// Needed for error rendering which Ast doesn't handle.
 source: [:0]const u8,
 tokens: TokenList.Slice,
 /// Node 0 is a span of directives followed by declarations. Since there can be no
 /// references to this root node, 0 is available to indicate null.
 nodes: NodeList.Slice,
-spans: []Node.Index,
 extra: []Node.Index,
-/// Point to source.
+// No one's perfect...
 errors: []const Error,
 
 pub fn init(allocator: std.mem.Allocator, source: [:0]const u8) Allocator.Error!Self {
@@ -73,7 +73,6 @@ pub fn init(allocator: std.mem.Allocator, source: [:0]const u8) Allocator.Error!
         .source = source,
         .tokens = tokens.toOwnedSlice(),
         .nodes = parser.nodes.toOwnedSlice(),
-        .spans = try parser.spans.toOwnedSlice(allocator),
         .extra = try parser.extra.toOwnedSlice(allocator),
         .errors = try parser.errors.toOwnedSlice(allocator),
     };
@@ -82,7 +81,6 @@ pub fn init(allocator: std.mem.Allocator, source: [:0]const u8) Allocator.Error!
 pub fn deinit(self: *Self, allocator: Allocator) void {
     self.tokens.deinit(allocator);
     self.nodes.deinit(allocator);
-    allocator.free(self.spans);
     allocator.free(self.extra);
     allocator.free(self.errors);
     self.* = undefined;
@@ -146,7 +144,7 @@ pub fn spanToList(self: Self, i: ?Node.Index) []const Node.Index {
     if (i) |s| {
         std.debug.assert(self.nodeTag(s) == .span);
         const span = self.nodeData(Node.Data.Span, s);
-        return self.spans[span.from..span.to];
+        return self.extra[span.from..span.to];
     }
     return &.{};
 }

@@ -1,7 +1,7 @@
 const std = @import("std");
 const Ast = @import("./Ast.zig");
 const Node = @import("./Node.zig");
-const Token = @import("./Token.zig");
+const Token = @import("../wgsl/Token.zig");
 const Data = Node.Data;
 
 const max_span_len = 100;

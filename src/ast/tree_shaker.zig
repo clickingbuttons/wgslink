@@ -1,6 +1,6 @@
 const std = @import("std");
-const Ast = @import("./wgsl/Ast.zig");
-const Node = @import("./wgsl/Node.zig");
+const Ast = @import("./Ast.zig");
+const Node = @import("./Node.zig");
 
 const Allocator = std.mem.Allocator;
 const Used = std.StringHashMap(void);

@@ -1,7 +1,7 @@
 const std = @import("std");
-const Ast = @import("./wgsl/Ast.zig");
-const Node = @import("./wgsl/Node.zig");
-const TreeShaker = @import("tree_shaker.zig");
+const Ast = @import("./ast/Ast.zig");
+const Node = @import("./ast/Node.zig");
+const TreeShaker = @import("./ast/tree_shaker.zig");
 
 const Allocator = std.mem.Allocator;
 const Self = @This();
