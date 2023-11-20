@@ -28,7 +28,6 @@ pub fn Renderer(comptime UnderlyingWriter: type) type {
         applied_indent: usize = 0,
         /// not used until the next line
         indent_next_line: usize = 0,
-        span_sep_needs_semi: bool = false,
 
         pub fn init(underlying_writer: UnderlyingWriter, minify: bool) Self {
             return Self{
@@ -195,6 +194,7 @@ pub fn Renderer(comptime UnderlyingWriter: type) type {
             switch (visit_data) {
                 .node => |n| {
                     const tag = tree.nodeTag(n);
+                    const token = tree.nodeToken(n);
                     switch (tag) {
                         .global_var => {
                             const data = tree.nodeData(Node.Data.GlobalVar, n);
@@ -209,34 +209,56 @@ pub fn Renderer(comptime UnderlyingWriter: type) type {
                         .const_assert,
                         .@"struct",
                         .override,
+                        .type_alias,
+                        .@"var",
+                        .@"switch",
                         => {
                             try self.writeNode(tree, n);
                             try self.writeByte(' ');
                         },
-                        .compound => {
-                            try self.writeSpace();
-                            self.pushIndentNextLine();
+                        .@"if", .@"while" => {
                             try self.writeNode(tree, n);
+                            try self.writeByte(' ');
                         },
+                        .else_if => {
+                            try self.writeSpace();
+                            try self.writeAll("else ");
+                        },
+                        .@"else" => {
+                            try self.writeSpace();
+                            try self.writeAll("else");
+                        },
+                        .case_clause => {
+                            try self.writeNode(tree, n);
+                            if (tree.tokenTag(token) == .k_case) try self.writeByte(' ');
+                        },
+                        .break_if => try self.writeAll("break if "),
+                        .@"return" => {
+                            const data = tree.nodeData(Node.Data.Return, n);
+                            try self.writeNode(tree, n);
+                            if (data.expr != 0) try self.writeByte(' ');
+                        },
+                        .compound => {},
                         .attr => {
                             const attr = tree.nodeData(Node.Data.Attr, n);
                             try self.writeNode(tree, n);
                             try self.writeAll(@tagName(attr.tag));
                         },
+                        .variable_updating => {
+                            const src = tree.nodeSource(n);
+                            if (tree.tokenTag(token) == .@"=") try self.writeSpaced(src) else try self.writeAll(src);
+                        },
+                        .shift_expr,
+                        .relational_expr,
+                        .multiplicative_expr,
+                        .additive_expr,
+                        .short_circuit_expr,
+                        .bitwise_expr,
+                        => {
+                            const src = tree.nodeSource(n);
+                            try self.writeSpaced(src);
+                        },
                         else => try self.writeNode(tree, n),
-                    }
-                    switch (tag) {
-                        .global_var,
-                        .override,
-                        .@"const",
-                        .type_alias,
-                        .const_assert,
-                        .diagnostic_directive,
-                        .enable_directive,
-                        .requires_directive,
-                        => self.span_sep_needs_semi = true,
-                        .@"struct", .@"fn" => self.span_sep_needs_semi = false,
-                        else => {},
                     }
                 },
                 .token => |t| {
@@ -255,61 +277,56 @@ pub fn Renderer(comptime UnderlyingWriter: type) type {
                         },
                     }
                 },
-                .span_start => |span_start| {
-                    if (span_start == root_token_i) return;
-                    switch (tree.tokenTag(span_start)) {
-                        .@"<", .template_args_start, .@"(" => {
-                            const token = tree.tokenSource(span_start);
-                            try self.writeAll(token);
-                        },
-                        .k_struct => {
+                .span_start => |span| {
+                    switch (span.tag) {
+                        .template_expressions => try self.writeByte('<'),
+                        .fn_params, .attribute_expressions, .argument_expressions => try self.writeByte('('),
+                        .struct_members, .compound_statements, .switch_clauses => {
                             self.pushIndentNextLine();
                             try self.writeSpace();
-                            try self.writeAll("{\n");
+                            try self.writeByte('{');
+                            if (span.len > 0) try self.newline();
                         },
-                        .k_enable, .k_requires, .@"@" => {},
-                        else => |t| std.debug.print("unknown span start {any}\n", .{t}),
+                        .for_header => {
+                            try self.writeSpace();
+                            try self.writeByte('(');
+                        },
+                        else => {},
                     }
                 },
-                .span_sep => |span_start| {
-                    if (span_start == root_token_i) {
-                        if (self.span_sep_needs_semi) try self.writeByte(';');
-                        try self.newline();
-                        return;
-                    }
-                    switch (tree.tokens.items(.tag)[span_start]) {
-                        .@"<", .template_args_start => try self.writeByte(','),
-                        .@"(", .k_enable, .k_requires => try self.writeListSep(),
-                        .k_struct => {
+                .span_sep => |span_tag| {
+                    switch (span_tag) {
+                        .root, .compound_statements => try self.newline(),
+                        .template_expressions, .attribute_expressions => try self.writeByte(','),
+                        .tokens,
+                        .import_aliases,
+                        .fn_params,
+                        .argument_expressions,
+                        .case_selectors,
+                        => try self.writeListSep(),
+                        .struct_members => {
                             try self.writeByte(',');
                             try self.newline();
                         },
-                        .@"@" => try self.writeSpace(),
-                        else => |t| std.debug.print("unknown span sep {any}\n", .{t}),
+                        .attributes => try self.writeSpace(),
+                        .for_header => {
+                            try self.writeByte(';');
+                            try self.writeSpace();
+                        },
+                        .switch_clauses => try self.newline(),
                     }
                 },
-                .span_end => |span_start| {
-                    if (span_start == root_token_i) {
-                        if (self.span_sep_needs_semi) try self.writeByte(';');
-                        return;
-                    }
-                    switch (tree.tokenTag(span_start)) {
-                        .@"<", .template_args_start => {
-                            try self.writeByte('>');
-                            if (span_start > 0 and tree.tokenTag(span_start - 1) == .k_var) {
-                                try self.writeSpace();
-                            }
-                        },
-                        .@"(" => try self.writeByte(')'),
-                        .@"@" => try self.writeByte(' '),
-                        .k_enable, .k_requires => {},
-                        .k_struct => {
+                .span_end => |span| {
+                    switch (span.tag) {
+                        .template_expressions => try self.writeByte('>'),
+                        .fn_params, .for_header, .attribute_expressions, .argument_expressions => try self.writeByte(')'),
+                        .attributes => try self.writeSpace(),
+                        .struct_members, .compound_statements, .switch_clauses => {
                             self.popIndent();
-                            try self.writeAll("\n}");
+                            if (span.len > 0) try self.newline();
+                            try self.writeByte('}');
                         },
-                        else => |t| {
-                            std.debug.print("unknown span end {any}\n", .{t});
-                        },
+                        else => {},
                     }
                 },
             }
@@ -384,8 +401,8 @@ test "enable" {
 }
 
 test "diagnostic" {
-    try testCanonical("diagnostic(warning, foo);");
-    try testCanonical("diagnostic(error, foo.bar);");
+    try testCanonical("diagnostic(warning,foo);");
+    try testCanonical("diagnostic(error,foo.bar);");
 }
 
 test "fn" {
@@ -395,10 +412,32 @@ test "fn" {
     try testCanonical("@vertex fn main() -> @location(0) u32 {}");
 }
 
+test "if" {
+    try testCanonical(
+        \\fn test() {
+        \\  if false {
+        \\    return;
+        \\  }
+        \\}
+    );
+
+    try testCanonical(
+        \\fn test() {
+        \\  if false {
+        \\    return;
+        \\  } else if true {
+        \\    return;
+        \\  } else {
+        \\    return;
+        \\  }
+        \\}
+    );
+}
+
 test "attributes" {
     try testCanonical("@location(0) var a: u32;");
-    try testCanonical("@interpolate(perspective, center) var a: u32;");
-    try testCanonical("@workgroup_size(1, 2, 3) var a: u32;");
+    try testCanonical("@interpolate(perspective,center) var a: u32;");
+    try testCanonical("@workgroup_size(1,2,3) var a: u32;");
 }
 
 test "requires" {
@@ -446,116 +485,107 @@ test "override" {
     try testCanonical("@id(0) override wireframe: bool = false;");
 }
 
-// test "type alias" {
-//     try testCanonical("alias single = f32;");
-// }
-//
-// test "field access" {
-//     try testCanonical("var a = b.c[d].e;");
-// }
-//
+test "type alias" {
+    try testCanonical("alias single = f32;");
+}
 
-// test "function" {
-//     try testCanonical(
-//         \\fn view32() -> @location(0) mat4x4f {
-//         \\  var res = mat4x4f(view.view);
-//         \\  res[3][0] = 0.0;
-//         \\  res[3][1] = 0.0;
-//         \\  res[3][2] = 0.0;
-//         \\  return res;
-//         \\}
-//     );
-// }
-//
-// test "entry function" {
-//     try testCanonical("@vertex fn main() {}");
-//     try testCanonical("@compute @workgroup_size(1,2,3) fn main() {}");
-// }
-//
-// test "paren" {
-//     try testCanonical("const a = (3 - 2);");
-//     try testCanonical("const a = ((3 - 2));");
-// }
-//
-// test "switch" {
-//     try testCanonical(
-//         \\fn test() {
-//         \\  switch a {
-//         \\    case 3, 4, default {
-//         \\      b = 2;
-//         \\      break;
-//         \\    }
-//         \\    default {
-//         \\      break;
-//         \\    }
-//         \\  }
-//         \\}
-//     );
-// }
-//
-// test "loop" {
-//     try testCanonical(
-//         \\fn test() {
-//         \\  loop {
-//         \\    if (i >= 4) {
-//         \\      break;
-//         \\    }
-//         \\    i++;
-//         \\  }
-//         \\}
-//     );
-//
-//     try testCanonical(
-//         \\fn test() {
-//         \\  loop {
-//         \\    if i % 2 == 0 {
-//         \\      continue;
-//         \\    }
-//         \\    continuing {
-//         \\      i++;
-//         \\      break if i >= 4;
-//         \\    }
-//         \\  }
-//         \\}
-//     );
-// }
-//
-// test "if" {
-//     try testCanonical(
-//         \\fn test() {
-//         \\  if false {
-//         \\    return;
-//         \\  }
-//         \\}
-//     );
-//
-//     try testCanonical(
-//         \\fn test() {
-//         \\  if false {
-//         \\    return;
-//         \\  } else if true {
-//         \\    return;
-//         \\  } else {
-//         \\    return;
-//         \\  }
-//         \\}
-//     );
-// }
-//
-// test "while" {
-//     try testCanonical(
-//         \\fn test() {
-//         \\  while false {
-//         \\    return;
-//         \\  }
-//         \\}
-//     );
-// }
-//
-// test "import" {
-//     try testRender("// import { Foo } from './foo.wgsl';", "", false);
-// }
-//
+test "field access" {
+    try testCanonical("var a = b.c[d].e;");
+}
+
+test "function" {
+    try testCanonical(
+        \\fn view32() -> @location(0) mat4x4f {
+        \\  var res = mat4x4f(view.view);
+        \\  res[3][0] = 0.0;
+        \\  res[3][1] = 0.0;
+        \\  res[3][2] = 0.0;
+        \\  return res;
+        \\}
+    );
+}
+
+test "for" {
+    try testCanonical(
+        \\fn view32() -> @location(0) mat4x4f {
+        \\  var a: i32 = 2;
+        \\  for (var i: i32 = 0; i < 4; i++) {
+        \\    if a == 0 {
+        \\      continue;
+        \\    }
+        \\    a = a + 2;
+        \\  }
+        \\}
+    );
+}
+
+test "entry function" {
+    try testCanonical("@vertex fn main() {}");
+    try testCanonical("@compute @workgroup_size(1,2,3) fn main() {}");
+}
+
+test "paren" {
+    try testCanonical("const a = (3 - 2);");
+    try testCanonical("const a = ((3 - 2));");
+}
+
+test "switch" {
+    try testCanonical(
+        \\fn test() {
+        \\  switch a {
+        \\    case 3, 4, default {
+        \\      b = 2;
+        \\      break;
+        \\    }
+        \\    default {
+        \\      break;
+        \\    }
+        \\  }
+        \\}
+    );
+}
+
+test "loop" {
+    try testCanonical(
+        \\fn test() {
+        \\  loop {
+        \\    if (i >= 4) {
+        \\      break;
+        \\    }
+        \\    i++;
+        \\  }
+        \\}
+    );
+
+    try testCanonical(
+        \\fn test() {
+        \\  loop {
+        \\    if i % 2 == 0 {
+        \\      continue;
+        \\    }
+        \\    continuing {
+        \\      i++;
+        \\      break if i >= 4;
+        \\    }
+        \\  }
+        \\}
+    );
+}
+
+test "while" {
+    try testCanonical(
+        \\fn test() {
+        \\  while false {
+        \\    return;
+        \\  }
+        \\}
+    );
+}
+
+test "import" {
+    try testRender("// import { Foo } from './foo.wgsl';", "", false);
+}
+
 // test "minify" {
 //     try testRender(
 //         \\fn test() {
@@ -564,6 +594,6 @@ test "override" {
 //         \\  }
 //         \\}
 //     ,
-//         \\fn test(){while false{if(true){return;}}}
+//         \\fn test(){while false{if true{return;}}}
 //     , true);
 // }

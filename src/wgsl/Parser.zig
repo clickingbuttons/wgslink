@@ -41,15 +41,13 @@ pub fn deinit(self: *Self, allocator: Allocator) void {
     defer self.scratch.deinit(allocator);
 }
 
-pub const root_token_i = std.math.maxInt(Token.Index);
-
 /// global_directive* global_decl*
 pub fn parseTranslationUnit(p: *Self) error{OutOfMemory}!void {
     try p.parameterizeTemplates();
     // Root node must be index 0.
     p.nodes.appendAssumeCapacity(Node{
         .tag = .span,
-        .token = root_token_i,
+        .token = @intFromEnum(Node.SpanTag.root),
         .data = Data{ .span = .{ .from = 0, .to = 0 } },
     });
 
@@ -151,12 +149,12 @@ fn parameterizeTemplates(p: *Self) error{OutOfMemory}!void {
 
 fn listToSpan(
     p: *Self,
-    start_tok: Token.Index,
+    tag: Node.SpanTag,
     list: []const Node.Index,
 ) error{OutOfMemory}!Node.Index {
     if (list.len == 0) return 0;
     try p.spans.appendSlice(p.allocator, list);
-    return try p.addNode(start_tok, Data.Span{
+    return try p.addNode(@intFromEnum(tag), Data.Span{
         .from = @intCast(p.spans.items.len - list.len),
         .to = @intCast(p.spans.items.len),
     });
@@ -293,7 +291,6 @@ fn diagnosticDirective(p: *Self) Error!?Node.Index {
 /// | software_extension_list :
 ///   software_extension_name ( `','` software_extension_name ) * `','` ?
 fn identTokenList(p: *Self) Error!Node.Index {
-    const span_start = p.tok_i;
     const scratch_top = p.scratch.items.len;
     defer p.scratch.shrinkRetainingCapacity(scratch_top);
     while (true) {
@@ -302,7 +299,7 @@ fn identTokenList(p: *Self) Error!Node.Index {
         if (p.eatToken(.@",") == null) break;
     }
     _ = p.eatToken(.@",");
-    return try p.listToSpan(span_start, p.scratch.items[scratch_top..]);
+    return try p.listToSpan(.tokens, p.scratch.items[scratch_top..]);
 }
 
 /// 'enable' enable_extension_list ';'
@@ -494,13 +491,12 @@ fn attribute(p: *Self) Error!?Node.Index {
 
 /// attribute*
 fn attributeList(p: *Self) Error!Node.Index {
-    const start_tok = p.tok_i;
     const scratch_top = p.scratch.items.len;
     defer p.scratch.shrinkRetainingCapacity(scratch_top);
     while (true) {
         if (try p.attribute()) |a| try p.scratch.append(p.allocator, a) else break;
     }
-    return try p.listToSpan(start_tok, p.scratch.items[scratch_top..]);
+    return try p.listToSpan(.attributes, p.scratch.items[scratch_top..]);
 }
 
 const Ident = struct {
@@ -607,9 +603,10 @@ fn structDecl(p: *Self) Error!?Node.Index {
         try p.addError(.empty_struct, name_token);
         return Error.Parsing;
     }
-    const start_tok = p.nodes.items(.token)[members[0]];
 
-    return try p.addNode(main_token, Data.Struct{ .members = try p.listToSpan(start_tok, members) });
+    return try p.addNode(main_token, Data.Struct{
+        .members = try p.listToSpan(.struct_members, members),
+    });
 }
 
 /// 'const_assert' expression
@@ -622,8 +619,8 @@ fn constAssertStatement(p: *Self) Error!?Node.Index {
 /// ident '(' param_list ? ')' ( '->' attribute * template_elaborated_ident ) ?
 fn fnHeader(p: *Self, attrs: Node.Index) Error!Node.Index {
     _ = try p.expectToken(.ident);
-    const start_tok = try p.expectToken(.@"(");
-    const params = try p.fnParameterList(start_tok);
+    _ = try p.expectToken(.@"(");
+    const params = try p.fnParameterList();
     _ = try p.expectToken(.@")");
 
     var proto = Node.FnHeader{
@@ -654,7 +651,7 @@ fn importAlias(p: *Self) Error!?Node.Index {
 
 // '{' import_alias (',' import_alias)* ','? '}'
 fn importList(p: *Self) Error!Node.Index {
-    const start_tok = p.eatToken(.@"{") orelse return 0;
+    _ = p.eatToken(.@"{") orelse return 0;
     const scratch_top = p.scratch.items.len;
     defer p.scratch.shrinkRetainingCapacity(scratch_top);
     while (true) {
@@ -663,7 +660,7 @@ fn importList(p: *Self) Error!Node.Index {
     }
     _ = try p.expectToken(.@"}");
     const imports = p.scratch.items[scratch_top..];
-    return try p.listToSpan(start_tok, imports);
+    return try p.listToSpan(.import_aliases, imports);
 }
 
 /// 'import' (import_list 'from')? string_literal ';'?
@@ -695,14 +692,14 @@ fn fnParameter(p: *Self) Error!?Node.Index {
 }
 
 /// param ( ',' param )* ','?
-fn fnParameterList(p: *Self, start_tok: Token.Index) Error!Node.Index {
+fn fnParameterList(p: *Self) Error!Node.Index {
     const scratch_top = p.scratch.items.len;
     defer p.scratch.shrinkRetainingCapacity(scratch_top);
     while (true) {
         if (try p.fnParameter()) |pa| try p.scratch.append(p.allocator, pa);
         if (p.eatToken(.@",") == null) break;
     }
-    return try p.listToSpan(start_tok, p.scratch.items[scratch_top..]);
+    return try p.listToSpan(.fn_params, p.scratch.items[scratch_top..]);
 }
 
 /// | ';'
@@ -737,7 +734,7 @@ fn statement(p: *Self) Error!?Node.Index {
         try p.switchStatement() orelse
         try p.whileStatement()) |node| return node;
     if (try p.returnStatement() orelse
-        try p.callPhrase() orelse
+        try p.callStatement() orelse
         try p.variableOrValueStatement() orelse
         try p.breakStatement() orelse
         try p.continueStatement() orelse
@@ -750,49 +747,6 @@ fn statement(p: *Self) Error!?Node.Index {
     }
 
     return null;
-}
-
-fn findNextStmt(p: *Self) void {
-    var level: Node.Index = 0;
-    while (true) {
-        switch (p.peekToken(.tag, 0)) {
-            .@";" => {
-                if (level == 0) {
-                    _ = p.advanceToken();
-                    return;
-                }
-            },
-            .@"{" => {
-                level += 1;
-            },
-            .@"}" => {
-                if (level == 0) {
-                    _ = p.advanceToken();
-                    return;
-                }
-                level -= 1;
-            },
-            .eof => return,
-            else => {},
-        }
-        _ = p.advanceToken();
-    }
-}
-
-fn statementRecoverable(p: *Self) Error!?Node.Index {
-    while (true) {
-        return p.statement() catch |err| switch (err) {
-            Error.Parsing => {
-                p.findNextStmt();
-                switch (p.peekToken(.tag, 0)) {
-                    .@"}" => return null,
-                    .eof => return Error.Parsing,
-                    else => continue,
-                }
-            },
-            error.OutOfMemory => error.OutOfMemory,
-        };
-    }
 }
 
 /// | variable_decl
@@ -856,7 +810,7 @@ fn compoundStatementExtra(p: *Self, attrs: Node.Index, last_statement: anytype) 
     _ = try p.expectToken(.@"}");
     return try p.addNode(main_token, Data.Compound{
         .attributes = attrs,
-        .statements = try p.listToSpan(main_token, p.scratch.items[scratch_top..]),
+        .statements = try p.listToSpan(.compound_statements, p.scratch.items[scratch_top..]),
     });
 }
 
@@ -880,7 +834,7 @@ fn expectCompoundStatement(p: *Self, attrs: Node.Index) Error!Node.Index {
 /// 'break'
 fn breakStatement(p: *Self) Error!?Node.Index {
     if (p.peekToken(.tag, 0) == .k_break and p.peekToken(.tag, 1) != .k_if) {
-        return try p.addNode(p.advanceToken(), Data.Break);
+        return try p.addNode(p.advanceToken(), Data.Break{});
     }
     return null;
 }
@@ -933,16 +887,16 @@ fn discardStatement(p: *Self) Error!?Node.Index {
 /// | variable_updating_statement
 /// | func_call_statement
 fn forInit(p: *Self) Error!?Node.Index {
-    return try p.variableOrValueStatement() orelse try p.callPhrase() orelse try p.variableUpdatingStatement();
+    return try p.variableOrValueStatement() orelse try p.callStatement() orelse try p.variableUpdatingStatement();
 }
 
 /// | variable_updating_statement
 /// | func_call_statement
 fn forUpdate(p: *Self) Error!?Node.Index {
-    return try p.variableUpdatingStatement() orelse try p.callPhrase() orelse 0;
+    return try p.variableUpdatingStatement() orelse try p.callStatement();
 }
 
-/// for_init ? ';' expression ? ';' for_update ?
+/// for_init? ';' expression? ';' for_update?
 fn expectForHeader(p: *Self, attrs: Node.Index) Error!Node.Index {
     const for_init = try p.forInit() orelse 0;
     _ = try p.expectToken(.@";");
@@ -1007,8 +961,9 @@ fn caseClause(p: *Self) Error!?Node.Index {
         if (try p.caseSelector()) |c| try p.scratch.append(p.allocator, c) else break;
     }
     _ = p.eatToken(.@":");
+    const selectors = try p.listToSpan(.case_selectors, p.scratch.items[scratch_top..]);
     return try p.addNode(main_token, Data.CaseClause{
-        .selectors = try p.listToSpan(main_token, p.scratch.items[scratch_top..]),
+        .selectors = selectors,
         .body = try p.expectCompoundStatement(try p.attributeList()),
     });
 }
@@ -1017,11 +972,8 @@ fn caseClause(p: *Self) Error!?Node.Index {
 fn defaultAloneClause(p: *Self) Error!?Node.Index {
     const main_token = p.eatToken(.k_default) orelse return null;
     _ = p.eatToken(.@":");
-    const scratch_top = p.scratch.items.len;
-    defer p.scratch.shrinkRetainingCapacity(scratch_top);
-    try p.scratch.append(p.allocator, 0);
     return try p.addNode(main_token, Data.CaseClause{
-        .selectors = try p.listToSpan(main_token, p.scratch.items[scratch_top..]),
+        .selectors = 0,
         .body = try p.expectCompoundStatement(try p.attributeList()),
     });
 }
@@ -1044,7 +996,7 @@ fn switchBody(p: *Self) Error!Node.Index {
 
     return try p.addNode(main_token, Data.SwitchBody{
         .attributes = attrs,
-        .clauses = try p.listToSpan(main_token, p.scratch.items[scratch_top..]),
+        .clauses = try p.listToSpan(.switch_clauses, p.scratch.items[scratch_top..]),
     });
 }
 
@@ -1107,7 +1059,10 @@ fn variableUpdatingStatement(p: *Self) Error!?Node.Index {
     } else if (try p.lhsExpression()) |lhs| {
         const main_token = p.advanceToken();
         switch (p.tokens.items(.tag)[main_token]) {
-            .@"++", .@"--" => {},
+            .@"++", .@"--" => return try p.addNode(main_token, Data.VariableUpdating{
+                .lhs_expr = lhs,
+                .rhs_expr = 0,
+            }),
             .@"=",
             .@"+=",
             .@"-=",
@@ -1169,7 +1124,7 @@ fn parenExpr(p: *Self) Error!?Node.Index {
 }
 
 /// expression ( ',' expression ) * ',' ?
-fn expressionCommaList(p: *Self, start_tok: Token.Index) Error!Node.Index {
+fn expressionCommaList(p: *Self) Error!Node.Index {
     const scratch_top = p.scratch.items.len;
     defer p.scratch.shrinkRetainingCapacity(scratch_top);
     while (true) {
@@ -1177,29 +1132,53 @@ fn expressionCommaList(p: *Self, start_tok: Token.Index) Error!Node.Index {
         try p.scratch.append(p.allocator, expr);
         if (p.eatToken(.@",") == null) break;
     }
-    return try p.listToSpan(start_tok, p.scratch.items[scratch_top..]);
+    return try p.listToSpan(.argument_expressions, p.scratch.items[scratch_top..]);
 }
 
 /// '(' expression_comma_list ? ')'
 fn expectArgumentExpressionList(p: *Self) Error!Node.Index {
-    const start_tok = try p.expectToken(.@"(");
-    const res = try p.expressionCommaList(start_tok);
+    _ = try p.expectToken(.@"(");
+    const res = try p.expressionCommaList();
     try p.expectAttribEnd();
     return res;
 }
 
+const CallPhrase = struct {
+    token: Token.Index,
+    ident: Node.Index,
+    arguments: Node.Index,
+};
 /// template_elaborated_ident argument_expression_list
-fn callPhrase(p: *Self) Error!?Node.Index {
-    const main_token = p.tok_i;
+fn callPhrase(p: *Self) Error!?CallPhrase {
+    const start_token = p.tok_i;
     const ident = try p.templateElaboratedIdent() orelse return null;
     // Unfortunately need lookbehind since sometimes other `templateElaboratedIdent` rules follow.
     if (p.peekToken(.tag, 0) != .@"(") {
-        p.tok_i = main_token;
+        p.tok_i = start_token;
         return null;
     }
-    return try p.addNode(main_token, Data.Call{
+    const main_token = p.tok_i;
+    const arguments = try p.expectArgumentExpressionList();
+    return CallPhrase{
+        .token = main_token,
         .ident = ident,
-        .arguments = try p.expectArgumentExpressionList(),
+        .arguments = arguments,
+    };
+}
+
+fn callExpr(p: *Self) Error!?Node.Index {
+    const call_phrase = try p.callPhrase() orelse return null;
+    return try p.addNode(call_phrase.token, Data.CallExpr{
+        .ident = call_phrase.ident,
+        .arguments = call_phrase.arguments,
+    });
+}
+
+fn callStatement(p: *Self) Error!?Node.Index {
+    const call_phrase = try p.callPhrase() orelse return null;
+    return try p.addNode(call_phrase.token, Data.CallStatement{
+        .ident = call_phrase.ident,
+        .arguments = call_phrase.arguments,
     });
 }
 
@@ -1270,13 +1249,13 @@ fn singularExpr(p: *Self) Error!?Node.Index {
 fn primaryExpr(p: *Self) Error!?Node.Index {
     return try p.literal() orelse
         try p.parenExpr() orelse
-        try p.callPhrase() orelse
+        try p.callExpr() orelse
         try p.templateElaboratedIdent();
 }
 
 /// '<' expression ( ',' expression ) * ',' ? '>'
 fn templateList(p: *Self) Error!Node.Index {
-    const start_tok = p.eatToken(.template_args_start) orelse return 0;
+    _ = p.eatToken(.template_args_start) orelse return 0;
     const scratch_top = p.scratch.items.len;
     defer p.scratch.shrinkRetainingCapacity(scratch_top);
     const expr = try p.expectExpression();
@@ -1285,7 +1264,7 @@ fn templateList(p: *Self) Error!Node.Index {
         if (try p.expression()) |e| try p.scratch.append(p.allocator, e) else break;
     }
     _ = try p.expectToken(.template_args_end);
-    return try p.listToSpan(start_tok, p.scratch.items[scratch_top..]);
+    return try p.listToSpan(.template_expressions, p.scratch.items[scratch_top..]);
 }
 
 /// ident template_list?

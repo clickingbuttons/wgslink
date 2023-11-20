@@ -614,3 +614,12 @@ test "template list" {
 test "invalid" {
     try testTokenize("?;", &.{ .invalid, .@";" });
 }
+
+test "attribute spacing" {
+    try testTokenize("@vertex@compute", &.{
+        .@"@",
+        .ident,
+        .@"@",
+        .ident,
+    });
+}

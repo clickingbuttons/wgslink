@@ -4,10 +4,26 @@ const Token = @import("Token.zig");
 pub const Index = u32;
 pub const ExtraIndex = u32;
 pub const Tag = Data.Tag;
+pub const SpanTag = enum {
+    tokens, // enable, require
+    attributes,
+    struct_members,
+    import_aliases,
+    fn_params,
+    compound_statements,
+    case_selectors,
+    switch_clauses,
+    argument_expressions,
+    template_expressions,
+    // extras for rendering
+    attribute_expressions,
+    root,
+    for_header,
+};
 
 tag: Tag,
-/// For error reporting, identifiers, and operators.
-/// For spans stores the token that starts the list. May be one of
+/// For spans stores `SpanTag`.
+/// For other nodes store the token used for error reporting, identifiers, and operators.
 token: Token.Index,
 // Can't use a tagged union because this goes into a MultiArrayList which will use 7 more bytes
 // per Node.
@@ -50,7 +66,12 @@ pub const Data = union {
         /// 0 means no return expression
         expr: Index,
     };
-    pub const Call = struct {
+    pub const CallExpr = struct {
+        ident: Index,
+        /// 0 means no arguments
+        arguments: Index,
+    };
+    pub const CallStatement = struct {
         ident: Index,
         /// 0 means no arguments
         arguments: Index,
@@ -60,6 +81,7 @@ pub const Data = union {
     pub const VariableUpdating = struct {
         /// 0 means '_'
         lhs_expr: Index,
+        /// 0 means lhs++ or lhs--
         rhs_expr: Index,
     };
     pub const ConstAssert = struct { expr: Index };
@@ -103,9 +125,8 @@ pub const Data = union {
     global_var: Self.GlobalVar,
     override: Self.Override,
     @"fn": Fn,
-    @"const": Const,
+    @"const": Const, // also a statement
     type_alias: TypeAlias,
-    // const_assert_statement
     import: Import,
     @"struct": Struct,
     // Global declaration helpers
@@ -123,7 +144,8 @@ pub const Data = union {
     @"switch": Switch,
     @"while": While,
     @"return": Return,
-    call: Call,
+    call_expr: CallExpr,
+    call_statement: CallStatement,
     // variable_or_value_statement
     @"var": Self.Var,
     let: Let,
@@ -132,7 +154,7 @@ pub const Data = union {
     @"continue": Continue,
     discard: Discard,
     variable_updating: VariableUpdating,
-    const_assert: ConstAssert,
+    const_assert: ConstAssert, // also a global declaration
     continuing: Continuing, // Loop helper
     break_if: BreakIf, // Continuing helper
     // Statement helpers
