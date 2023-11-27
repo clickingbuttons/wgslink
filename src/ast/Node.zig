@@ -1,61 +1,59 @@
 const std = @import("std");
-const Token = @import("../wgsl/Token.zig");
 
-pub const Index = u32;
-pub const ExtraIndex = u32;
-pub const Tag = Data.Tag;
-pub const SpanTag = enum {
-    tokens, // enable, require
-    attributes,
-    struct_members,
-    import_aliases,
-    fn_params,
-    compound_statements,
-    case_selectors,
-    switch_clauses,
-    argument_expressions,
-    template_expressions,
-    // extras for rendering
-    attribute_expressions,
-    root,
-    for_header,
-};
-
-tag: Tag,
-/// For spans stores `SpanTag`.
-/// For other nodes store the identifier or operator token.
-token: Token.Index,
-// Can't use a tagged union because this goes into a MultiArrayList which will use 7 more bytes
-// per Node.
-data: Data,
-
-pub const Data = union {
-    const Self = @This();
+pub const Node = union(enum) {
+    pub const Index = u32;
+    pub const ExtraIndex = u32;
+    pub const IdentIndex = u32;
     pub const Tag = std.meta.FieldEnum(Self);
 
-    pub const Span = struct { from: Index, to: Index };
-    pub const DiagnosticDirective = struct { control: ExtraIndex };
-    pub const EnableDirective = struct { ident_tokens: Index };
-    pub const RequiresDirective = struct { ident_tokens: Index };
+    const Self = @This();
+    pub const Error = struct {
+        tag: u8,
+        expected_token_tag: u8 = 0,
+        source_info: ExtraIndex,
+    };
+    /// For storing lists of nodes
+    pub const Span = struct {
+        from: Index,
+        to: Index,
+
+        pub fn orderedRemove(self: *@This(), arr: []Node.Index, i: usize) void {
+            for (self.from + i..self.to - 1) |j| {
+                arr[j] = arr[j + 1];
+            }
+            self.to -= 1;
+        }
+    };
+    pub const Ident = struct {
+        name: IdentIndex,
+        /// 0 means empty
+        template_list: Index,
+    };
+    pub const Let = struct { typed_ident: ExtraIndex, initializer: Index };
+    pub const SingleExpr = struct { expr: Index };
+    pub const Assign = struct { lhs_expr: Index, rhs_expr: Index };
+    pub const ShiftExpr = struct { lhs_unary_expr: Index, rhs_unary_expr: Index };
+    pub const RelationalExpr = struct { lhs_shift_expr: Index, rhs_shift_expr: Index };
+    pub const MultiplicativeExpr = struct { lhs_multiplicative_expr: Index, rhs_unary_expr: Index };
+    pub const AdditiveExpr = struct { lhs_additive_expr: Index, rhs_mul_expr: Index };
+    pub const ShortCircuitExpr = struct { lhs_relational_expr: Index, rhs_relational_expr: Index };
+    pub const BitwiseExpr = struct { lhs_bitwise_expr: Index, rhs_unary_expr: Index };
+
+    pub const DiagnosticDirective = struct { diagnostic_control: ExtraIndex };
+    pub const IdentList = struct { idents: Index };
     pub const GlobalVar = struct { global_var: ExtraIndex, initializer: Index };
     pub const Override = struct { override: ExtraIndex, initializer: Index };
     pub const Fn = struct { fn_header: ExtraIndex, body: Index };
-    pub const Const = struct { type: Index, initializer: Index };
-    pub const TypeAlias = struct { value: Index };
-    pub const Import = struct { aliases: Index, module: Token.Index };
-    pub const Struct = struct { members: Index };
-    pub const Attr = struct { tag: Attribute.Tag, data: Attribute };
-    pub const Ident = struct {
-        /// 0 means empty
-        template_list: Index,
+    pub const TypeAlias = struct { new_name: IdentIndex, old_type: Index };
+    pub const Import = struct { aliases: Index, module: IdentIndex };
+    pub const Struct = struct { name: IdentIndex, members: Index };
+    pub const ImportAlias = struct {
+        old: IdentIndex,
+        /// 0 means no alias
+        new: IdentIndex,
     };
-    pub const Type = struct {
-        /// 0 means empty
-        template_list: Index,
-    };
-    pub const Alias = struct { alias: Token.Index };
-    pub const StructMember = struct { attributes: Index, type: Index };
-    pub const FnParam = struct { attributes: Index, type: Index };
+    pub const StructMember = struct { attributes: Index, typed_ident: ExtraIndex };
+    pub const FnParam = struct { attributes: Index, fn_param: ExtraIndex };
     pub const Loop = struct { attributes: Index, body: Index };
     pub const Compound = struct { attributes: Index, statements: Index };
     pub const For = struct { for_header: ExtraIndex, body: Index };
@@ -63,28 +61,15 @@ pub const Data = union {
     pub const Switch = struct { expr: Index, body: Index };
     pub const While = struct { condition: Index, body: Index };
     pub const Return = struct {
-        /// 0 means no return expression
+        /// 0 means no expression
         expr: Index,
     };
-    pub const CallExpr = struct {
-        ident: Index,
-        /// 0 means no arguments
-        arguments: Index,
-    };
-    pub const CallStatement = struct {
+    pub const Call = struct {
         ident: Index,
         /// 0 means no arguments
         arguments: Index,
     };
     pub const Var = struct { @"var": ExtraIndex, initializer: Index };
-    pub const Let = struct { type: Index, initializer: Index };
-    pub const VariableUpdating = struct {
-        /// 0 means '_'
-        lhs_expr: Index,
-        /// 0 means lhs++ or lhs--
-        rhs_expr: Index,
-    };
-    pub const ConstAssert = struct { expr: Index };
     pub const Continuing = struct { body: Index };
     pub const BreakIf = struct { condition: Index };
     pub const Else = struct { @"if": Index, body: Index };
@@ -93,114 +78,120 @@ pub const Data = union {
     pub const CaseClause = struct { selectors: Index, body: Index };
     pub const CaseSelector = struct {
         /// 0 means `default`
-        expression: Index,
+        expr: Index,
     };
-    pub const ParenExpr = struct { expr: Index };
-    pub const UnaryExpr = struct { expr: Index };
-    pub const ShiftExpr = struct { lhs_unary_expr: Index, rhs_unary_expr: Index };
-    pub const RelationalExpr = struct { lhs_shift_expr: Index, rhs_shift_expr: Index };
-    pub const MultiplicativeExpr = struct { lhs_multiplicative_expr: Index, rhs_unary_expr: Index };
-    pub const AdditiveExpr = struct { lhs_additive_expr: Index, rhs_mul_expr: Index };
-    pub const ShortCircuitExpr = struct { lhs_relational_expr: Index, rhs_relational_expr: Index };
-    pub const BitwiseExpr = struct { lhs_bitwise_expr: Index, rhs_unary_expr: Index };
-    pub const LhsExpr = struct { lhs_expr: Index };
-    pub const FieldAccess = struct { lhs_expr: Index, member: Token.Index };
+    pub const FieldAccess = struct { lhs_expr: Index, member: IdentIndex };
     pub const IndexAccess = struct { lhs_expr: Index, index_expr: Index };
+    pub const Number = struct { value: IdentIndex };
 
-    // These can't be void because of how Parser.addNode loops through field types to find field names.
-    pub const Break = struct {};
-    pub const Continue = struct {};
-    pub const Discard = struct {};
-    pub const True = struct {};
-    pub const False = struct {};
-    pub const Number = struct {};
     // Util
-    empty: void, // For removing nodes in-place
-    span: Span, // For storing lists of nodes
+    @"error": Error,
+    span: Span,
     // Directives
     diagnostic_directive: DiagnosticDirective,
-    enable_directive: EnableDirective,
-    requires_directive: RequiresDirective,
+    enable_directive: IdentList,
+    requires_directive: IdentList,
     // Global declarations
     global_var: Self.GlobalVar,
     override: Self.Override,
     @"fn": Fn,
-    @"const": Const, // also a statement
+    fn_param: Self.FnParam,
+    @"const": Let,
     type_alias: TypeAlias,
     import: Import,
+    import_alias: ImportAlias,
     @"struct": Struct,
-    // Global declaration helpers
-    attr: Attr,
-    ident: Ident,
-    type: Type,
-    alias: Alias, // Import helper
     struct_member: StructMember,
-    fn_param: FnParam,
+    // Global declaration helpers
+    attribute: Attribute,
+    ident: Ident,
+    type: Ident,
     // Statements
     loop: Loop,
     compound: Compound,
     @"for": For,
     @"if": If,
+    @"else": Else,
+    else_if: ElseIf,
     @"switch": Switch,
+    switch_body: SwitchBody,
+    case_clause: CaseClause,
+    case_selector: CaseSelector,
     @"while": While,
     @"return": Return,
-    call_expr: CallExpr,
-    call_statement: CallStatement,
+    call: Call,
     // variable_or_value_statement
     @"var": Self.Var,
     let: Let,
     // const
-    @"break": Break,
-    @"continue": Continue,
-    discard: Discard,
-    variable_updating: VariableUpdating,
-    const_assert: ConstAssert, // also a global declaration
+    @"break": void,
+    @"continue": void,
+    discard: void,
+    // There's plenty of space in this tag to list all operators.
+    increment: SingleExpr,
+    decrement: SingleExpr,
+    phony_assign: SingleExpr,
+    @"=": Assign,
+    @"+=": Assign,
+    @"-=": Assign,
+    @"*=": Assign,
+    @"/=": Assign,
+    @"%=": Assign,
+    @"&=": Assign,
+    @"|=": Assign,
+    @"^=": Assign,
+    @"<<=": Assign,
+    @">>=": Assign,
+    const_assert: SingleExpr, // also a global declaration
     continuing: Continuing, // Loop helper
     break_if: BreakIf, // Continuing helper
-    // Statement helpers
-    @"else": Else,
-    else_if: ElseIf,
-    switch_body: SwitchBody,
-    case_clause: CaseClause,
-    case_selector: CaseSelector,
     // Expressions
-    paren_expr: ParenExpr,
-    /// main_token is one of @"!", .@"~", .@"-", .@"*", .@"&"
-    unary_expr: UnaryExpr,
-    /// main_token is one of .@"<<", .@">>"
-    shift_expr: ShiftExpr,
-    /// main_token is one of .@"<", .@">", .@"<=", .@">=", .@"==", .@"!="
-    relational_expr: RelationalExpr,
-    /// main_token is one of .@"*", .@"/", .@"%"
-    multiplicative_expr: MultiplicativeExpr,
-    /// main_token is one of .@"+", .@"-"
-    additive_expr: AdditiveExpr,
-    /// main_token is one of @"&&", @"||"
-    short_circuit_expr: ShortCircuitExpr,
-    /// main_token is one of .@"&", .@"|", .@"^"
-    bitwise_expr: BitwiseExpr,
-    /// main_token is one of .@"*" (deref), .@"&" (addr_of)
-    lhs_expr: LhsExpr,
-    // Expression helpers
+    // https://www.w3.org/TR/WGSL/#operator-precedence-associativity
+    paren: SingleExpr,
+    logical_not: SingleExpr,
+    bitwise_complement: SingleExpr,
+    negative: SingleExpr,
+    deref: SingleExpr,
+    ref: SingleExpr,
+    lshift: ShiftExpr,
+    rshift: ShiftExpr,
+    lt: RelationalExpr,
+    gt: RelationalExpr,
+    lte: RelationalExpr,
+    gte: RelationalExpr,
+    eq: RelationalExpr,
+    neq: RelationalExpr,
+    mul: MultiplicativeExpr,
+    div: MultiplicativeExpr,
+    mod: MultiplicativeExpr,
+    add: AdditiveExpr,
+    sub: AdditiveExpr,
+    logical_and: ShortCircuitExpr,
+    logical_or: ShortCircuitExpr,
+    bitwise_and: BitwiseExpr,
+    bitwise_or: BitwiseExpr,
+    bitwise_xor: BitwiseExpr,
     field_access: FieldAccess,
     index_access: IndexAccess,
     // Literals
-    true: True,
-    false: False,
+    true: void,
+    false: void,
     number: Number,
 
     comptime {
-        std.debug.assert(@sizeOf(@This()) <= 4 * @sizeOf(u32));
+        // Size will be 9 in MultiArrayList because tag will shrink from 4 bytes to 1
+        std.debug.assert(@sizeOf(Self) == 12);
     }
 };
 
 // For parsing
-pub const Attribute = union {
+pub const Attribute = union(enum) {
     pub const Tag = std.meta.FieldEnum(@This());
-    pub const SingleExpr = Index;
-    pub const DiagnosticControl = ExtraIndex;
-    pub const Interpolate = ExtraIndex;
-    pub const WorkgroupSize = ExtraIndex;
+    pub const SingleExpr = Node.Index;
+    pub const DiagnosticControl = Node.ExtraIndex;
+    pub const Interpolate = Node.ExtraIndex;
+    pub const WorkgroupSize = Node.ExtraIndex;
+    const Self = @This();
 
     compute: void,
     @"const": void,
@@ -215,11 +206,15 @@ pub const Attribute = union {
     id: SingleExpr,
     location: SingleExpr,
     size: SingleExpr,
-    diagnostic: Attribute.DiagnosticControl,
+    diagnostic: Self.DiagnosticControl,
     interpolate: Interpolate,
-    workgroup_size: Attribute.WorkgroupSize,
+    workgroup_size: Self.WorkgroupSize,
+
+    comptime {
+        std.debug.assert(@sizeOf(Self) == 8);
+    }
 };
-pub const Severity = enum(Index) {
+pub const Severity = enum(Node.Index) {
     @"error",
     warning,
     info,
@@ -228,43 +223,59 @@ pub const Severity = enum(Index) {
 
 // For ast.extraData
 pub const GlobalVar = struct {
-    attrs: Index = 0,
-    name: Token.Index,
-    template_list: Index = 0,
-    type: Index = 0,
+    attrs: Node.Index = 0,
+    name: Node.IdentIndex,
+    template_list: Node.Index = 0,
+    type: Node.Index = 0,
 };
 pub const Var = struct {
-    name: Token.Index,
-    template_list: Index = 0,
-    type: Index = 0,
+    name: Node.IdentIndex,
+    template_list: Node.Index = 0,
+    type: Node.Index = 0,
+};
+pub const TypedIdent = struct {
+    name: Node.IdentIndex,
+    type: Node.Index,
 };
 pub const Override = struct {
-    attrs: Index = 0,
-    type: Index = 0,
+    attrs: Node.Index = 0,
+    name: Node.IdentIndex,
+    type: Node.Index = 0,
 };
 pub const WorkgroupSize = struct {
-    x: Index,
-    y: Index = 0,
-    z: Index = 0,
+    x: Node.Index,
+    y: Node.Index = 0,
+    z: Node.Index = 0,
+};
+pub const FnParam = struct {
+    name: Node.IdentIndex,
+    type: Node.Index = 0,
 };
 pub const FnHeader = struct {
-    attrs: Index = 0,
-    params: Index = 0,
-    return_attrs: Index = 0,
-    return_type: Index = 0,
+    attrs: Node.Index = 0,
+    name: Node.IdentIndex,
+    params: Node.Index = 0,
+    return_attrs: Node.Index = 0,
+    return_type: Node.Index = 0,
 };
 pub const ForHeader = struct {
-    attrs: Index = 0,
-    init: Index = 0,
-    cond: Index = 0,
-    update: Index = 0,
+    attrs: Node.Index = 0,
+    init: Node.Index = 0,
+    cond: Node.Index = 0,
+    update: Node.Index = 0,
 };
 pub const DiagnosticControl = struct {
-    severity: Token.Index,
-    name: Token.Index,
-    field: Token.Index = 0,
+    severity: Node.Index,
+    name: Node.IdentIndex,
+    field: Node.IdentIndex = 0,
 };
 pub const Interpolation = struct {
-    type: Index,
-    sampling_expr: Index = 0,
+    type: Node.Index,
+    sampling_expr: Node.Index = 0,
+};
+pub const SourceInfo = struct {
+    line: Node.IdentIndex,
+    line_num: u32,
+    col_num: u32,
+    tok_len: u32,
 };

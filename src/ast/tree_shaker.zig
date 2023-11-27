@@ -1,251 +1,190 @@
 const std = @import("std");
 const Ast = @import("./Ast.zig");
-const Node = @import("./Node.zig");
+const node_mod = @import("./Node.zig");
 
+const Node = node_mod.Node;
 const Allocator = std.mem.Allocator;
 const Used = std.StringHashMap(void);
 
 fn findSymbols(used: *Used, tree: *Ast) !void {
-    for (tree.spanToList(0)) |node| {
-        if (tree.nodeTag(node) != .@"fn") continue;
-
-        const extra = tree.extraData(Node.FnProto, tree.nodeLHS(node));
-        if (extra.attrs == 0) continue;
-
-        for (tree.spanToList(extra.attrs)) |a| {
-            const attr: Node.Attribute = @enumFromInt(tree.nodeLHS(a));
-            switch (attr) {
-                .vertex, .fragment, .compute => {
-                    try used.put(tree.declNameSource(node), {});
-                    break;
-                },
-                else => {},
-            }
-        }
-    }
-}
-
-fn addUsedSymbol(tree: *Ast, used: *Used, symbol: []const u8) Allocator.Error!void {
-    if (used.get(symbol)) |_| return;
-    try used.put(symbol, {});
-    for (tree.spanToList(0)) |node| {
-        switch (tree.nodeTag(node)) {
-            .global_var, .override, .@"const", .@"struct", .@"fn", .type_alias => {
-                if (std.mem.eql(u8, tree.declNameSource(node), symbol)) try visitGlobal(tree, used, node);
+    for (tree.spanToList(0)) |i| {
+        switch (tree.node(i)) {
+            .@"fn" => |n| {
+                const header = tree.extraData(node_mod.FnHeader, n.fn_header);
+                if (header.attrs == 0) continue;
+                for (tree.spanToList(header.attrs)) |a| {
+                    const attr = tree.node(a).attribute;
+                    switch (attr) {
+                        .vertex, .fragment, .compute => {
+                            try used.put(tree.globalName(i), {});
+                            break;
+                        },
+                        else => {},
+                    }
+                }
             },
             else => {},
         }
     }
 }
 
-fn visitCall(tree: *Ast, used: *Used, node: Node.Index) Allocator.Error!void {
-    try visitType(tree, used, tree.nodeLHS(node));
-
-    const args = tree.nodeRHS(node);
-    if (args != 0) {
-        for (tree.spanToList(args)) |arg| try visitExpr(tree, used, arg);
+fn addUsedSymbol(tree: *Ast, used: *Used, ident: Node.IdentIndex) Allocator.Error!void {
+    const symbol = tree.identifier(ident);
+    if (symbol.len == 0 or used.get(symbol) != null) return;
+    try used.put(symbol, {});
+    for (tree.spanToList(0)) |i| {
+        switch (tree.node(i)) {
+            .global_var, .override, .@"const", .@"struct", .@"fn", .type_alias => {
+                if (std.mem.eql(u8, tree.globalName(i), symbol)) try visit(tree, used, i);
+            },
+            else => {},
+        }
     }
 }
 
-fn visitIf(tree: *Ast, used: *Used, node: Node.Index) Allocator.Error!void {
-    try visitExpr(tree, used, tree.nodeLHS(node));
-    try visitCompoundStatement(tree, used, tree.nodeRHS(node));
+fn visitAll(tree: *Ast, used: *Used, nodes: []const Node.Index) Allocator.Error!void {
+    for (nodes) |n| try visit(tree, used, n);
 }
 
-fn visitVar(tree: *Ast, used: *Used, extra: anytype, node: Node.Index) Allocator.Error!void {
-    if (extra.type != 0) try visitType(tree, used, extra.type);
-    try visitExpr(tree, used, tree.nodeRHS(node));
-}
-
-fn visitConst(tree: *Ast, used: *Used, node: Node.Index) Allocator.Error!void {
-    const lhs = tree.nodeLHS(node);
-    const rhs = tree.nodeRHS(node);
-    try visitType(tree, used, lhs);
-    try visitExpr(tree, used, rhs);
-}
-
-fn visitExpr(tree: *Ast, used: *Used, node: Node.Index) Allocator.Error!void {
+fn visit(tree: *Ast, used: *Used, node: Node.Index) Allocator.Error!void {
     if (node == 0) return;
-    const lhs = tree.nodeLHS(node);
-    const rhs = tree.nodeRHS(node);
-    switch (tree.nodeTag(node)) {
-        .ident => try addUsedSymbol(tree, used, tree.nodeSource(node)),
-        .number, .true, .false => {},
-        .not, .negate, .deref, .addr_of, .paren_expr, .field_access => try visitExpr(tree, used, lhs),
-        .mul,
-        .div,
-        .mod,
-        .add,
-        .sub,
-        .shl,
-        .shr,
-        .@"and",
-        .@"or",
-        .xor,
-        .logical_and,
-        .logical_or,
-        .equal,
-        .not_equal,
-        .less_than,
-        .less_than_equal,
-        .greater_than,
-        .greater_than_equal,
-        .index_access,
-        => {
-            try visitExpr(tree, used, lhs);
-            try visitExpr(tree, used, rhs);
+    switch (tree.node(node)) {
+        .span => for (tree.spanToList(node)) |i| try visit(tree, used, i),
+        .global_var => |n| {
+            const global_var = tree.extraData(node_mod.GlobalVar, n.global_var);
+            try visitAll(tree, used, &.{
+                global_var.attrs,
+                global_var.template_list,
+                global_var.type,
+                n.initializer,
+            });
         },
-        .call => try visitCall(tree, used, node),
-        else => |t| {
-            std.debug.print("invalid expression {s}\n", .{@tagName(t)});
+        .override => |n| {
+            const override = tree.extraData(node_mod.Override, n.override);
+            try visitAll(tree, used, &.{
+                override.attrs,
+                override.type,
+                n.initializer,
+            });
         },
-    }
-}
-
-fn visitStatement(tree: *Ast, used: *Used, node: Node.Index) Allocator.Error!void {
-    const lhs = tree.nodeLHS(node);
-    const rhs = tree.nodeRHS(node);
-
-    switch (tree.nodeTag(node)) {
-        .compound_assign => {
-            try visitExpr(tree, used, lhs);
-            try visitExpr(tree, used, rhs);
+        .@"fn" => |n| {
+            const header = tree.extraData(node_mod.FnHeader, n.fn_header);
+            try visitAll(tree, used, &.{
+                header.attrs,
+                header.params,
+                header.return_attrs,
+                header.return_type,
+                n.body,
+            });
         },
-        .phony_assign => try visitExpr(tree, used, lhs),
-        .call => try visitCall(tree, used, node),
-        .@"return" => try visitExpr(tree, used, lhs),
-        .comment => {},
-        .break_if => try visitExpr(tree, used, lhs),
-        .@"if" => try visitIf(tree, used, node),
-        .else_if => {
-            try visitIf(tree, used, lhs);
-            try visitStatement(tree, used, rhs);
+        .@"const", .let => |n| {
+            const typed_ident = tree.extraData(node_mod.TypedIdent, n.typed_ident);
+            try visitAll(tree, used, &.{
+                typed_ident.name,
+                typed_ident.type,
+                n.initializer,
+            });
         },
-        .@"else" => {
-            try visitIf(tree, used, lhs);
-            try visitCompoundStatement(tree, used, rhs);
+        .type_alias => |n| try visit(tree, used, n.old_type),
+        .@"struct" => |n| try visit(tree, used, n.members),
+        .struct_member => |n| {
+            const typed_ident = tree.extraData(node_mod.TypedIdent, n.typed_ident);
+            try visitAll(tree, used, &.{
+                n.attributes,
+                typed_ident.type,
+            });
         },
-        .@"while" => {
-            try visitExpr(tree, used, lhs);
-            try visitCompoundStatement(tree, used, rhs);
+        .fn_param => |n| {
+            const param = tree.extraData(node_mod.FnParam, n.fn_param);
+            try visitAll(tree, used, &.{
+                n.attributes,
+                param.type,
+            });
         },
-        .@"for" => {
-            const extra = tree.extraData(Node.ForHeader, tree.nodeLHS(node));
-            try visitStatement(tree, used, extra.init);
-            try visitExpr(tree, used, extra.cond);
-            try visitStatement(tree, used, extra.update);
-            try visitCompoundStatement(tree, used, rhs);
+        .type, .ident => |n| {
+            try addUsedSymbol(tree, used, n.name);
+            try visit(tree, used, n.template_list);
         },
-        .@"switch" => {
-            try visitExpr(tree, used, lhs);
-            try visitSwitchBody(tree, used, rhs);
+        .attribute => |n| {
+            switch (n) {
+                .compute, .@"const", .fragment, .invariant, .must_use, .vertex, .diagnostic, .interpolate => {},
+                .@"align", .binding, .builtin, .group, .id, .location, .size => |e| {
+                    try visit(tree, used, e);
+                },
+                .workgroup_size => |w| {
+                    const workgroup_size = tree.extraData(node_mod.WorkgroupSize, w);
+                    try visitAll(tree, used, &.{
+                        workgroup_size.x,
+                        workgroup_size.y,
+                        workgroup_size.z,
+                    });
+                },
+            }
         },
-        .loop => try visitCompoundStatement(tree, used, rhs),
-        .compound_statement => try visitCompoundStatement(tree, used, node),
-        .continuing => try visitCompoundStatement(tree, used, lhs),
-        .discard, .@"break", .@"continue" => {},
-        .increase, .decrease => try visitExpr(tree, used, lhs),
-        .@"const", .let => try visitConst(tree, used, node),
-        .@"var" => {
-            const extra = tree.extraData(Node.Var, tree.nodeLHS(node));
-            try visitVar(tree, used, extra, node);
+        .@"for" => |n| {
+            const header = tree.extraData(node_mod.ForHeader, n.for_header);
+            try visitAll(tree, used, &.{
+                header.attrs,
+                header.init,
+                header.cond,
+                header.update,
+                n.body,
+            });
         },
-        else => |t| {
-            std.debug.print("not visiting {s}\n", .{@tagName(t)});
+        .loop => |n| try visitAll(tree, used, &.{ n.attributes, n.body }),
+        .compound => |n| try visit(tree, used, n.statements),
+        .@"if" => |n| try visitAll(tree, used, &.{ n.condition, n.body }),
+        .else_if => |n| try visitAll(tree, used, &.{ n.if1, n.if2 }),
+        .@"else" => |n| try visitAll(tree, used, &.{ n.@"if", n.body }),
+        .@"switch" => |n| try visitAll(tree, used, &.{ n.expr, n.body }),
+        .switch_body => |n| try visitAll(tree, used, &.{ n.attributes, n.clauses }),
+        .case_clause => |n| try visitAll(tree, used, &.{ n.selectors, n.body }),
+        .case_selector => |n| try visit(tree, used, n.expr),
+        .@"while" => |n| try visitAll(tree, used, &.{ n.condition, n.body }),
+        .@"return" => |n| try visit(tree, used, n.expr),
+        .continuing => |n| try visit(tree, used, n.body),
+        .break_if => |n| try visit(tree, used, n.condition),
+        .call => |n| try visitAll(tree, used, &.{ n.ident, n.arguments }),
+        .@"var" => |n| {
+            const extra = tree.extraData(node_mod.Var, n.@"var");
+            try visitAll(tree, used, &.{ extra.template_list, extra.name, extra.type, n.initializer });
         },
-    }
-}
-
-fn visitCaseSelector(tree: *Ast, used: *Used, node: Node.Index) !void {
-    try visitExpr(tree, used, tree.nodeLHS(node));
-}
-
-fn visitSwitchClause(tree: *Ast, used: *Used, node: Node.Index) !void {
-    const selectors = tree.nodeLHS(node);
-    if (selectors != 0) {
-        const list = tree.spanToList(selectors);
-        for (list) |s| try visitCaseSelector(tree, used, s);
-    }
-    try visitCompoundStatement(tree, used, tree.nodeRHS(node));
-}
-
-fn visitSwitchBody(tree: *Ast, used: *Used, node: Node.Index) !void {
-    for (tree.spanToList(tree.nodeRHS(node))) |c| try visitSwitchClause(tree, used, c);
-}
-
-fn visitCompoundStatement(tree: *Ast, used: *Used, node: Node.Index) Allocator.Error!void {
-    const rhs = tree.nodeRHS(node);
-    if (rhs != 0) {
-        for (tree.spanToList(rhs)) |n| try visitStatement(tree, used, n);
-    }
-}
-
-fn visitTemplateElaboratedIdent(tree: *Ast, used: *Used, node: Node.Index) !void {
-    if (node == 0) return;
-    try addUsedSymbol(tree, used, tree.nodeSource(node));
-    const lhs = tree.nodeLHS(node);
-    if (lhs != 0) {
-        for (tree.spanToList(lhs)) |n| try visitExpr(tree, used, n);
-    }
-}
-
-fn visitType(tree: *Ast, used: *Used, node: Node.Index) Allocator.Error!void {
-    try visitTemplateElaboratedIdent(tree, used, node);
-}
-
-fn visitFn(tree: *Ast, used: *Used, node: Node.Index) Allocator.Error!void {
-    const extra = tree.extraData(Node.FnProto, tree.nodeLHS(node));
-    if (extra.params != 0) {
-        for (tree.spanToList(extra.params)) |p| try visitType(tree, used, tree.nodeRHS(p));
-    }
-    if (extra.return_type != 0) try visitType(tree, used, extra.return_type);
-
-    try addUsedSymbol(tree, used, tree.declNameSource(node));
-    try visitCompoundStatement(tree, used, tree.nodeRHS(node));
-}
-
-fn visitGlobalVar(tree: *Ast, used: *Used, node: Node.Index) Allocator.Error!void {
-    const extra = tree.extraData(Node.GlobalVar, tree.nodeLHS(node));
-
-    try visitVar(tree, used, extra, node);
-}
-
-fn visitOverride(tree: *Ast, used: *Used, node: Node.Index) Allocator.Error!void {
-    const extra = tree.extraData(Node.Override, tree.nodeLHS(node));
-
-    if (extra.type != 0) try visitType(tree, used, extra.type);
-
-    const rhs = tree.nodeRHS(node);
-    if (rhs != 0) try visitExpr(tree, used, rhs);
-}
-
-fn visitStruct(tree: *Ast, used: *Used, node: Node.Index) Allocator.Error!void {
-    const members = tree.spanToList(tree.nodeLHS(node));
-    for (members) |n| try visitType(tree, used, tree.nodeRHS(n));
-}
-
-fn visitTypeAlias(tree: *Ast, used: *Used, node: Node.Index) Allocator.Error!void {
-    try visitType(tree, used, tree.nodeLHS(node));
-}
-
-fn visitConstAssert(tree: *Ast, used: *Used, node: Node.Index) Allocator.Error!void {
-    try visitExpr(tree, used, tree.nodeLHS(node));
-}
-
-fn visitGlobal(tree: *Ast, used: *Used, node: Node.Index) Allocator.Error!void {
-    switch (tree.nodeTag(node)) {
-        .global_var => try visitGlobalVar(tree, used, node),
-        .override => try visitOverride(tree, used, node),
-        .@"const" => try visitConst(tree, used, node),
-        .const_assert => try visitConstAssert(tree, used, node),
-        .type_alias => try visitTypeAlias(tree, used, node),
-        .@"struct" => try visitStruct(tree, used, node),
-        .@"fn" => try visitFn(tree, used, node),
-        .comment => {},
-        else => |t| {
-            std.debug.print("could not prune node {s}\n", .{@tagName(t)});
-            unreachable;
+        // zig fmt off
+        .const_assert,
+        .increment,
+        .decrement,
+        .phony_assign,
+        .paren,
+        .logical_not,
+        .bitwise_complement,
+        .negative,
+        .deref,
+        .ref,
+        // zig fmt on
+        => |n| try visit(tree, used, n.expr),
+        .@"=", .@"+=", .@"-=", .@"*=", .@"/=", .@"%=", .@"&=", .@"|=", .@"^=", .@"<<=", .@">>=" => |n| {
+            try visitAll(tree, used, &.{ n.lhs_expr, n.rhs_expr });
         },
+        .lshift, .rshift => |n| {
+            try visitAll(tree, used, &.{ n.lhs_unary_expr, n.rhs_unary_expr });
+        },
+        .lt, .gt, .lte, .gte, .eq, .neq => |n| {
+            try visitAll(tree, used, &.{ n.lhs_shift_expr, n.rhs_shift_expr });
+        },
+        .mul, .div, .mod => |n| {
+            try visitAll(tree, used, &.{ n.lhs_multiplicative_expr, n.rhs_unary_expr });
+        },
+        .add, .sub => |n| try visitAll(tree, used, &.{ n.lhs_additive_expr, n.rhs_mul_expr }),
+        .logical_and, .logical_or => |n| {
+            try visitAll(tree, used, &.{ n.lhs_relational_expr, n.rhs_relational_expr });
+        },
+        .bitwise_and, .bitwise_or, .bitwise_xor => |n| {
+            try visitAll(tree, used, &.{ n.lhs_bitwise_expr, n.rhs_unary_expr });
+        },
+        .field_access => |n| try visit(tree, used, n.lhs_expr),
+        .index_access => |n| try visitAll(tree, used, &.{ n.lhs_expr, n.index_expr }),
+        .diagnostic_directive, .enable_directive, .requires_directive, .import_alias => {},
+        .import, .number, .true, .false, .@"break", .@"continue", .discard, .@"error" => {},
     }
 }
 
@@ -254,46 +193,50 @@ pub const Options = struct {
     find_symbols: bool = true,
 };
 
-/// Tree shakes globals by setting unused root span nodes to empty.
-/// Sets unused import nodes to empty.
-pub fn treeShake(tree: *Ast, allocator: Allocator, opts: Options) Allocator.Error!void {
+/// Tree shakes globals by removing unused nodes (including imports) from the root span.
+/// Tree shakes imports by removing unused alises from their span.
+pub fn treeShake(allocator: Allocator, tree: *Ast, opts: Options) Allocator.Error!void {
     var used = Used.init(allocator);
     defer used.deinit();
     for (opts.symbols) |s| try used.put(s, {});
     if (opts.find_symbols) try findSymbols(&used, tree);
 
+    // Make a copy of roots because we will modify them.
+    const og_roots = try allocator.dupe(Node.Index, tree.spanToList(0));
+    defer allocator.free(og_roots);
+
     // Find all used identifiers
-    for (tree.spanToList(0)) |node| {
-        switch (tree.nodeTag(node)) {
+    for (og_roots) |i| {
+        switch (tree.node(i)) {
             .global_var, .override, .@"const", .@"struct", .@"fn", .type_alias => {
-                if (used.get(tree.declNameSource(node))) |_| try visitGlobal(tree, &used, node);
+                if (used.get(tree.globalName(i))) |_| try visit(tree, &used, i);
             },
             else => {},
         }
     }
 
-    for (tree.spanToList(0)) |node| {
-        switch (tree.nodeTag(node)) {
+    for (og_roots, 0..) |ni, i| {
+        switch (tree.node(ni)) {
             // Set unused root span nodes to empty.
             .global_var, .override, .@"const", .@"struct", .@"fn", .type_alias => {
-                if (used.get(tree.declNameSource(node)) == null) tree.nodes.items(.tag)[node] = .empty;
+                if (used.get(tree.globalName(ni)) == null) tree.removeFromSpan(0, i);
             },
             // Set unused import nodes to empty.
-            .import => {
+            .import => |n| {
                 var import_used = false;
-                const lhs = tree.nodeLHS(node);
-                if (lhs != 0) {
-                    for (tree.spanToList(lhs)) |imp| {
-                        if (used.get(tree.aliasName(imp))) |_| {
+                if (n.aliases != 0) {
+                    for (tree.spanToList(n.aliases)) |j| {
+                        const alias = tree.node(j).import_alias;
+                        if (used.get(tree.identifier(alias.old))) |_| {
                             import_used = true;
                         } else {
-                            tree.nodes.items(.tag)[imp] = .empty;
+                            tree.removeFromSpan(n.aliases, j);
                         }
                     }
                 } else {
                     import_used = true;
                 }
-                if (!import_used) tree.nodes.items(.tag)[node] = .empty;
+                if (!import_used) tree.removeFromSpan(0, i);
             },
             else => {},
         }

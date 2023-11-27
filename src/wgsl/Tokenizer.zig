@@ -186,6 +186,8 @@ pub const Tokenizer = struct {
                         break;
                     },
                 },
+                // TODO: proper number parsing
+                // https://github.com/gfx-rs/naga/blob/master/src/front/wgsl/parse/number.rs
                 .number => |*number| {
                     // https://www.w3.org/TR/WGSL/#numeric-literals
                     result.tag = .number;
@@ -349,14 +351,6 @@ pub const Tokenizer = struct {
                         index += 1;
                         break;
                     },
-                    '0'...'9' => {
-                        // workaround for x-1 being tokenized as [x] [-1]
-                        if (index >= 2 and std.ascii.isAlphabetic(self.buffer[index - 2])) {
-                            result.tag = .@"-";
-                            break;
-                        }
-                        state = .{ .number = .{} };
-                    },
                     else => {
                         result.tag = .@"-";
                         break;
@@ -406,14 +400,6 @@ pub const Tokenizer = struct {
                         result.tag = .@"+=";
                         index += 1;
                         break;
-                    },
-                    '0'...'9' => {
-                        // workaround for x+1 being tokenized as [x] [+1]
-                        if (index >= 2 and std.ascii.isAlphabetic(self.buffer[index - 2])) {
-                            result.tag = .@"+";
-                            break;
-                        }
-                        state = .{ .number = .{} };
                     },
                     else => {
                         result.tag = .@"+";
@@ -622,4 +608,43 @@ test "attribute spacing" {
         .@"@",
         .ident,
     });
+}
+
+test "variable lookbehind" {
+    try testTokenize("x+1;", &.{ .ident, .@"+", .number, .@";" });
+    try testTokenize("0-1;", &.{ .number, .@"-", .number, .@";" });
+    // try testTokenize("0+-1;", &.{ .number, .@"+", .@"-", .number, .@";" });
+}
+
+test "decimal integer literals" {
+    try testTokenize("0;", &.{ .number, .@";" });
+    try testTokenize("1u;", &.{ .number, .@";" });
+    try testTokenize("123;", &.{ .number, .@";" });
+    try testTokenize("0i;", &.{ .number, .@";" });
+    // try testTokenize("00;", &.{ .invalid, .@";" });
+    // try testTokenize("00x;", &.{ .invalid, .@";" });
+}
+
+test "hexadecimal integer literals" {
+    try testTokenize("0x12f;", &.{ .number, .@";" });
+    try testTokenize("0X12fu;", &.{ .number, .@";" });
+}
+
+test "decimal float literals" {
+    try testTokenize("01.;", &.{ .number, .@";" });
+    try testTokenize(".01;", &.{ .number, .@";" });
+    try testTokenize("12.34;", &.{ .number, .@";" });
+    try testTokenize(".0f;", &.{ .number, .@";" });
+    try testTokenize("0h;", &.{ .number, .@";" });
+    try testTokenize("1e-3;", &.{ .number, .@";" });
+    try testTokenize("0.e+4f;", &.{ .number, .@";" });
+}
+
+test "decimal hex literals" {
+    try testTokenize("0xa.fp+2;", &.{ .number, .@";" });
+    try testTokenize("0x1P+4f;", &.{ .number, .@";" });
+    try testTokenize("0X.3;", &.{ .number, .@";" });
+    try testTokenize("0x3p+2h;", &.{ .number, .@";" });
+    try testTokenize("0X1.fp-4;", &.{ .number, .@";" });
+    try testTokenize("0x3.2p+2h;", &.{ .number, .@";" });
 }

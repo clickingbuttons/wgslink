@@ -1,4 +1,5 @@
 const std = @import("std");
+const Node = @import("../ast/Node.zig").Node;
 
 // Maximum number of tokens per file.
 pub const Index = u32;
@@ -45,8 +46,8 @@ pub const Loc = struct {
 };
 
 pub const Tag = enum(u8) {
+    invalid = 0,
     eof,
-    invalid,
     ident,
     number,
     template_args_start,
@@ -130,7 +131,9 @@ pub const Tag = enum(u8) {
     k_as,
     k_from,
 
-    pub fn symbol(self: Tag) []const u8 {
+    const Self = @This();
+
+    pub fn symbol(self: Self) []const u8 {
         return switch (self) {
             .eof => "EOF",
             .invalid => "invalid bytes",
@@ -191,6 +194,31 @@ pub const Tag = enum(u8) {
             .k_import => "// import",
             else => |t| @tagName(t)["k_".len..],
         };
+    }
+
+    pub fn nodeTagName(comptime self: Self) [:0]const u8 {
+        const tag: Node.Tag = switch (self) {
+            .@"+" => .add,
+            .@"-" => .sub,
+            .@"<<" => .lshift,
+            .@">>" => .rshift,
+            .@"<" => .lt,
+            .@">" => .gt,
+            .@"<=" => .lte,
+            .@">=" => .gte,
+            .@"==" => .eq,
+            .@"!=" => .neq,
+            .@"&&" => .logical_and,
+            .@"||" => .logical_or,
+            .@"&" => .bitwise_and,
+            .@"|" => .bitwise_or,
+            .@"^" => .bitwise_xor,
+            // .@"*" => .mul,
+            .@"/" => .div,
+            .@"%" => .mod,
+            else => unreachable,
+        };
+        return @tagName(tag);
     }
 };
 

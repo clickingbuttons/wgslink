@@ -48,7 +48,7 @@ pub fn main() !void {
 }
 
 test "renderer" {
-    _ = @import("./wgsl/renderer.zig");
+    _ = @import("./WgslRenderer.zig");
 }
 
 test "bundler" {

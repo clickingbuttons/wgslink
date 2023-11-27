@@ -1,7 +1,8 @@
 const std = @import("std");
 const Ast = @import("./ast/Ast.zig");
-const Node = @import("./ast/Node.zig");
+const Node = @import("./ast/Node.zig").Node;
 const TreeShaker = @import("./ast/tree_shaker.zig");
+const Parser = @import("./wgsl/Parser.zig");
 
 const Allocator = std.mem.Allocator;
 const Self = @This();
@@ -16,34 +17,59 @@ pub const Stat = struct {
 };
 const StringSet = std.StringArrayHashMapUnmanaged(void);
 const ImportTable = std.StringArrayHashMapUnmanaged(StringSet);
+
+fn importTable(allocator: Allocator, path: []const u8, tree: *Ast) !ImportTable {
+    var res = ImportTable{};
+
+    const og_roots = try allocator.dupe(Node.Index, tree.spanToList(0));
+    defer allocator.free(og_roots);
+
+    for (og_roots, 0..) |ni, i| {
+        switch (tree.node(ni)) {
+            .import => |n| {
+                const mod_name = tree.identifier(n.module);
+                const resolved = try resolveFrom(allocator, path, mod_name);
+                const mod_imports = try res.getOrPut(allocator, resolved);
+                if (!mod_imports.found_existing) mod_imports.value_ptr.* = StringSet{};
+
+                const aliases = tree.spanToList(if (n.aliases != 0) n.aliases else null);
+                for (aliases) |j| {
+                    switch (tree.node(j)) {
+                        .import_alias => |a| {
+                            const mod_symbol = tree.identifier(a.old);
+                            try mod_imports.value_ptr.*.put(allocator, mod_symbol, {});
+                        },
+                        else => {},
+                    }
+                }
+
+                // We don't want to render imports in the bundle.
+                tree.removeFromSpan(0, i);
+            },
+            else => {},
+        }
+    }
+
+    return res;
+}
+
 pub const File = struct {
     stat: Stat,
     source: [:0]const u8,
     tree: Ast,
     import_table: ImportTable,
 
-    pub fn init(allocator: Allocator, path: []const u8, stat: Stat, source: [:0]const u8, tree_shake: ?TreeShaker.Options) !File {
-        var tree = try Ast.init(allocator, source);
+    pub fn init(
+        allocator: Allocator,
+        path: []const u8,
+        stat: Stat,
+        source: [:0]const u8,
+        tree_shake: ?TreeShaker.Options,
+    ) !File {
+        var tree = try Parser.parse(allocator, source);
 
-        var import_table = ImportTable{};
-        _ = tree_shake;
-        // if (tree_shake) |opts| try TreeShaker.treeShake(&tree, allocator, opts);
-        for (tree.spanToList(0)) |node| {
-            if (tree.nodeTag(node) != .import) continue;
-            const data = tree.nodeData(Node.Data.Import, node);
-            const mod_tok = tree.tokenSource(data.module);
-            const mod_name = mod_tok[1 .. mod_tok.len - 1];
-            const aliases = tree.spanToList(if (data.aliases != 0) data.aliases else null);
-
-            const resolved = try resolveFrom(allocator, path, mod_name);
-            const mod_imports = try import_table.getOrPut(allocator, resolved);
-            if (!mod_imports.found_existing) mod_imports.value_ptr.* = StringSet{};
-
-            for (tree.spanToList(aliases)) |n| {
-                if (tree.nodeTag(n) == .empty) continue;
-                try mod_imports.value_ptr.*.put(allocator, tree.nodeSource(n), {});
-            }
-        }
+        if (tree_shake) |opts| try TreeShaker.treeShake(allocator, &tree, opts);
+        const import_table = try importTable(allocator, path, &tree);
         return File{
             .stat = stat,
             .source = source,
@@ -96,7 +122,7 @@ pub fn init(self: *Self, tree_shake: ?TreeShaker.Options) !void {
     if (amt != stat.size) return error.UnexpectedEndOfFile;
 
     self.file = try File.init(self.allocator, path, stat, source, tree_shake);
-    if (self.file.?.tree.errors.len > 0) return error.Parsing;
+    if (self.file.?.tree.hasError()) return error.Parsing;
     self.parsed = true;
 }
 

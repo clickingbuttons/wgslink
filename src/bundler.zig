@@ -1,9 +1,8 @@
 const std = @import("std");
 const Module = @import("module.zig");
-const Renderer = @import("./wgsl/renderer.zig").Renderer;
+const Renderer = @import("./WgslRenderer.zig").Renderer;
 const TreeShakeOptions = @import("./ast/tree_shaker.zig").Options;
 const Ast = @import("./ast/Ast.zig");
-const Aliaser = @import("./ast/aliaser.zig");
 
 const Self = @This();
 const Allocator = std.mem.Allocator;
@@ -33,14 +32,16 @@ pub fn deinit(self: *Self) void {
     self.modules.deinit();
 }
 
-pub fn alias(self: Self, aliaser: *Aliaser, visited: *Visited, module: *Module) !void {
+pub fn alias(self: Self, renderer: anytype, visited: *Visited, module: *Module) !void {
     if ((try visited.getOrPut(module.name)).found_existing) return;
     if (module.file) |*f| {
         for (f.import_table.keys()) |k| {
             const m = self.modules.getPtr(k).?;
-            try self.alias(aliaser, visited, m);
+            try self.alias(renderer, visited, m);
         }
-        try aliaser.alias(&f.tree);
+        try renderer.print("// {s}\n", .{module.name});
+        try renderer.writeTranslationUnit(f.tree);
+        try renderer.writeByte('\n');
     }
 }
 
@@ -86,14 +87,12 @@ pub fn bundle(
     }
     if (has_unparsed) return error.UnparsedModule;
 
-    _ = writer;
+    var visited = Visited.init(self.allocator);
+    defer visited.deinit();
     // var aliaser = try Aliaser.init(self.allocator, opts.minify);
-    // var visited = Visited.init(self.allocator);
-    // defer visited.deinit();
-    // try self.alias(&aliaser, &visited, mod);
     // const ast = try aliaser.finish();
-    // var renderer = Renderer(@TypeOf(writer)).init(writer, opts.minify);
-    // try renderer.writeTranslationUnit(ast);
+    var renderer = Renderer(@TypeOf(writer)).init(writer, opts.minify);
+    try self.alias(&renderer, &visited, mod);
 }
 
 /// tokenize, parse and scan files for imports
@@ -112,9 +111,7 @@ fn workerAst(
         defer self.stderr_mutex.unlock();
         switch (err) {
             error.Parsing => {
-                if (mod.file) |f| {
-                    for (f.tree.errors) |e| f.tree.renderError(e, errwriter, errconfig, mod.name) catch {};
-                }
+                if (mod.file) |f| f.tree.renderErrors(errwriter, errconfig, mod.name) catch {};
             },
             else => |t| {
                 errwriter.print("error: {s} for {s} (imported by {s})\n", .{
@@ -122,21 +119,21 @@ fn workerAst(
                     mod.name,
                     mod.imported_by,
                 }) catch {};
-                if (self.modules.get(mod.imported_by)) |imp| {
-                    const tree: Ast = imp.file.?.tree;
-                    for (tree.spanToList(0)) |node| {
-                        if (tree.nodeTag(node) != .import) continue;
-                        const mod_name = tree.moduleName(node);
-                        const resolved = imp.resolve(mod_name) catch continue;
-                        defer self.allocator.free(resolved);
-                        if (std.mem.eql(u8, resolved, mod.name)) {
-                            tree.renderError(Ast.Error{
-                                .tag = .unresolved_module,
-                                .token = tree.nodeRHS(node).?,
-                            }, errwriter, errconfig, mod.imported_by) catch {};
-                        }
-                    }
-                }
+                // if (self.modules.get(mod.imported_by)) |imp| {
+                //     const tree: Ast = imp.file.?.tree;
+                //     for (tree.spanToList(0)) |node| {
+                //         if (tree.nodeTag(node) != .import) continue;
+                //         const mod_name = tree.moduleName(node);
+                //         const resolved = imp.resolve(mod_name) catch continue;
+                //         defer self.allocator.free(resolved);
+                //         if (std.mem.eql(u8, resolved, mod.name)) {
+                //             tree.renderError(Ast.Error{
+                //                 .tag = .unresolved_module,
+                //                 .token = tree.nodeRHS(node).?,
+                //             }, errwriter, errconfig, mod.imported_by) catch {};
+                //         }
+                //     }
+                // }
             },
         }
         return;
@@ -193,23 +190,23 @@ fn testBundle(comptime entry: []const u8, comptime expected: [:0]const u8) !void
     try std.testing.expectEqualStrings(expected ++ "\n", buffer.items);
 }
 
-// test "basic bundle" {
-//     try testBundle("./test/bundle-basic/a.wgsl",
-//         \\// test/bundle-basic/c.wgsl
-//         \\const c = 3.0;
-//         \\// test/bundle-basic/b.wgsl
-//         \\const b = 2.0 + c;
-//         \\// test/bundle-basic/a.wgsl
-//         \\fn foo() -> f32 {
-//         \\  return 4.0;
-//         \\}
-//         \\const a = 1.0 + b + foo();
-//         \\@vertex fn main() -> @location(0) vec4f {
-//         \\  return vec4f(a);
-//         \\}
-//     );
-// }
-//
+test "basic bundle" {
+    try testBundle("./test/bundle-basic/a.wgsl",
+        \\// test/bundle-basic/c.wgsl
+        \\const c = 3.0;
+        \\// test/bundle-basic/b.wgsl
+        \\const b = 2.0 + c;
+        \\// test/bundle-basic/a.wgsl
+        \\fn foo() -> f32 {
+        \\  return 4.0;
+        \\}
+        \\const a = 1.0 + b + foo();
+        \\@vertex fn main() -> @location(0) vec4f {
+        \\  return vec4f(a);
+        \\}
+    );
+}
+
 // test "cycle bundle" {
 //     try testBundle("./test/bundle-cycle/a.wgsl",
 //         \\// test/bundle-cycle/c.wgsl
