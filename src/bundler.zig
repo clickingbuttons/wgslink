@@ -1,8 +1,9 @@
 const std = @import("std");
 const Module = @import("module.zig");
 const Renderer = @import("./WgslRenderer.zig").Renderer;
-const TreeShakeOptions = @import("./ast/tree_shaker.zig").Options;
+const TreeShakeOptions = @import("./ast/TreeShaker.zig").Options;
 const Ast = @import("./ast/Ast.zig");
+const Aliaser = @import("./ast/Aliaser.zig");
 
 const Self = @This();
 const Allocator = std.mem.Allocator;
@@ -32,16 +33,15 @@ pub fn deinit(self: *Self) void {
     self.modules.deinit();
 }
 
-pub fn alias(self: Self, renderer: anytype, visited: *Visited, module: *Module) !void {
+pub fn alias(self: Self, aliaser: *Aliaser, visited: *Visited, module: *Module) !void {
     if ((try visited.getOrPut(module.name)).found_existing) return;
     if (module.file) |*f| {
         for (f.import_table.keys()) |k| {
             const m = self.modules.getPtr(k).?;
-            try self.alias(renderer, visited, m);
+            try self.alias(aliaser, visited, m);
         }
-        try renderer.print("// {s}\n", .{module.name});
-        try renderer.writeTranslationUnit(f.tree);
-        try renderer.writeByte('\n');
+        try aliaser.appendComment(module.name);
+        try aliaser.append(f.tree);
     }
 }
 
@@ -89,10 +89,14 @@ pub fn bundle(
 
     var visited = Visited.init(self.allocator);
     defer visited.deinit();
-    // var aliaser = try Aliaser.init(self.allocator, opts.minify);
-    // const ast = try aliaser.finish();
+    var aliaser = try Aliaser.init(self.allocator, opts.minify);
+    defer aliaser.deinit();
+    try self.alias(&aliaser, &visited, mod);
+
+    var tree = try aliaser.toOwnedAst(.wgsl);
+    defer tree.deinit(self.allocator);
     var renderer = Renderer(@TypeOf(writer)).init(writer, opts.minify);
-    try self.alias(&renderer, &visited, mod);
+    try renderer.writeTranslationUnit(tree);
 }
 
 /// tokenize, parse and scan files for imports
@@ -187,7 +191,7 @@ fn testBundle(comptime entry: []const u8, comptime expected: [:0]const u8) !void
         .minify = false,
     });
 
-    try std.testing.expectEqualStrings(expected ++ "\n", buffer.items);
+    try std.testing.expectEqualStrings(expected, buffer.items);
 }
 
 test "basic bundle" {
@@ -207,34 +211,49 @@ test "basic bundle" {
     );
 }
 
-// test "cycle bundle" {
-//     try testBundle("./test/bundle-cycle/a.wgsl",
-//         \\// test/bundle-cycle/c.wgsl
-//         \\const c = 3.0 + a;
-//         \\// test/bundle-cycle/b.wgsl
-//         \\const b = 2.0 + c;
-//         \\// test/bundle-cycle/a.wgsl
-//         \\const a = 1.0 + b;
-//         \\@vertex fn main() -> @location(0) vec4f {
-//         \\  return vec4f(a);
-//         \\}
-//     );
-// }
-//
-// test "type alias bundle" {
-//     try testBundle("./test/bundle-type-alias/a.wgsl",
-//         \\// test/bundle-type-alias/a.wgsl
-//         \\alias single = f32;
-//         \\const pi_approx: single = 3.1415;
-//         \\fn two_pi() -> single {
-//         \\  return single(2) * pi_approx;
-//         \\}
-//         \\@vertex fn main() -> @location(0) vec4f {
-//         \\  return vec4f(two_pi());
-//         \\}
-//     );
-// }
-//
+test "cycle bundle" {
+    try testBundle("./test/bundle-cycle/a.wgsl",
+        \\// test/bundle-cycle/c.wgsl
+        \\const c = 3.0 + a;
+        \\// test/bundle-cycle/b.wgsl
+        \\const b = 2.0 + c;
+        \\// test/bundle-cycle/a.wgsl
+        \\const a = 1.0 + b;
+        \\@vertex fn main() -> @location(0) vec4f {
+        \\  return vec4f(a);
+        \\}
+    );
+}
+
+test "type alias bundle" {
+    try testBundle("./test/bundle-type-alias/a.wgsl",
+        \\// test/bundle-type-alias/a.wgsl
+        \\alias single = f32;
+        \\const pi_approx: single = 3.1415;
+        \\fn two_pi() -> single {
+        \\  return single(2) * pi_approx;
+        \\}
+        \\@vertex fn main() -> @location(0) vec4f {
+        \\  return vec4f(two_pi());
+        \\}
+    );
+}
+
+test "directive bundle" {
+    try testBundle("./test/bundle-directive/a.wgsl",
+        \\enable baz,quz,foo,bar;
+        \\requires feat3,feat4,feat1,feat2;
+        \\diagnostic(off,foo);
+        \\diagnostic(off,derivative_uniformity);
+        \\// test/bundle-directive/b.wgsl
+        \\const b: f32 = 0.0;
+        \\// test/bundle-directive/a.wgsl
+        \\@vertex fn main() -> @location(0) vec4f {
+        \\  return vec4f(b);
+        \\}
+    );
+}
+
 // test "ident clash bundle" {
 //     try testBundle("./test/bundle-ident-clash/a.wgsl",
 //         \\// test/bundle-ident-clash/b.wgsl

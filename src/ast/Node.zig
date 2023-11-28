@@ -24,6 +24,7 @@ pub const Node = union(enum) {
             self.to -= 1;
         }
     };
+    pub const Comment = struct { ident: IdentIndex };
     pub const Ident = struct {
         name: IdentIndex,
         /// 0 means empty
@@ -39,19 +40,22 @@ pub const Node = union(enum) {
     pub const ShortCircuitExpr = struct { lhs_relational_expr: Index, rhs_relational_expr: Index };
     pub const BitwiseExpr = struct { lhs_bitwise_expr: Index, rhs_unary_expr: Index };
 
+    pub const n_directive_tags = 4;
     pub const DiagnosticDirective = struct { diagnostic_control: ExtraIndex };
-    pub const IdentList = struct { idents: Index };
     pub const GlobalVar = struct { global_var: ExtraIndex, initializer: Index };
     pub const Override = struct { override: ExtraIndex, initializer: Index };
-    pub const Fn = struct { fn_header: ExtraIndex, body: Index };
-    pub const TypeAlias = struct { new_name: IdentIndex, old_type: Index };
     pub const Import = struct { aliases: Index, module: IdentIndex };
-    pub const Struct = struct { name: IdentIndex, members: Index };
+
+    pub const IdentList = struct { idents: Index };
     pub const ImportAlias = struct {
         old: IdentIndex,
         /// 0 means no alias
         new: IdentIndex,
     };
+
+    pub const Fn = struct { fn_header: ExtraIndex, body: Index };
+    pub const TypeAlias = struct { new_name: IdentIndex, old_type: Index };
+    pub const Struct = struct { name: IdentIndex, members: Index };
     pub const StructMember = struct { attributes: Index, typed_ident: ExtraIndex };
     pub const FnParam = struct { attributes: Index, fn_param: ExtraIndex };
     pub const Loop = struct { attributes: Index, body: Index };
@@ -87,10 +91,13 @@ pub const Node = union(enum) {
     // Util
     @"error": Error,
     span: Span,
+    comment: Comment,
     // Directives
     diagnostic_directive: DiagnosticDirective,
     enable_directive: IdentList,
     requires_directive: IdentList,
+    import: Import,
+    import_alias: ImportAlias,
     // Global declarations
     global_var: Self.GlobalVar,
     override: Self.Override,
@@ -98,8 +105,6 @@ pub const Node = union(enum) {
     fn_param: Self.FnParam,
     @"const": Let,
     type_alias: TypeAlias,
-    import: Import,
-    import_alias: ImportAlias,
     @"struct": Struct,
     struct_member: StructMember,
     // Global declaration helpers

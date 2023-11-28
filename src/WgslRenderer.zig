@@ -185,6 +185,8 @@ pub fn Renderer(comptime UnderlyingWriter: type) type {
         pub fn writeTranslationUnit(self: *Self, tree: Ast) !void {
             const indices = tree.spanToList(0);
             for (indices, 0..) |index, i| {
+                std.debug.assert(index != 0);
+                // std.debug.print("{d} / {d} = {d} {any}\n", .{ i, indices.len, index, tree.node(index) });
                 try self.writeIndex(tree, index);
                 switch (tree.node(index)) {
                     .diagnostic_directive,
@@ -205,7 +207,14 @@ pub fn Renderer(comptime UnderlyingWriter: type) type {
 
         fn writeNode(self: *Self, tree: Ast, node: Node) RetType {
             switch (node) {
-                .@"error", .span => std.debug.assert(false),
+                inline .@"error", .span => |_, tag| {
+                    std.debug.panic("unexpected node of type {s}", .{@tagName(tag)});
+                },
+                .comment => |n| {
+                    if (self.minify) return;
+                    try self.writeAll("// ");
+                    try self.writeIdentifier(tree, n.ident);
+                },
                 .diagnostic_directive => |n| {
                     try self.writeToken(.k_diagnostic);
                     try self.writeDiagnostic(tree, n.diagnostic_control);
@@ -746,6 +755,16 @@ test "comments" {
 test "diagnostic" {
     try testCanonical("diagnostic(warning,foo);");
     try testCanonical("diagnostic(error,foo.bar);");
+}
+
+test "directives and declarations" {
+    try testCanonical(
+        \\// import { foo } from "./bar.wgsl";
+        \\enable foo,bar;
+        \\requires feat1,feat2;
+        \\diagnostic(off,derivative_uniformity);
+        \\const a = 0.0;
+    );
 }
 
 test "enable" {

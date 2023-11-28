@@ -2,6 +2,7 @@ const std = @import("std");
 const Ast = @import("../ast/Ast.zig");
 const Token = @import("./Token.zig");
 const node_mod = @import("../ast/Node.zig");
+const AstBuilder = @import("../ast/Builder.zig");
 const ParsingError = @import("./ParsingError.zig");
 const Tokenizer = @import("./Tokenizer.zig").Tokenizer;
 
@@ -20,14 +21,8 @@ source: [:0]const u8,
 tokens: TokenList,
 /// Current parsing position
 tok_i: Token.Index = 0,
-/// Main data structure
-nodes: Ast.NodeList = .{},
-/// Nodes with identifers store indexes into here.
-/// For `var foo: u32 = baz();` this will store `foo`, `u32`, and `baz`
-/// Owns the strings so that `source` may be freed after parsing is finished.
-identifiers: std.StringArrayHashMapUnmanaged(void) = .{},
-/// For nodes with more data than @sizeOf(Node)
-extra: std.ArrayListUnmanaged(Node.Index) = .{},
+/// The main event
+builder: AstBuilder = .{},
 /// Used to build lists
 scratch: std.ArrayListUnmanaged(Node.Index) = .{},
 
@@ -46,16 +41,14 @@ pub fn init(allocator: Allocator, source: [:0]const u8) Allocator.Error!Self {
         .source = source,
         .tokens = toks,
     };
-    try parser.nodes.ensureTotalCapacity(allocator, toks.len / 2 + 1);
+    try parser.builder.nodes.ensureTotalCapacity(allocator, toks.len / 2 + 1);
     return parser;
 }
 
 pub fn deinit(self: *Self) void {
     const allocator = self.allocator;
     self.tokens.deinit(allocator);
-    self.nodes.deinit(allocator);
-    self.identifiers.deinit(allocator);
-    self.extra.deinit(allocator);
+    self.builder.deinit(allocator);
     self.scratch.deinit(allocator);
 }
 
@@ -64,12 +57,19 @@ pub fn parse(allocator: Allocator, source: [:0]const u8) Allocator.Error!Ast {
     defer parser.deinit();
     try parser.parseTranslationUnit();
 
-    return Ast{
-        .nodes = parser.nodes.toOwnedSlice(),
-        .identifiers = parser.identifiers.entries.toOwnedSlice(),
-        .extra = try parser.extra.toOwnedSlice(allocator),
-        .from_lang = .wgsl,
-    };
+    return parser.builder.toOwnedAst(allocator, .wgsl);
+}
+
+fn listToSpan(p: *Self, list: []const Node.Index) Allocator.Error!Node.Index {
+    return try p.builder.listToSpan(p.allocator, list);
+}
+
+fn addNode(p: *Self, node: Node) Allocator.Error!Node.Index {
+    return try p.builder.addNode(p.allocator, node);
+}
+
+fn addExtra(p: *Self, extra: anytype) Allocator.Error!Node.Index {
+    return try p.builder.addExtra(p.allocator, extra);
 }
 
 pub fn renderErrors(
@@ -88,10 +88,10 @@ pub fn renderErrors(
 }
 
 /// global_directive* global_decl*
-fn parseTranslationUnit(p: *Self) error{OutOfMemory}!void {
+fn parseTranslationUnit(p: *Self) Allocator.Error!void {
     try p.parameterizeTemplates();
     // Root node must be index 0.
-    p.nodes.appendAssumeCapacity(Node{ .span = .{ .from = 0, .to = 0 } });
+    p.builder.nodes.appendAssumeCapacity(Node{ .span = .{ .from = 0, .to = 0 } });
 
     while (p.peekToken(.tag, 0) != .eof) {
         const directive = p.globalDirective() catch |err| switch (err) {
@@ -115,15 +115,15 @@ fn parseTranslationUnit(p: *Self) error{OutOfMemory}!void {
         if (decl) |d| try p.scratch.append(p.allocator, d);
     }
 
-    try p.extra.appendSlice(p.allocator, p.scratch.items);
-    var span = &p.nodes.items(.data)[0].span;
-    span.from = @intCast(p.extra.items.len - p.scratch.items.len);
-    span.to = @intCast(p.extra.items.len);
+    try p.builder.extra.appendSlice(p.allocator, p.scratch.items);
+    var span = &p.builder.nodes.items(.data)[0].span;
+    span.from = @intCast(p.builder.extra.items.len - p.scratch.items.len);
+    span.to = @intCast(p.builder.extra.items.len);
 }
 
 /// Disambiguate templates (since WGSL chose < and >)
 /// https://gpuweb.github.io/gpuweb/wgsl/#template-lists-sec
-fn parameterizeTemplates(p: *Self) error{OutOfMemory}!void {
+fn parameterizeTemplates(p: *Self) Allocator.Error!void {
     const UnclosedCandidate = struct {
         token_tag: *Token.Tag,
         depth: u32,
@@ -189,31 +189,6 @@ fn parameterizeTemplates(p: *Self) error{OutOfMemory}!void {
     }
 }
 
-fn listToSpan(p: *Self, list: []const Node.Index) error{OutOfMemory}!Node.Index {
-    if (list.len == 0) return 0;
-    try p.extra.appendSlice(p.allocator, list);
-    return try p.addNode(Node{ .span = .{
-        .from = @intCast(p.extra.items.len - list.len),
-        .to = @intCast(p.extra.items.len),
-    } });
-}
-
-fn addNode(p: *Self, node: Node) error{OutOfMemory}!Node.Index {
-    const i: Node.Index = @intCast(p.nodes.len);
-    try p.nodes.append(p.allocator, node);
-    return i;
-}
-
-fn addExtra(p: *Self, extra: anytype) error{OutOfMemory}!Node.Index {
-    const fields = std.meta.fields(@TypeOf(extra));
-    try p.extra.ensureUnusedCapacity(p.allocator, fields.len);
-    const result: Node.Index = @intCast(p.extra.items.len);
-    inline for (fields) |field| {
-        p.extra.appendAssumeCapacity(@field(extra, field.name));
-    }
-    return result;
-}
-
 fn addErrorAdvanced(
     p: *Self,
     tag: ParsingError.Tag,
@@ -223,8 +198,7 @@ fn addErrorAdvanced(
     const loc = p.tokens.items(.loc)[token orelse p.tok_i];
     const info = loc.extraInfo(p.source);
     const line = p.source[info.line_start..info.line_end];
-    const gop = try p.identifiers.getOrPut(p.allocator, line);
-    const line_i: u32 = @intCast(gop.index);
+    const line_i = try p.builder.getOrPutIdent(p.allocator, line);
     const extra = try p.addExtra(node_mod.SourceInfo{
         .line = line_i,
         .line_num = info.line,
@@ -283,14 +257,13 @@ fn getOrPutIdentAdvanced(
     p: *Self,
     comptime is_literal: bool,
     token: Token.Index,
-) Error!Node.IdentIndex {
+) Allocator.Error!Node.IdentIndex {
     var src = p.tokenSource(token);
     if (is_literal) src = src[1 .. src.len - 1];
-    const gop = try p.identifiers.getOrPut(p.allocator, src);
-    return @intCast(gop.index);
+    return try p.builder.getOrPutIdent(p.allocator, src);
 }
 
-fn getOrPutIdent(p: *Self, token: Token.Index) Error!Node.IdentIndex {
+fn getOrPutIdent(p: *Self, token: Token.Index) Allocator.Error!Node.IdentIndex {
     return try p.getOrPutIdentAdvanced(false, token);
 }
 
@@ -373,17 +346,18 @@ fn requiresDirective(p: *Self) Error!?Node.Index {
     return try p.addNode(Node{ .requires_directive = .{ .idents = extensions } });
 }
 
-/// diagnostic_directive | enable_directive | requires_directive
+/// diagnostic_directive | enable_directive | requires_directive | import_directive
 fn globalDirective(p: *Self) Error!?Node.Index {
     return try p.diagnosticDirective() orelse
         try p.enableDirective() orelse
-        try p.requiresDirective();
+        try p.requiresDirective() orelse
+        try p.importDirective();
 }
 
 fn findNextGlobalDirective(p: *Self) void {
     while (true) {
         switch (p.peekToken(.tag, 0)) {
-            .k_enable, .k_requires, .k_diagnostic, .eof => return,
+            .k_enable, .k_requires, .k_diagnostic, .k_import, .eof => return,
             .@";" => {
                 _ = p.advanceToken();
                 return;
@@ -417,8 +391,7 @@ fn globalDecl(p: *Self) Error!?Node.Index {
     }
     if (try p.constDecl() orelse
         try p.typeAliasDecl() orelse
-        try p.constAssertStatement() orelse
-        try p.importDecl()) |node|
+        try p.constAssertStatement()) |node|
     {
         _ = try p.expectToken(.@";");
         return node;
@@ -719,11 +692,12 @@ fn importAliasList(p: *Self) Error!Node.Index {
 }
 
 /// 'import' (import_list 'from')? string_literal ';'?
-fn importDecl(p: *Self) Error!?Node.Index {
+fn importDirective(p: *Self) Error!?Node.Index {
     _ = p.eatToken(.k_import) orelse return null;
     const importAliases = try p.importAliasList();
     if (importAliases != 0) _ = try p.expectToken(.k_from);
     const mod_token = try p.expectToken(.string_literal);
+    _ = p.eatToken(.@";");
 
     return try p.addNode(Node{ .import = .{
         .aliases = importAliases,
@@ -1153,8 +1127,8 @@ fn whileStatement(p: *Self) Error!?Node.Index {
 /// template_elaborated_ident
 fn typeSpecifier(p: *Self) Error!?Node.Index {
     if (try p.templateElaboratedIdent()) |n| {
-        const ident = p.nodes.get(n).ident;
-        p.nodes.set(n, Node{ .type = ident });
+        const ident = p.builder.nodes.get(n).ident;
+        p.builder.nodes.set(n, Node{ .type = ident });
         return n;
     }
     return null;
@@ -1302,7 +1276,10 @@ fn templateList(p: *Self) Error!Node.Index {
 /// ident template_list?
 fn templateElaboratedIdent(p: *Self) Error!?Node.Index {
     const token = p.eatToken(.ident) orelse return null;
-    return try p.addNode(Node{ .ident = .{ .name = try p.getOrPutIdent(token), .template_list = try p.templateList() } });
+    return try p.addNode(Node{ .ident = .{
+        .name = try p.getOrPutIdent(token),
+        .template_list = try p.templateList(),
+    } });
 }
 
 fn expectTemplateElaboratedIdent(p: *Self) Error!Node.Index {

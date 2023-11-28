@@ -184,7 +184,7 @@ fn visit(tree: *Ast, used: *Used, node: Node.Index) Allocator.Error!void {
         .field_access => |n| try visit(tree, used, n.lhs_expr),
         .index_access => |n| try visitAll(tree, used, &.{ n.lhs_expr, n.index_expr }),
         .diagnostic_directive, .enable_directive, .requires_directive, .import_alias => {},
-        .import, .number, .true, .false, .@"break", .@"continue", .discard, .@"error" => {},
+        .import, .number, .true, .false, .@"break", .@"continue", .discard, .@"error", .comment => {},
     }
 }
 
@@ -194,14 +194,14 @@ pub const Options = struct {
 };
 
 /// Tree shakes globals by removing unused nodes (including imports) from the root span.
-/// Tree shakes imports by removing unused alises from their span.
+/// Tree shakes imports by removing unused alises from their import span.
 pub fn treeShake(allocator: Allocator, tree: *Ast, opts: Options) Allocator.Error!void {
     var used = Used.init(allocator);
     defer used.deinit();
     for (opts.symbols) |s| try used.put(s, {});
     if (opts.find_symbols) try findSymbols(&used, tree);
 
-    // Make a copy of roots because we will modify them.
+    // Make a copy of roots because we may modify them.
     const og_roots = try allocator.dupe(Node.Index, tree.spanToList(0));
     defer allocator.free(og_roots);
 
