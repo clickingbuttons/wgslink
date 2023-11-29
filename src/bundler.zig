@@ -254,15 +254,15 @@ test "directive bundle" {
     );
 }
 
-// test "ident clash bundle" {
-//     try testBundle("./test/bundle-ident-clash/a.wgsl",
-//         \\// test/bundle-ident-clash/b.wgsl
-//         \\var a = 2.0;
-//         \\var b = a + 3.0;
-//         \\// test/bundle-ident-clash/a.wgsl
-//         \\var a2 = 1.0 + b;
-//         \\@vertex fn main() -> @location(0) vec4f {
-//         \\  return vec4f(a);
-//         \\}
-//     );
-// }
+test "ident clash bundle" {
+    try testBundle("./test/bundle-ident-clash/a.wgsl",
+        \\// test/bundle-ident-clash/b.wgsl
+        \\var a = 2.0;
+        \\var b = a + 3.0;
+        \\// test/bundle-ident-clash/a.wgsl
+        \\var a2 = 1.0 + b;
+        \\@vertex fn main() -> @location(0) vec4f {
+        \\  return vec4f(a2);
+        \\}
+    );
+}

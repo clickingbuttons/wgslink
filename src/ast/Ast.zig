@@ -21,8 +21,9 @@ extra: []Node.Index,
 from_lang: Language,
 
 pub fn deinit(self: *Self, allocator: Allocator) void {
-    self.nodes.deinit(allocator);
+    for (self.identifiers.items(.key)) |k| allocator.free(k);
     self.identifiers.deinit(allocator);
+    self.nodes.deinit(allocator);
     allocator.free(self.extra);
     self.* = undefined;
 }

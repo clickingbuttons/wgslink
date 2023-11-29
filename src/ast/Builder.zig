@@ -17,6 +17,7 @@ extra: std.ArrayListUnmanaged(Node.Index) = .{},
 
 pub fn deinit(self: *Self, allocator: Allocator) void {
     self.nodes.deinit(allocator);
+    for (self.identifiers.keys()) |k| allocator.free(k);
     self.identifiers.deinit(allocator);
     self.extra.deinit(allocator);
 }
@@ -65,5 +66,8 @@ pub fn getOrPutIdent(
     ident: []const u8,
 ) Allocator.Error!Node.IdentIndex {
     const gop = try self.identifiers.getOrPut(allocator, ident);
+    if (!gop.found_existing) {
+        gop.key_ptr.* = try allocator.dupe(u8, ident);
+    }
     return @intCast(gop.index);
 }

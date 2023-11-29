@@ -7,7 +7,7 @@ const Self = @This();
 const Allocator = std.mem.Allocator;
 const Node = node_mod.Node;
 // { [scope key]: [global alias] }
-const Scope = std.StringArrayHashMap([]const u8);
+const Scope = std.StringArrayHashMap(u32);
 const Scopes = std.ArrayList(Scope);
 const Directives = struct {
     const StringSet = std.StringArrayHashMap(void);
@@ -45,6 +45,7 @@ roots: std.ArrayListUnmanaged(Node.Index) = .{},
 
 pub fn init(allocator: Allocator, minify: bool) !Self {
     var scopes = Scopes.init(allocator);
+    // Global scope
     try scopes.append(Scope.init(allocator));
     var res = Self{
         .allocator = allocator,
@@ -52,16 +53,13 @@ pub fn init(allocator: Allocator, minify: bool) !Self {
         .minify = minify,
         .directives = Directives.init(allocator),
     };
-    // Reserve slots for root
+    // Reserve 0th index for root
     _ = try res.addNode(Node{ .span = .{ .from = 0, .to = 0 } });
     return res;
 }
 
 pub fn deinit(self: *Self) void {
-    for (self.scopes.items) |*s| {
-        for (s.values()) |v| self.allocator.free(v);
-        s.deinit();
-    }
+    for (self.scopes.items) |*s| s.deinit();
     self.scopes.deinit();
     self.directives.deinit();
     self.builder.deinit(self.allocator);
@@ -89,7 +87,47 @@ fn addExtra(self: *Self, extra: anytype) Allocator.Error!Node.Index {
     return try self.builder.addExtra(self.allocator, extra);
 }
 
-fn getOrPutIdent(self: *Self, ident: []const u8) Allocator.Error!Node.IdentIndex {
+const IdentType = enum {
+    /// var foo
+    decl,
+    /// foo + 4
+    ref,
+    /// requires foo
+    token,
+};
+
+fn getOrPutIdent(
+    self: *Self,
+    comptime ty: IdentType,
+    ident: []const u8,
+) Allocator.Error!Node.IdentIndex {
+    const scope_index = self.scopes.items.len - 1;
+    var scope: *Scope = &self.scopes.items[scope_index];
+    switch (ty) {
+        .decl => {
+            var gop = try scope.getOrPut(ident);
+            const alias = if (gop.found_existing) brk: {
+                // Make new unique identifier
+                var count: usize = 1;
+                for (self.scopes.items) |s| {
+                    if (s.get(ident) != null) count += 1;
+                }
+                break :brk try std.fmt.allocPrint(self.allocator, "{s}{d}", .{ ident, count });
+            } else ident;
+            defer if (gop.found_existing) self.allocator.free(alias);
+            gop.value_ptr.* = try self.builder.getOrPutIdent(self.allocator, alias);
+            std.debug.print("decl {s} alias {s} index {d}\n", .{ ident, alias, gop.value_ptr.* });
+            return gop.value_ptr.*;
+        },
+        .ref => {
+            std.debug.print("ref {s}\n", .{ident});
+            if (scope.get(ident)) |i| {
+                std.debug.print("clash {d}\n", .{i});
+                return i;
+            }
+        },
+        .token => {},
+    }
     return try self.builder.getOrPutIdent(self.allocator, ident);
 }
 
@@ -97,15 +135,20 @@ inline fn identList(self: *Self, idents: [][]const u8) Allocator.Error!Node.Inde
     const scratch_top = self.scratch.items.len;
     defer self.scratch.shrinkRetainingCapacity(scratch_top);
     for (idents) |e| {
-        const ident = try self.getOrPutIdent(e);
+        const ident = try self.getOrPutIdent(.token, e);
         try self.scratch.append(self.allocator, ident);
     }
     return try self.listToSpan(self.scratch.items[scratch_top..]);
 }
 
-inline fn typedIdent(self: *Self, tree: Ast, index: Node.Index) Allocator.Error!Node.Index {
+inline fn typedIdent(
+    self: *Self,
+    comptime ty: IdentType,
+    tree: Ast,
+    index: Node.Index,
+) Allocator.Error!Node.Index {
     var typed_ident = tree.extraData(node_mod.TypedIdent, index);
-    typed_ident.name = try self.getOrPutIdent(tree.identifier(typed_ident.name));
+    typed_ident.name = try self.getOrPutIdent(ty, tree.identifier(typed_ident.name));
     typed_ident.type = try self.visit(tree, typed_ident.type);
     return try self.addExtra(typed_ident);
 }
@@ -143,41 +186,24 @@ pub fn toOwnedAst(self: *Self, lang: Ast.Language) Allocator.Error!Ast {
     return self.builder.toOwnedAst(self.allocator, lang);
 }
 
-// fn getOrPutIdent(self: *Self, ident: []const u8) !Node.Index {
-//     const scope_index = self.scopes.items.len - 1;
-//     var scope: *Scope = &self.scopes.items[scope_index];
-//     const gop = try scope.getOrPut(ident);
-//     if (!gop.found_existing) {
-//         // Make new unique identifier
-//         const count = brk: {
-//             var res: Node.Index = 1;
-//             for (self.scopes.items) |s| {
-//                 if (s.get(ident) != null) res += 1;
-//             }
-//             break :brk res;
-//         };
-//         gop.value_ptr.* = if (count == 1)
-//             try self.allocator.dupe(u8, ident)
-//         else
-//             try std.fmt.allocPrint(self.allocator, "{s}{d}", .{ ident, count });
-//         std.debug.print("added {s}\n", .{gop.value_ptr.*});
-//     }
-//     return @intCast(gop.index);
-// }
-fn diagnosticControl(self: *Self, tree: Ast, index: Node.ExtraIndex) Allocator.Error!node_mod.DiagnosticControl {
+fn diagnosticControl(
+    self: *Self,
+    tree: Ast,
+    index: Node.ExtraIndex,
+) Allocator.Error!node_mod.DiagnosticControl {
     var diagnostic = tree.extraData(node_mod.DiagnosticControl, index);
     const name = tree.identifier(diagnostic.name);
-    diagnostic.name = try self.builder.getOrPutIdent(self.allocator, name);
+    diagnostic.name = try self.getOrPutIdent(.token, name);
     if (diagnostic.field != 0) {
         const field = tree.identifier(diagnostic.field);
-        diagnostic.field = try self.builder.getOrPutIdent(self.allocator, field);
+        diagnostic.field = try self.getOrPutIdent(.token, field);
     }
     return diagnostic;
 }
 
 pub fn appendComment(self: *Self, comment: []const u8) Allocator.Error!void {
     const node = try self.addNode(Node{ .comment = .{
-        .ident = try self.getOrPutIdent(comment),
+        .ident = try self.getOrPutIdent(.token, comment),
     } });
     try self.roots.append(self.allocator, node);
 }
@@ -214,28 +240,28 @@ fn visit(self: *Self, tree: Ast, index: Node.Index) Allocator.Error!Node.Index {
         },
         .global_var => |n| brk: {
             var global_var = tree.extraData(node_mod.GlobalVar, n.global_var);
-            global_var.name = try self.getOrPutIdent(tree.identifier(global_var.name));
+            global_var.name = try self.getOrPutIdent(.decl, tree.identifier(global_var.name));
             global_var.attrs = try self.visit(tree, global_var.attrs);
             global_var.template_list = try self.visit(tree, global_var.template_list);
             global_var.type = try self.visit(tree, global_var.type);
             break :brk Node{ .global_var = .{
                 .global_var = try self.addExtra(global_var),
-                .initializer = n.initializer,
+                .initializer = try self.visit(tree, n.initializer),
             } };
         },
         .override => |n| brk: {
             var override = tree.extraData(node_mod.Override, n.override);
-            override.name = try self.getOrPutIdent(tree.identifier(override.name));
+            override.name = try self.getOrPutIdent(.decl, tree.identifier(override.name));
             override.attrs = try self.visit(tree, override.attrs);
             override.type = try self.visit(tree, override.type);
             break :brk Node{ .override = .{
                 .override = try self.addExtra(override),
-                .initializer = n.initializer,
+                .initializer = try self.visit(tree, n.initializer),
             } };
         },
         .@"fn" => |n| brk: {
             var header = tree.extraData(node_mod.FnHeader, n.fn_header);
-            header.name = try self.getOrPutIdent(tree.identifier(header.name));
+            header.name = try self.getOrPutIdent(.decl, tree.identifier(header.name));
             header.attrs = try self.visit(tree, header.attrs);
             header.params = try self.visit(tree, header.params);
             header.return_attrs = try self.visit(tree, header.return_attrs);
@@ -247,7 +273,7 @@ fn visit(self: *Self, tree: Ast, index: Node.Index) Allocator.Error!Node.Index {
         },
         .@"const", .let => |n| brk: {
             const let = Node.Let{
-                .typed_ident = try self.typedIdent(tree, n.typed_ident),
+                .typed_ident = try self.typedIdent(.decl, tree, n.typed_ident),
                 .initializer = try self.visit(tree, n.initializer),
             };
             break :brk switch (tree_node) {
@@ -257,20 +283,20 @@ fn visit(self: *Self, tree: Ast, index: Node.Index) Allocator.Error!Node.Index {
             };
         },
         .type_alias => |n| Node{ .type_alias = .{
-            .new_name = try self.getOrPutIdent(tree.identifier(n.new_name)),
+            .new_name = try self.getOrPutIdent(.decl, tree.identifier(n.new_name)),
             .old_type = try self.visit(tree, n.old_type),
         } },
         .@"struct" => |n| Node{ .@"struct" = .{
-            .name = try self.getOrPutIdent(tree.identifier(n.name)),
+            .name = try self.getOrPutIdent(.decl, tree.identifier(n.name)),
             .members = try self.visit(tree, n.members),
         } },
         .struct_member => |n| Node{ .struct_member = .{
             .attributes = try self.visit(tree, n.attributes),
-            .typed_ident = try self.typedIdent(tree, n.typed_ident),
+            .typed_ident = try self.typedIdent(.token, tree, n.typed_ident),
         } },
         .fn_param => |n| brk: {
             var param = tree.extraData(node_mod.FnParam, n.fn_param);
-            param.name = try self.getOrPutIdent(tree.identifier(param.name));
+            param.name = try self.getOrPutIdent(.decl, tree.identifier(param.name));
             param.type = try self.visit(tree, param.type);
             break :brk Node{ .fn_param = .{
                 .fn_param = try self.addExtra(param),
@@ -279,7 +305,7 @@ fn visit(self: *Self, tree: Ast, index: Node.Index) Allocator.Error!Node.Index {
         },
         .type, .ident => |n| brk: {
             const ident = Node.Ident{
-                .name = try self.getOrPutIdent(tree.identifier(n.name)),
+                .name = try self.getOrPutIdent(.ref, tree.identifier(n.name)),
                 .template_list = try self.visit(tree, n.template_list),
             };
             break :brk switch (tree_node) {
@@ -384,12 +410,12 @@ fn visit(self: *Self, tree: Ast, index: Node.Index) Allocator.Error!Node.Index {
         } },
         .@"var" => |n| brk: {
             var extra = tree.extraData(node_mod.Var, n.@"var");
-            extra.name = try self.getOrPutIdent(tree.identifier(extra.name));
+            extra.name = try self.getOrPutIdent(.decl, tree.identifier(extra.name));
             extra.template_list = try self.visit(tree, extra.template_list);
             extra.type = try self.visit(tree, extra.type);
             break :brk Node{ .@"var" = .{
                 .@"var" = try self.addExtra(extra),
-                .initializer = n.initializer,
+                .initializer = try self.visit(tree, n.initializer),
             } };
         },
         // zig fmt off
@@ -418,25 +444,60 @@ fn visit(self: *Self, tree: Ast, index: Node.Index) Allocator.Error!Node.Index {
         .@"^=",
         .@"<<=",
         .@">>=",
-        => |n, tag| @unionInit(Node, @tagName(tag), Node.Assign{ .lhs_expr = try self.visit(tree, n.lhs_expr), .rhs_expr = try self.visit(tree, n.rhs_expr) }),
-        inline .lshift, .rshift => |n, tag| @unionInit(Node, @tagName(tag), Node.ShiftExpr{ .lhs_unary_expr = try self.visit(tree, n.lhs_unary_expr), .rhs_unary_expr = try self.visit(tree, n.rhs_unary_expr) }),
-        inline .lt, .gt, .lte, .gte, .eq, .neq => |n, tag| @unionInit(Node, @tagName(tag), Node.RelationalExpr{ .lhs_shift_expr = try self.visit(tree, n.lhs_shift_expr), .rhs_shift_expr = try self.visit(tree, n.rhs_shift_expr) }),
-        inline .mul, .div, .mod => |n, tag| @unionInit(Node, @tagName(tag), Node.MultiplicativeExpr{ .lhs_multiplicative_expr = try self.visit(tree, n.lhs_multiplicative_expr), .rhs_unary_expr = try self.visit(tree, n.rhs_unary_expr) }),
-        inline .add, .sub => |n, tag| @unionInit(Node, @tagName(tag), Node.AdditiveExpr{ .lhs_additive_expr = try self.visit(tree, n.lhs_additive_expr), .rhs_mul_expr = try self.visit(tree, n.rhs_mul_expr) }),
-        inline .logical_and, .logical_or => |n, tag| @unionInit(Node, @tagName(tag), Node.ShortCircuitExpr{ .lhs_relational_expr = try self.visit(tree, n.lhs_relational_expr), .rhs_relational_expr = try self.visit(tree, n.rhs_relational_expr) }),
-        inline .bitwise_and, .bitwise_or, .bitwise_xor => |n, tag| @unionInit(Node, @tagName(tag), Node.BitwiseExpr{ .lhs_bitwise_expr = try self.visit(tree, n.lhs_bitwise_expr), .rhs_unary_expr = try self.visit(tree, n.rhs_unary_expr) }),
+        => |n, tag| @unionInit(Node, @tagName(tag), Node.Assign{
+            .lhs_expr = try self.visit(tree, n.lhs_expr),
+            .rhs_expr = try self.visit(tree, n.rhs_expr),
+        }),
+        inline .lshift, .rshift => |n, tag| brk: {
+            break :brk @unionInit(Node, @tagName(tag), Node.ShiftExpr{
+                .lhs_unary_expr = try self.visit(tree, n.lhs_unary_expr),
+                .rhs_unary_expr = try self.visit(tree, n.rhs_unary_expr),
+            });
+        },
+        inline .lt, .gt, .lte, .gte, .eq, .neq => |n, tag| brk: {
+            break :brk @unionInit(Node, @tagName(tag), Node.RelationalExpr{
+                .lhs_shift_expr = try self.visit(tree, n.lhs_shift_expr),
+                .rhs_shift_expr = try self.visit(tree, n.rhs_shift_expr),
+            });
+        },
+        inline .mul, .div, .mod => |n, tag| brk: {
+            break :brk @unionInit(Node, @tagName(tag), Node.MultiplicativeExpr{
+                .lhs_multiplicative_expr = try self.visit(tree, n.lhs_multiplicative_expr),
+                .rhs_unary_expr = try self.visit(tree, n.rhs_unary_expr),
+            });
+        },
+        inline .add, .sub => |n, tag| brk: {
+            break :brk @unionInit(Node, @tagName(tag), Node.AdditiveExpr{
+                .lhs_additive_expr = try self.visit(tree, n.lhs_additive_expr),
+                .rhs_mul_expr = try self.visit(tree, n.rhs_mul_expr),
+            });
+        },
+        inline .logical_and, .logical_or => |n, tag| brk: {
+            break :brk @unionInit(Node, @tagName(tag), Node.ShortCircuitExpr{
+                .lhs_relational_expr = try self.visit(tree, n.lhs_relational_expr),
+                .rhs_relational_expr = try self.visit(tree, n.rhs_relational_expr),
+            });
+        },
+        inline .bitwise_and, .bitwise_or, .bitwise_xor => |n, tag| brk: {
+            break :brk @unionInit(Node, @tagName(tag), Node.BitwiseExpr{
+                .lhs_bitwise_expr = try self.visit(tree, n.lhs_bitwise_expr),
+                .rhs_unary_expr = try self.visit(tree, n.rhs_unary_expr),
+            });
+        },
         .field_access => |n| Node{ .field_access = .{
             .lhs_expr = try self.visit(tree, n.lhs_expr),
-            .member = try self.builder.getOrPutIdent(self.allocator, tree.identifier(n.member)),
+            .member = try self.getOrPutIdent(.token, tree.identifier(n.member)),
         } },
         .index_access => |n| Node{ .index_access = .{
             .lhs_expr = try self.visit(tree, n.lhs_expr),
             .index_expr = try self.visit(tree, n.index_expr),
         } },
         .number => |n| Node{ .number = .{
-            .value = try self.builder.getOrPutIdent(self.allocator, tree.identifier(n.value)),
+            .value = try self.getOrPutIdent(.token, tree.identifier(n.value)),
         } },
-        inline .true, .false, .@"break", .@"continue", .discard => |_, tag| @unionInit(Node, @tagName(tag), {}),
+        inline .true, .false, .@"break", .@"continue", .discard => |_, tag| brk: {
+            break :brk @unionInit(Node, @tagName(tag), {});
+        },
     };
 
     return try self.addNode(node);
