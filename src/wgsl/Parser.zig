@@ -8,7 +8,7 @@ const Tokenizer = @import("./Tokenizer.zig").Tokenizer;
 
 const Self = @This();
 const Allocator = std.mem.Allocator;
-const Error = error{ OutOfMemory, Parsing };
+const Error = Allocator.Error || error{Parsing};
 const Node = node_mod.Node;
 pub const TokenList = std.MultiArrayList(Token);
 const max_template_depth = 16;
@@ -1026,8 +1026,8 @@ fn switchBody(p: *Self) Error!Node.Index {
 fn switchStatement(p: *Self) Error!?Node.Index {
     _ = p.eatToken(.k_switch) orelse return null;
     const expr = try p.expectExpression();
-    const body = try p.switchBody();
-    return try p.addNode(Node{ .@"switch" = .{ .expr = expr, .body = body } });
+    const switch_body = try p.switchBody();
+    return try p.addNode(Node{ .@"switch" = .{ .expr = expr, .switch_body = switch_body } });
 }
 
 // | 'var' template_list? optionally_typed_ident

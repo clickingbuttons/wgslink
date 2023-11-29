@@ -62,7 +62,13 @@ pub const Node = union(enum) {
     pub const Compound = struct { attributes: Index, statements: Index };
     pub const For = struct { for_header: ExtraIndex, body: Index };
     pub const If = struct { condition: Index, body: Index };
-    pub const Switch = struct { expr: Index, body: Index };
+    pub const Switch = struct { expr: Index, switch_body: Index };
+    pub const SwitchBody = struct { attributes: Index, clauses: Index };
+    pub const CaseClause = struct { selectors: Index, body: Index };
+    pub const CaseSelector = struct {
+        /// 0 means `default`
+        expr: Index,
+    };
     pub const While = struct { condition: Index, body: Index };
     pub const Return = struct {
         /// 0 means no expression
@@ -78,12 +84,6 @@ pub const Node = union(enum) {
     pub const BreakIf = struct { condition: Index };
     pub const Else = struct { @"if": Index, body: Index };
     pub const ElseIf = struct { if1: Index, if2: Index };
-    pub const SwitchBody = struct { attributes: Index, clauses: Index };
-    pub const CaseClause = struct { selectors: Index, body: Index };
-    pub const CaseSelector = struct {
-        /// 0 means `default`
-        expr: Index,
-    };
     pub const FieldAccess = struct { lhs_expr: Index, member: IdentIndex };
     pub const IndexAccess = struct { lhs_expr: Index, index_expr: Index };
     pub const Number = struct { value: IdentIndex };

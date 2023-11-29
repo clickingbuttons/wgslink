@@ -21,11 +21,8 @@ const ImportTable = std.StringArrayHashMapUnmanaged(StringSet);
 fn importTable(allocator: Allocator, path: []const u8, tree: *Ast) !ImportTable {
     var res = ImportTable{};
 
-    const og_roots = try allocator.dupe(Node.Index, tree.spanToList(0));
-    defer allocator.free(og_roots);
-
-    for (og_roots, 0..) |ni, i| {
-        switch (tree.node(ni)) {
+    for (tree.spanToList(0)) |r| {
+        switch (tree.node(r)) {
             .import => |n| {
                 const mod_name = tree.identifier(n.module);
                 const resolved = try resolveFrom(allocator, path, mod_name);
@@ -42,9 +39,6 @@ fn importTable(allocator: Allocator, path: []const u8, tree: *Ast) !ImportTable 
                         else => {},
                     }
                 }
-
-                // We don't want to render imports in the bundle.
-                tree.removeFromSpan(0, i);
             },
             else => {},
         }
@@ -55,7 +49,6 @@ fn importTable(allocator: Allocator, path: []const u8, tree: *Ast) !ImportTable 
 
 pub const File = struct {
     stat: Stat,
-    source: [:0]const u8,
     tree: Ast,
     import_table: ImportTable,
 
@@ -72,7 +65,6 @@ pub const File = struct {
         const import_table = try importTable(allocator, path, &tree);
         return File{
             .stat = stat,
-            .source = source,
             .tree = tree,
             .import_table = import_table,
         };
@@ -80,7 +72,6 @@ pub const File = struct {
 
     pub fn deinit(self: *File, allocator: Allocator) void {
         self.tree.deinit(allocator);
-        allocator.free(self.source);
         var iter = self.import_table.iterator();
         while (iter.next()) |kv| {
             allocator.free(kv.key_ptr.*);
@@ -118,6 +109,7 @@ pub fn init(self: *Self, tree_shake: ?TreeShaker.Options) !void {
     if (self.file) |f| if (f.stat.eql(stat)) return;
 
     const source = try self.allocator.allocSentinel(u8, @as(usize, @intCast(stat.size)), 0);
+    defer self.allocator.free(source);
     const amt = try source_file.readAll(source);
     if (amt != stat.size) return error.UnexpectedEndOfFile;
 

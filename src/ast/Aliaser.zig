@@ -7,7 +7,7 @@ const Self = @This();
 const Allocator = std.mem.Allocator;
 const Node = node_mod.Node;
 // { [scope key]: [global alias] }
-const Scope = std.StringArrayHashMap(u32);
+const Scope = std.StringArrayHashMap(Node.IdentIndex);
 const Scopes = std.ArrayList(Scope);
 const Directives = struct {
     const StringSet = std.StringArrayHashMap(void);
@@ -30,6 +30,10 @@ const Directives = struct {
         self.diagnostics.deinit();
     }
 };
+const AliasingError = enum {
+    symbol_already_declared,
+};
+const Error = Allocator.Error || error{Aliasing};
 
 allocator: Allocator,
 scopes: Scopes,
@@ -75,16 +79,25 @@ pub fn append(self: *Self, tree: Ast) !void {
     }
 }
 
-fn listToSpan(self: *Self, list: []const Node.Index) Allocator.Error!Node.Index {
+fn listToSpan(self: *Self, list: []const Node.Index) Error!Node.Index {
     return try self.builder.listToSpan(self.allocator, list);
 }
 
-fn addNode(self: *Self, node: Node) Allocator.Error!Node.Index {
+fn addNode(self: *Self, node: Node) Error!Node.Index {
     return try self.builder.addNode(self.allocator, node);
 }
 
-fn addExtra(self: *Self, extra: anytype) Allocator.Error!Node.Index {
+fn addExtra(self: *Self, extra: anytype) Error!Node.Index {
     return try self.builder.addExtra(self.allocator, extra);
+}
+
+fn pushScope(self: *Self) Allocator.Error!void {
+    try self.scopes.append(Scope.init(self.allocator));
+}
+
+fn popScope(self: *Self) void {
+    var s = self.scopes.pop();
+    s.deinit();
 }
 
 const IdentType = enum {
@@ -96,42 +109,69 @@ const IdentType = enum {
     token,
 };
 
+fn isUniqueIdent(self: *Self, ident: []const u8) bool {
+    for (self.scopes.items) |s| {
+        if (s.get(ident) != null) return false;
+    }
+
+    return true;
+}
+
+/// Caller owns returned slice
+fn makeUniqueIdent(self: *Self, ident: []const u8) ![]const u8 {
+    var count: usize = 2;
+   var new_ident = try std.fmt.allocPrint(self.allocator, "{s}{d}", .{ ident, count });
+   while (!self.isUniqueIdent(new_ident)) {
+       count += 1;
+       self.allocator.free(new_ident);
+       new_ident = try std.fmt.allocPrint(self.allocator, "{s}{d}", .{ ident, count });
+   }
+
+   return new_ident;
+}
+
 fn getOrPutIdent(
     self: *Self,
     comptime ty: IdentType,
     ident: []const u8,
-) Allocator.Error!Node.IdentIndex {
-    const scope_index = self.scopes.items.len - 1;
-    var scope: *Scope = &self.scopes.items[scope_index];
+) Error!Node.IdentIndex {
     switch (ty) {
         .decl => {
+            const scope_index = self.scopes.items.len - 1;
+            var scope: *Scope = &self.scopes.items[scope_index];
             var gop = try scope.getOrPut(ident);
-            const alias = if (gop.found_existing) brk: {
-                // Make new unique identifier
-                var count: usize = 1;
-                for (self.scopes.items) |s| {
-                    if (s.get(ident) != null) count += 1;
-                }
-                break :brk try std.fmt.allocPrint(self.allocator, "{s}{d}", .{ ident, count });
-            } else ident;
-            defer if (gop.found_existing) self.allocator.free(alias);
-            gop.value_ptr.* = try self.builder.getOrPutIdent(self.allocator, alias);
+
+            if (gop.found_existing) {
+                std.debug.print("decl {s} found_existing\n", .{ident});
+                for (scope.keys()) |k| std.debug.print("in scope {s}\n", .{k});
+                const alias = try self.makeUniqueIdent(ident);
+                defer self.allocator.free(alias);
+                gop.value_ptr.* = try self.builder.getOrPutIdent(self.allocator, alias);
+            } else {
+                gop.value_ptr.* = try self.builder.getOrPutIdent(self.allocator, ident);
+            }
+            const alias = self.builder.identifiers.keys()[gop.value_ptr.*];
+            try scope.put(alias, gop.value_ptr.*);
+
             std.debug.print("decl {s} alias {s} index {d}\n", .{ ident, alias, gop.value_ptr.* });
             return gop.value_ptr.*;
         },
         .ref => {
-            std.debug.print("ref {s}\n", .{ident});
-            if (scope.get(ident)) |i| {
-                std.debug.print("clash {d}\n", .{i});
-                return i;
+            for (0..self.scopes.items.len) |i| {
+                const s = self.scopes.items[self.scopes.items.len - i - 1];
+                if (s.get(ident)) |index| {
+                    std.debug.print("ref {s} index {d}\n", .{ ident, index });
+                    return index;
+                }
             }
+            std.debug.print("ref {s}\n", .{ident});
         },
         .token => {},
     }
     return try self.builder.getOrPutIdent(self.allocator, ident);
 }
 
-inline fn identList(self: *Self, idents: [][]const u8) Allocator.Error!Node.Index {
+inline fn identList(self: *Self, idents: [][]const u8) Error!Node.Index {
     const scratch_top = self.scratch.items.len;
     defer self.scratch.shrinkRetainingCapacity(scratch_top);
     for (idents) |e| {
@@ -146,14 +186,14 @@ inline fn typedIdent(
     comptime ty: IdentType,
     tree: Ast,
     index: Node.Index,
-) Allocator.Error!Node.Index {
+) Error!Node.Index {
     var typed_ident = tree.extraData(node_mod.TypedIdent, index);
     typed_ident.name = try self.getOrPutIdent(ty, tree.identifier(typed_ident.name));
     typed_ident.type = try self.visit(tree, typed_ident.type);
     return try self.addExtra(typed_ident);
 }
 
-pub fn toOwnedAst(self: *Self, lang: Ast.Language) Allocator.Error!Ast {
+pub fn toOwnedAst(self: *Self, lang: Ast.Language) Error!Ast {
     std.debug.assert(self.scratch.items.len == 0);
 
     const enables = self.directives.enables.keys();
@@ -190,7 +230,7 @@ fn diagnosticControl(
     self: *Self,
     tree: Ast,
     index: Node.ExtraIndex,
-) Allocator.Error!node_mod.DiagnosticControl {
+) Error!node_mod.DiagnosticControl {
     var diagnostic = tree.extraData(node_mod.DiagnosticControl, index);
     const name = tree.identifier(diagnostic.name);
     diagnostic.name = try self.getOrPutIdent(.token, name);
@@ -201,14 +241,14 @@ fn diagnosticControl(
     return diagnostic;
 }
 
-pub fn appendComment(self: *Self, comment: []const u8) Allocator.Error!void {
+pub fn appendComment(self: *Self, comment: []const u8) Error!void {
     const node = try self.addNode(Node{ .comment = .{
         .ident = try self.getOrPutIdent(.token, comment),
     } });
     try self.roots.append(self.allocator, node);
 }
 
-fn visit(self: *Self, tree: Ast, index: Node.Index) Allocator.Error!Node.Index {
+fn visit(self: *Self, tree: Ast, index: Node.Index) Error!Node.Index {
     if (index == 0) return 0;
     const tree_node = tree.node(index);
     const node: Node = switch (tree_node) {
@@ -240,23 +280,25 @@ fn visit(self: *Self, tree: Ast, index: Node.Index) Allocator.Error!Node.Index {
         },
         .global_var => |n| brk: {
             var global_var = tree.extraData(node_mod.GlobalVar, n.global_var);
+            const initializer = try self.visit(tree, n.initializer);
             global_var.name = try self.getOrPutIdent(.decl, tree.identifier(global_var.name));
             global_var.attrs = try self.visit(tree, global_var.attrs);
             global_var.template_list = try self.visit(tree, global_var.template_list);
             global_var.type = try self.visit(tree, global_var.type);
             break :brk Node{ .global_var = .{
                 .global_var = try self.addExtra(global_var),
-                .initializer = try self.visit(tree, n.initializer),
+                .initializer = initializer,
             } };
         },
         .override => |n| brk: {
             var override = tree.extraData(node_mod.Override, n.override);
+            const initializer = try self.visit(tree, n.initializer);
             override.name = try self.getOrPutIdent(.decl, tree.identifier(override.name));
             override.attrs = try self.visit(tree, override.attrs);
             override.type = try self.visit(tree, override.type);
             break :brk Node{ .override = .{
                 .override = try self.addExtra(override),
-                .initializer = try self.visit(tree, n.initializer),
+                .initializer = initializer,
             } };
         },
         .@"fn" => |n| brk: {
@@ -272,9 +314,10 @@ fn visit(self: *Self, tree: Ast, index: Node.Index) Allocator.Error!Node.Index {
             } };
         },
         .@"const", .let => |n| brk: {
+            const initializer = try self.visit(tree, n.initializer);
             const let = Node.Let{
                 .typed_ident = try self.typedIdent(.decl, tree, n.typed_ident),
-                .initializer = try self.visit(tree, n.initializer),
+                .initializer = initializer,
             };
             break :brk switch (tree_node) {
                 .@"const" => Node{ .@"const" = let },
@@ -368,10 +411,13 @@ fn visit(self: *Self, tree: Ast, index: Node.Index) Allocator.Error!Node.Index {
             .attributes = try self.visit(tree, n.attributes),
             .body = try self.visit(tree, n.body),
         } },
-        .compound => |n| Node{ .compound = .{
-            .attributes = try self.visit(tree, n.attributes),
-            .statements = try self.visit(tree, n.statements),
-        } },
+        .compound => |n| brk: {
+            const attributes = try self.visit(tree, n.attributes);
+            try self.pushScope();
+            const statements = try self.visit(tree, n.statements);
+            self.popScope();
+            break :brk Node{ .compound = .{ .attributes = attributes, .statements = statements } };
+        },
         .@"if" => |n| Node{ .@"if" = .{
             .condition = try self.visit(tree, n.condition),
             .body = try self.visit(tree, n.body),
@@ -386,7 +432,7 @@ fn visit(self: *Self, tree: Ast, index: Node.Index) Allocator.Error!Node.Index {
         } },
         .@"switch" => |n| Node{ .@"switch" = .{
             .expr = try self.visit(tree, n.expr),
-            .body = try self.visit(tree, n.body),
+            .switch_body = try self.visit(tree, n.switch_body),
         } },
         .switch_body => |n| Node{ .switch_body = .{
             .attributes = try self.visit(tree, n.attributes),
@@ -410,12 +456,13 @@ fn visit(self: *Self, tree: Ast, index: Node.Index) Allocator.Error!Node.Index {
         } },
         .@"var" => |n| brk: {
             var extra = tree.extraData(node_mod.Var, n.@"var");
+            const initializer = try self.visit(tree, n.initializer);
             extra.name = try self.getOrPutIdent(.decl, tree.identifier(extra.name));
             extra.template_list = try self.visit(tree, extra.template_list);
             extra.type = try self.visit(tree, extra.type);
             break :brk Node{ .@"var" = .{
                 .@"var" = try self.addExtra(extra),
-                .initializer = try self.visit(tree, n.initializer),
+                .initializer = initializer,
             } };
         },
         // zig fmt off

@@ -254,6 +254,7 @@ pub fn Renderer(comptime UnderlyingWriter: type) type {
                         try self.writeAttributes(tree, header.return_attrs);
                         try self.writeIndex(tree, header.return_type);
                     }
+                    try self.writeSpace();
                     try self.writeIndex(tree, n.body);
                 },
                 .@"const", .let => |n| {
@@ -286,6 +287,7 @@ pub fn Renderer(comptime UnderlyingWriter: type) type {
                 .@"struct" => |n| {
                     try self.writeTokenSpace(.k_struct);
                     try self.writeIdentifier(tree, n.name);
+                    try self.writeSpace();
                     try self.startBlock();
                     try self.writeList(tree, n.members, .{ .sep = ",\n" });
                     try self.endBlock();
@@ -362,17 +364,18 @@ pub fn Renderer(comptime UnderlyingWriter: type) type {
                 .loop => |n| {
                     try self.writeToken(.k_loop);
                     try self.writeAttributes(tree, n.attributes);
+                    try self.writeSpace();
                     try self.writeIndex(tree, n.body);
                 },
                 .compound => |n| {
                     try self.writeAttributes(tree, n.attributes);
                     const indices = tree.spanToList(if (n.statements == 0) null else n.statements);
                     if (indices.len == 0) {
-                        try self.writeSpace();
                         try self.writeToken(.@"{");
                         try self.writeToken(.@"}");
                         return;
                     }
+                    if (n.attributes != 0) try self.writeSpace();
                     try self.startBlock();
                     for (indices, 0..) |index, i| {
                         try self.writeIndex(tree, index);
@@ -395,11 +398,13 @@ pub fn Renderer(comptime UnderlyingWriter: type) type {
                         &.{ header.init, header.cond, header.update },
                         .{ .start = "(", .sep = ";", .sep_space = true, .end = ")" },
                     );
+                    try self.writeSpace();
                     try self.writeIndex(tree, n.body);
                 },
                 .@"if" => |n| {
                     try self.writeTokenSpace(.k_if);
                     try self.writeIndex(tree, n.condition);
+                    try self.writeSpace();
                     try self.writeIndex(tree, n.body);
                 },
                 .else_if => |n| {
@@ -412,15 +417,17 @@ pub fn Renderer(comptime UnderlyingWriter: type) type {
                     try self.writeIndex(tree, n.@"if");
                     try self.writeSpace();
                     try self.writeToken(.k_else);
+                    try self.writeSpace();
                     try self.writeIndex(tree, n.body);
                 },
                 .@"switch" => |n| {
                     try self.writeTokenSpace(.k_switch);
                     try self.writeIndex(tree, n.expr);
-                    try self.writeIndex(tree, n.body);
+                    try self.writeIndex(tree, n.switch_body);
                 },
                 .switch_body => |n| {
                     try self.writeAttributes(tree, n.attributes);
+                    try self.writeSpace();
                     try self.startBlock();
                     try self.writeList(tree, n.clauses, .{ .sep = "\n" });
                     try self.endBlock();
@@ -432,6 +439,7 @@ pub fn Renderer(comptime UnderlyingWriter: type) type {
                     } else {
                         try self.writeToken(.k_default);
                     }
+                    try self.writeSpace();
                     try self.writeIndex(tree, n.body);
                 },
                 .case_selector => |n| {
@@ -444,6 +452,7 @@ pub fn Renderer(comptime UnderlyingWriter: type) type {
                 .@"while" => |n| {
                     try self.writeTokenSpace(.k_while);
                     try self.writeIndex(tree, n.condition);
+                    try self.writeSpace();
                     try self.writeIndex(tree, n.body);
                 },
                 .@"return" => |n| {
@@ -486,6 +495,7 @@ pub fn Renderer(comptime UnderlyingWriter: type) type {
                 },
                 .continuing => |n| {
                     try self.writeToken(.k_continuing);
+                    try self.writeSpace();
                     try self.writeIndex(tree, n.body);
                 },
                 .break_if => |n| {
@@ -539,7 +549,6 @@ pub fn Renderer(comptime UnderlyingWriter: type) type {
         }
 
         fn startBlock(self: *Self) RetType {
-            try self.writeSpace();
             try self.writeToken(.@"{");
             self.pushIndent();
             try self.newline();
@@ -952,6 +961,16 @@ test "while" {
 
 test "import" {
     try testCanonical("// import { Foo } from \"./foo.wgsl\";");
+}
+
+test "scope" {
+    try testCanonical(
+        \\fn test() {
+        \\  {
+        \\    return;
+        \\  }
+        \\}
+    );
 }
 
 test "minify" {

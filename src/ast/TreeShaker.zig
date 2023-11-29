@@ -136,7 +136,7 @@ fn visit(tree: *Ast, used: *Used, node: Node.Index) Allocator.Error!void {
         .@"if" => |n| try visitAll(tree, used, &.{ n.condition, n.body }),
         .else_if => |n| try visitAll(tree, used, &.{ n.if1, n.if2 }),
         .@"else" => |n| try visitAll(tree, used, &.{ n.@"if", n.body }),
-        .@"switch" => |n| try visitAll(tree, used, &.{ n.expr, n.body }),
+        .@"switch" => |n| try visitAll(tree, used, &.{ n.expr, n.switch_body }),
         .switch_body => |n| try visitAll(tree, used, &.{ n.attributes, n.clauses }),
         .case_clause => |n| try visitAll(tree, used, &.{ n.selectors, n.body }),
         .case_selector => |n| try visit(tree, used, n.expr),

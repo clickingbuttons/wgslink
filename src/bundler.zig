@@ -126,15 +126,19 @@ fn workerAst(
                 // if (self.modules.get(mod.imported_by)) |imp| {
                 //     const tree: Ast = imp.file.?.tree;
                 //     for (tree.spanToList(0)) |node| {
-                //         if (tree.nodeTag(node) != .import) continue;
-                //         const mod_name = tree.moduleName(node);
-                //         const resolved = imp.resolve(mod_name) catch continue;
-                //         defer self.allocator.free(resolved);
-                //         if (std.mem.eql(u8, resolved, mod.name)) {
-                //             tree.renderError(Ast.Error{
-                //                 .tag = .unresolved_module,
-                //                 .token = tree.nodeRHS(node).?,
-                //             }, errwriter, errconfig, mod.imported_by) catch {};
+                //         switch (node) {
+                //             .import => |i| {
+                //                 const mod_name = tree.identifier(i.module);
+                //                 const resolved = imp.resolve(mod_name) catch continue;
+                //                 defer self.allocator.free(resolved);
+                //                 if (std.mem.eql(u8, resolved, mod.name)) {
+                //                     tree.renderError(Ast.Error{
+                //                         .tag = .unresolved_module,
+                //                         .token = tree.nodeRHS(node).?,
+                //                     }, errwriter, errconfig, mod.imported_by) catch {};
+                //                 }
+                //             },
+                //             else => {}
                 //         }
                 //     }
                 // }
