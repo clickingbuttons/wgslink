@@ -26,6 +26,7 @@ pub fn Renderer(comptime UnderlyingWriter: type) type {
 
         underlying_writer: UnderlyingWriter,
         minify: bool,
+        imports: bool,
 
         disabled_offset: ?usize = null,
         indent_count: usize = 0,
@@ -38,10 +39,11 @@ pub fn Renderer(comptime UnderlyingWriter: type) type {
         /// not used until the next line
         indent_next_line: usize = 0,
 
-        pub fn init(underlying_writer: UnderlyingWriter, minify: bool) Self {
+        pub fn init(underlying_writer: UnderlyingWriter, minify: bool, imports: bool) Self {
             return Self{
                 .underlying_writer = underlying_writer,
                 .minify = minify,
+                .imports = imports,
             };
         }
 
@@ -189,6 +191,10 @@ pub fn Renderer(comptime UnderlyingWriter: type) type {
                 // std.debug.print("{d} / {d} = {d} {any}\n", .{ i, indices.len, index, tree.node(index) });
                 try self.writeIndex(tree, index);
                 switch (tree.node(index)) {
+                    .import => if (!self.imports) continue,
+                    else => {},
+                }
+                switch (tree.node(index)) {
                     .diagnostic_directive,
                     .enable_directive,
                     .requires_directive,
@@ -275,6 +281,7 @@ pub fn Renderer(comptime UnderlyingWriter: type) type {
                     try self.writeIndex(tree, n.old_type);
                 },
                 .import => |n| {
+                    if (!self.imports) return;
                     try self.writeTokenSpace(.k_import);
                     if (n.aliases != 0) {
                         try self.writeList(tree, n.aliases, .{ .start = "{ ", .sep = "\n", .end = " }" });
@@ -703,6 +710,7 @@ fn testWrite(
     writer: anytype,
     source: [:0]const u8,
     minify: bool,
+    imports: bool,
 ) !void {
     var tree = try Parser.parse(allocator, source);
     defer tree.deinit(allocator);
@@ -713,22 +721,27 @@ fn testWrite(
         try stderr.writer().writeByte('\n');
         try tree.renderErrors(stderr.writer(), term, null);
     } else {
-        var renderer = Renderer(@TypeOf(writer)).init(writer, minify);
+        var renderer = Renderer(@TypeOf(writer)).init(writer, minify, imports);
         try renderer.writeTranslationUnit(tree);
     }
 }
 
-fn testRender(comptime source: [:0]const u8, comptime expected: [:0]const u8, minify: bool) !void {
+fn testRender(
+    comptime source: [:0]const u8,
+    comptime expected: [:0]const u8,
+    minify: bool,
+    imports: bool,
+) !void {
     const allocator = std.testing.allocator;
     var arr = try std.ArrayList(u8).initCapacity(allocator, source.len);
     defer arr.deinit();
 
-    try testWrite(allocator, arr.writer(), source, minify);
+    try testWrite(allocator, arr.writer(), source, minify, imports);
     try std.testing.expectEqualStrings(expected, arr.items);
 }
 
 fn testCanonical(comptime source: [:0]const u8) !void {
-    try testRender(source, source, false);
+    try testRender(source, source, false, false);
 }
 
 test "var" {
@@ -758,7 +771,7 @@ test "comments" {
         \\const a: u32 = 0u;
         \\const b: u32 = 1u;
         \\const c: u32 = 2u;
-    , false);
+    , false, false);
 }
 
 test "diagnostic" {
@@ -768,7 +781,6 @@ test "diagnostic" {
 
 test "directives and declarations" {
     try testCanonical(
-        \\// import { foo } from "./bar.wgsl";
         \\enable foo,bar;
         \\requires feat1,feat2;
         \\diagnostic(off,derivative_uniformity);
@@ -835,7 +847,7 @@ test "struct" {
     ;
     try testCanonical(foo);
 
-    try testRender(foo ++ ";", foo, false);
+    try testRender(foo ++ ";", foo, false, false);
 
     try testCanonical(
         \\struct Foo {
@@ -960,7 +972,8 @@ test "while" {
 }
 
 test "import" {
-    try testCanonical("// import { Foo } from \"./foo.wgsl\";");
+    const source = "// import { Foo } from \"./foo.wgsl\";";
+    try testRender(source, source, false, true);
 }
 
 test "scope" {
@@ -974,16 +987,8 @@ test "scope" {
 }
 
 test "minify" {
-    try testRender(
-        "var a: u32 = 0u;",
-        "var a:u32=0u;",
-        true,
-    );
-    try testRender(
-        "var<uniform> a: u32 = 0u;",
-        "var<uniform>a:u32=0u;",
-        true,
-    );
+    try testRender("var a: u32 = 0u;", "var a:u32=0u;", true, false);
+    try testRender("var<uniform> a: u32 = 0u;", "var<uniform>a:u32=0u;", true, false);
     try testRender(
         \\fn test() {
         \\  while false {
@@ -992,5 +997,5 @@ test "minify" {
         \\}
     ,
         \\fn test(){while false{if (true){return;}}}
-    , true);
+    , true, false);
 }

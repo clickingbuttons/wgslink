@@ -2,6 +2,7 @@ const std = @import("std");
 const Ast = @import("./Ast.zig");
 const AstBuilder = @import("./Builder.zig");
 const node_mod = @import("./Node.zig");
+const File = @import("../file/File.zig");
 
 const Self = @This();
 const Allocator = std.mem.Allocator;
@@ -120,14 +121,14 @@ fn isUniqueIdent(self: *Self, ident: []const u8) bool {
 /// Caller owns returned slice
 fn makeUniqueIdent(self: *Self, ident: []const u8) ![]const u8 {
     var count: usize = 2;
-   var new_ident = try std.fmt.allocPrint(self.allocator, "{s}{d}", .{ ident, count });
-   while (!self.isUniqueIdent(new_ident)) {
-       count += 1;
-       self.allocator.free(new_ident);
-       new_ident = try std.fmt.allocPrint(self.allocator, "{s}{d}", .{ ident, count });
-   }
+    var new_ident = try std.fmt.allocPrint(self.allocator, "{s}{d}", .{ ident, count });
+    while (!self.isUniqueIdent(new_ident)) {
+        count += 1;
+        self.allocator.free(new_ident);
+        new_ident = try std.fmt.allocPrint(self.allocator, "{s}{d}", .{ ident, count });
+    }
 
-   return new_ident;
+    return new_ident;
 }
 
 fn getOrPutIdent(
@@ -193,7 +194,7 @@ inline fn typedIdent(
     return try self.addExtra(typed_ident);
 }
 
-pub fn toOwnedAst(self: *Self, lang: Ast.Language) Error!Ast {
+pub fn toOwnedAst(self: *Self, lang: File.Language) Error!Ast {
     std.debug.assert(self.scratch.items.len == 0);
 
     const enables = self.directives.enables.keys();
@@ -252,7 +253,7 @@ fn visit(self: *Self, tree: Ast, index: Node.Index) Error!Node.Index {
     if (index == 0) return 0;
     const tree_node = tree.node(index);
     const node: Node = switch (tree_node) {
-        .@"error", .import, .import_alias, .comment => unreachable,
+        .@"error", .comment => unreachable,
         .span => {
             const scratch_top = self.scratch.items.len;
             defer self.scratch.shrinkRetainingCapacity(scratch_top);
@@ -261,6 +262,18 @@ fn visit(self: *Self, tree: Ast, index: Node.Index) Error!Node.Index {
             }
 
             return try self.listToSpan(self.scratch.items[scratch_top..]);
+        },
+        .import => |n| Node{ .import = .{
+            .aliases = try self.visit(tree, n.aliases),
+            .module = try self.getOrPutIdent(.token, tree.identifier(n.module)),
+        } },
+        .import_alias => |n| brk: {
+            var n2 = n;
+            n2.old = try self.getOrPutIdent(.token, tree.identifier(n2.old));
+            if (n2.new != 0) {
+                n2.new = try self.getOrPutIdent(.decl, tree.identifier(n2.new));
+            }
+            break :brk Node{ .import_alias = .{ .new = n2.new, .old = n2.old } };
         },
         .enable_directive, .requires_directive => |n| {
             for (tree.spanToList(n.idents)) |i| {

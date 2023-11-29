@@ -1,10 +1,10 @@
 const std = @import("std");
 const Ast = @import("./Ast.zig");
 const Node = @import("./Node.zig").Node;
+const Language = @import("../file/File.zig").Language;
 
 const Self = @This();
 const Allocator = std.mem.Allocator;
-const Language = Ast.Language;
 
 /// Main data structure
 nodes: Ast.NodeList = .{},

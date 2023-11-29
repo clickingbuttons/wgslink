@@ -1,9 +1,10 @@
 const std = @import("std");
+const Loc = @import("../file/Loc.zig");
 
 pub const Node = union(enum) {
-    pub const Index = u32;
-    pub const ExtraIndex = u32;
-    pub const IdentIndex = u32;
+    pub const Index = Loc.Index;
+    pub const ExtraIndex = Loc.Index;
+    pub const IdentIndex = Loc.Index;
     pub const Tag = std.meta.FieldEnum(Self);
 
     const Self = @This();

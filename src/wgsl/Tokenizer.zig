@@ -1,9 +1,10 @@
 const std = @import("std");
 const Token = @import("Token.zig");
+const Loc = @import("../file/Loc.zig");
 
 pub const Tokenizer = struct {
     buffer: [:0]const u8,
-    index: Token.Index,
+    index: Loc.Index,
 
     pub fn init(buffer: [:0]const u8) Tokenizer {
         // > A WGSL module is Unicode text using the UTF-8 encoding, with no byte order mark (BOM).

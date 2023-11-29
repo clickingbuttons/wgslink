@@ -5,13 +5,15 @@ const node_mod = @import("../ast/Node.zig");
 const AstBuilder = @import("../ast/Builder.zig");
 const ParsingError = @import("./ParsingError.zig");
 const Tokenizer = @import("./Tokenizer.zig").Tokenizer;
+const Loc = @import("../file/Loc.zig");
 
 const Self = @This();
 const Allocator = std.mem.Allocator;
 const Error = Allocator.Error || error{Parsing};
 const Node = node_mod.Node;
 pub const TokenList = std.MultiArrayList(Token);
-const max_template_depth = 16;
+pub const max_template_depth = 16;
+pub const TokenIndex = Loc.Index;
 
 allocator: Allocator,
 /// Used to check validity of some idents (like severity and attributes) and
@@ -20,7 +22,7 @@ source: [:0]const u8,
 /// Need to store all of these to mutate for template tags.
 tokens: TokenList,
 /// Current parsing position
-tok_i: Token.Index = 0,
+tok_i: TokenIndex = 0,
 /// The main event
 builder: AstBuilder = .{},
 /// Used to build lists
@@ -178,7 +180,7 @@ fn parameterizeTemplates(p: *Self) Allocator.Error!void {
             },
             .@";", .@":", .@"[" => {
                 depth = 0;
-                discovered_tmpls.resize(0) catch unreachable;
+                discovered_tmpls.len = 0;
             },
             .@"||", .@"&&" => {
                 while (discovered_tmpls.len > 0 and
@@ -192,7 +194,7 @@ fn parameterizeTemplates(p: *Self) Allocator.Error!void {
 fn addErrorAdvanced(
     p: *Self,
     tag: ParsingError.Tag,
-    token: ?Token.Index,
+    token: ?TokenIndex,
     expected_token: Token.Tag,
 ) !void {
     const loc = p.tokens.items(.loc)[token orelse p.tok_i];
@@ -214,7 +216,7 @@ fn addErrorAdvanced(
     try p.scratch.append(p.allocator, err);
 }
 
-fn addError(p: *Self, tag: ParsingError.Tag, token: ?Token.Index) !void {
+fn addError(p: *Self, tag: ParsingError.Tag, token: ?TokenIndex) !void {
     try p.addErrorAdvanced(tag, token, .invalid);
 }
 
@@ -226,7 +228,7 @@ fn peekToken(
     return p.tokens.items(field)[p.tok_i + offset];
 }
 
-fn advanceToken(p: *Self) Token.Index {
+fn advanceToken(p: *Self) TokenIndex {
     const prev = p.tok_i;
     p.tok_i = @min(prev + 1, p.tokens.len - 1);
     return prev;
@@ -237,15 +239,15 @@ fn isKeyword(tag: Token.Tag) bool {
     return tag_name.len > 2 and std.mem.eql(u8, tag_name[0..2], "k_");
 }
 
-fn eatToken(p: *Self, tag: Token.Tag) ?Token.Index {
+fn eatToken(p: *Self, tag: Token.Tag) ?TokenIndex {
     return if (p.peekToken(.tag, 0) == tag) p.advanceToken() else null;
 }
 
-fn eatKeyword(p: *Self) ?Token.Index {
+fn eatKeyword(p: *Self) ?TokenIndex {
     return if (isKeyword(p.peekToken(.tag, 0))) p.advanceToken() else null;
 }
 
-fn expectToken(p: *Self, tag: Token.Tag) Error!Token.Index {
+fn expectToken(p: *Self, tag: Token.Tag) Error!TokenIndex {
     const token = p.advanceToken();
     if (p.tokens.items(.tag)[token] == tag) return token;
 
@@ -256,14 +258,14 @@ fn expectToken(p: *Self, tag: Token.Tag) Error!Token.Index {
 fn getOrPutIdentAdvanced(
     p: *Self,
     comptime is_literal: bool,
-    token: Token.Index,
+    token: TokenIndex,
 ) Allocator.Error!Node.IdentIndex {
     var src = p.tokenSource(token);
     if (is_literal) src = src[1 .. src.len - 1];
     return try p.builder.getOrPutIdent(p.allocator, src);
 }
 
-fn getOrPutIdent(p: *Self, token: Token.Index) Allocator.Error!Node.IdentIndex {
+fn getOrPutIdent(p: *Self, token: TokenIndex) Allocator.Error!Node.IdentIndex {
     return try p.getOrPutIdentAdvanced(false, token);
 }
 
@@ -272,7 +274,7 @@ fn expectIdent(p: *Self) Error!Node.IdentIndex {
     return try p.getOrPutIdent(token);
 }
 
-fn tokenSource(p: Self, i: Token.Index) []const u8 {
+fn tokenSource(p: Self, i: TokenIndex) []const u8 {
     const loc = p.tokens.items(.loc)[i];
     return p.source[loc.start..loc.end];
 }
@@ -1343,9 +1345,18 @@ fn relationalExpr(p: *Self, lhs_unary: Node.Index) Error!Node.Index {
     const lhs = try p.shiftExpr(lhs_unary);
     switch (p.peekToken(.tag, 0)) {
         inline .@"<", .@">", .@"<=", .@">=", .@"==", .@"!=" => |t| {
+            const tag = switch (t) {
+                .@"<" => .lt,
+                .@">" => .gt,
+                .@"<=" => .lte,
+                .@">=" => .gte,
+                .@"==" => .eq,
+                .@"!=" => .neq,
+                else => unreachable,
+            };
             _ = p.advanceToken();
             const rhs = try p.shiftExpr(try p.expectUnaryExpr());
-            const node = @unionInit(Node, t.nodeTagName(), .{
+            const node = @unionInit(Node, @tagName(tag), .{
                 .lhs_shift_expr = lhs,
                 .rhs_shift_expr = rhs,
             });
@@ -1361,6 +1372,11 @@ fn shortCircuitExpr(p: *Self, lhs_relational: Node.Index) Error!Node.Index {
     const op_token = p.tok_i;
     switch (p.tokens.items(.tag)[op_token]) {
         inline .@"&&", .@"||" => |t| {
+            const tag = switch (t) {
+                .@"&&" => .logical_and,
+                .@"||" => .logical_or,
+                else => unreachable,
+            };
             var lhs = lhs_relational;
             while (p.peekToken(.tag, 0) == p.tokens.items(.tag)[op_token]) {
                 _ = p.advanceToken();
@@ -1368,7 +1384,7 @@ fn shortCircuitExpr(p: *Self, lhs_relational: Node.Index) Error!Node.Index {
                 const rhs_unary = try p.expectUnaryExpr();
                 const rhs = try p.relationalExpr(rhs_unary);
 
-                const node = @unionInit(Node, t.nodeTagName(), .{
+                const node = @unionInit(Node, @tagName(tag), .{
                     .lhs_relational_expr = lhs,
                     .rhs_relational_expr = rhs,
                 });
@@ -1387,11 +1403,17 @@ fn shortCircuitExpr(p: *Self, lhs_relational: Node.Index) Error!Node.Index {
 fn bitwiseExpr(p: *Self, lhs: Node.Index) Error!?Node.Index {
     switch (p.peekToken(.tag, 0)) {
         inline .@"&", .@"|", .@"^" => |t| {
+            const tag = switch (t) {
+                inline .@"&" => .bitwise_and,
+                inline .@"|" => .bitwise_or,
+                inline .@"^" => .bitwise_xor,
+                else => unreachable,
+            };
             const op_token = p.advanceToken();
             var lhs_result = lhs;
             while (true) {
                 const rhs = try p.expectUnaryExpr();
-                const node = @unionInit(Node, t.nodeTagName(), .{
+                const node = @unionInit(Node, @tagName(tag), .{
                     .lhs_bitwise_expr = lhs_result,
                     .rhs_unary_expr = rhs,
                 });
@@ -1410,8 +1432,13 @@ fn bitwiseExpr(p: *Self, lhs: Node.Index) Error!?Node.Index {
 fn shiftExpr(p: *Self, lhs: Node.Index) Error!Node.Index {
     switch (p.peekToken(.tag, 0)) {
         inline .@"<<", .@">>" => |t| {
+            const tag = switch (t) {
+                .@"<<" => .lshift,
+                .@">>" => .rshift,
+                else => unreachable,
+            };
             _ = p.advanceToken();
-            const node = @unionInit(Node, t.nodeTagName(), .{
+            const node = @unionInit(Node, @tagName(tag), .{
                 .lhs_unary_expr = lhs,
                 .rhs_unary_expr = try p.expectUnaryExpr(),
             });
@@ -1434,10 +1461,15 @@ fn additiveExpr(p: *Self, lhs_mul: Node.Index) Error!Node.Index {
     while (true) {
         switch (p.peekToken(.tag, 0)) {
             inline .@"+", .@"-" => |t| {
+                const tag = switch (t) {
+                    .@"+" => .add,
+                    .@"-" => .sub,
+                    else => unreachable,
+                };
                 _ = p.advanceToken();
                 const unary = try p.expectUnaryExpr();
                 const rhs = try p.multiplicativeExpr(unary);
-                const node = @unionInit(Node, t.nodeTagName(), .{
+                const node = @unionInit(Node, @tagName(tag), .{
                     .lhs_additive_expr = lhs,
                     .rhs_mul_expr = rhs,
                 });
@@ -1458,13 +1490,13 @@ fn multiplicativeExpr(p: *Self, lhs_unary: Node.Index) Error!Node.Index {
         switch (p.peekToken(.tag, 0)) {
             inline .@"*", .@"/", .@"%" => |t| {
                 _ = p.advanceToken();
-                const node_tag = switch (t) {
+                const tag = switch (t) {
                     inline .@"*" => .mul,
                     inline .@"/" => .div,
                     inline .@"%" => .mod,
                     else => unreachable,
                 };
-                const node = @unionInit(Node, @tagName(node_tag), .{
+                const node = @unionInit(Node, @tagName(tag), .{
                     .lhs_multiplicative_expr = lhs,
                     .rhs_unary_expr = try p.expectUnaryExpr(),
                 });

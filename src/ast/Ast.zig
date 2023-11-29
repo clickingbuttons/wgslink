@@ -2,13 +2,13 @@
 const std = @import("std");
 const node_mod = @import("./Node.zig");
 const WgslParsingError = @import("../wgsl/ParsingError.zig");
+const Language = @import("../file/File.zig").Language;
 
 const Allocator = std.mem.Allocator;
 const Self = @This();
 const Node = node_mod.Node;
 pub const NodeList = std.MultiArrayList(Node);
 pub const Identifiers = std.MultiArrayList(std.StringArrayHashMapUnmanaged(void).Data);
-pub const Language = enum { wgsl };
 
 /// Node 0 is a span of directives followed by declarations. Since there can be no
 /// references to this root node, 0 is available to indicate null

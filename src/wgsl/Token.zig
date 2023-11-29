@@ -1,49 +1,8 @@
 const std = @import("std");
-const Node = @import("../ast/Node.zig").Node;
-
-// Maximum number of tokens per file.
-pub const Index = u32;
+const Loc = @import("../file/Loc.zig");
 
 tag: Tag,
 loc: Loc,
-
-pub const Loc = struct {
-    start: Index,
-    end: Index,
-
-    const Extra = struct {
-        line: u32,
-        col: u32,
-        line_start: u32,
-        line_end: u32,
-    };
-
-    pub fn extraInfo(self: Loc, source: []const u8) Extra {
-        var result = Extra{
-            .line = 1,
-            .col = 1,
-            .line_start = 0,
-            .line_end = @intCast(source.len),
-        };
-
-        for (source[0..self.start], 0..) |c, i| {
-            if (c == '\n') {
-                result.line += 1;
-                result.line_start = @as(u32, @intCast(i)) + 1;
-            }
-        }
-
-        for (source[self.end..], 0..) |c, i| {
-            if (c == '\n') {
-                result.line_end = self.end + @as(u32, @intCast(i));
-                break;
-            }
-        }
-
-        result.col += self.start - result.line_start;
-        return result;
-    }
-};
 
 pub const Tag = enum(u8) {
     invalid = 0,
@@ -194,31 +153,6 @@ pub const Tag = enum(u8) {
             .k_import => "// import",
             else => |t| @tagName(t)["k_".len..],
         };
-    }
-
-    pub fn nodeTagName(comptime self: Self) [:0]const u8 {
-        const tag: Node.Tag = switch (self) {
-            .@"+" => .add,
-            .@"-" => .sub,
-            .@"<<" => .lshift,
-            .@">>" => .rshift,
-            .@"<" => .lt,
-            .@">" => .gt,
-            .@"<=" => .lte,
-            .@">=" => .gte,
-            .@"==" => .eq,
-            .@"!=" => .neq,
-            .@"&&" => .logical_and,
-            .@"||" => .logical_or,
-            .@"&" => .bitwise_and,
-            .@"|" => .bitwise_or,
-            .@"^" => .bitwise_xor,
-            // .@"*" => .mul,
-            .@"/" => .div,
-            .@"%" => .mod,
-            else => unreachable,
-        };
-        return @tagName(tag);
     }
 };
 

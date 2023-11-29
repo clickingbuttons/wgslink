@@ -80,10 +80,7 @@ pub fn bundle(
     wait_group.wait();
     var has_unparsed = false;
     for (self.modules.values()) |v| {
-        if (!v.parsed) {
-            errwriter.print("error: UnparsedModule {s}\n", .{v.name}) catch {};
-            has_unparsed = true;
-        }
+        if (v.hasError()) has_unparsed = true;
     }
     if (has_unparsed) return error.UnparsedModule;
 
@@ -95,7 +92,7 @@ pub fn bundle(
 
     var tree = try aliaser.toOwnedAst(.wgsl);
     defer tree.deinit(self.allocator);
-    var renderer = Renderer(@TypeOf(writer)).init(writer, opts.minify);
+    var renderer = Renderer(@TypeOf(writer)).init(writer, opts.minify, false);
     try renderer.writeTranslationUnit(tree);
 }
 
@@ -114,9 +111,9 @@ fn workerAst(
         self.stderr_mutex.lock();
         defer self.stderr_mutex.unlock();
         switch (err) {
-            error.Parsing => {
-                if (mod.file) |f| f.tree.renderErrors(errwriter, errconfig, mod.name) catch {};
-            },
+            error.Parsing => mod.renderErrors(errwriter, errconfig) catch {},
+            error.FileTooBig => {},
+            error.UnsupportedLanguage => {},
             else => |t| {
                 errwriter.print("error: {s} for {s} (imported by {s})\n", .{
                     @errorName(t),
@@ -142,6 +139,7 @@ fn workerAst(
                 //         }
                 //     }
                 // }
+                //},
             },
         }
         return;
