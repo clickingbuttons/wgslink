@@ -191,28 +191,41 @@ fn parameterizeTemplates(p: *Self) Allocator.Error!void {
     }
 }
 
+fn errorLoc(p: *Self, token: TokenIndex) node_mod.ErrorLoc {
+    const loc: Loc = p.tokens.items(.loc)[token];
+
+    // TODO: track lineno in tokenizer, don't tokenize everything in init
+    var line_num: Loc.Index = 1;
+    var line_start: Loc.Index = 0;
+    for (p.source[0..loc.start], 0..) |c, i| {
+        if (c == '\n') {
+            line_num += 1;
+            line_start = @as(u32, @intCast(i)) + 1;
+        }
+    }
+
+    return node_mod.ErrorLoc{
+        .line_num = line_num,
+        .line_start = line_start,
+        .tok_start = loc.start,
+        .tok_end = loc.end,
+    };
+}
+
 fn addErrorAdvanced(
     p: *Self,
     tag: ParsingError.Tag,
     token: ?TokenIndex,
     expected_token: Token.Tag,
 ) !void {
-    const loc = p.tokens.items(.loc)[token orelse p.tok_i];
-    const info = loc.extraInfo(p.source);
-    const line = p.source[info.line_start..info.line_end];
-    const line_i = try p.builder.getOrPutIdent(p.allocator, line);
-    const extra = try p.addExtra(node_mod.SourceInfo{
-        .line = line_i,
-        .line_num = info.line,
-        .col_num = info.col,
-        .tok_len = loc.end - loc.start,
-    });
-    // This assumes we are not called from a function that modifies p.scratch besides parseTranslationUnit
+    const error_loc = p.errorLoc(token orelse p.tok_i);
+    const extra = try p.addExtra(error_loc);
     const err = try p.addNode(Node{ .@"error" = .{
         .tag = @intFromEnum(tag),
         .expected_token_tag = @intFromEnum(expected_token),
-        .source_info = extra,
+        .error_loc = extra,
     } });
+    // This assumes we are not called from a function that modifies p.scratch besides parseTranslationUnit
     try p.scratch.append(p.allocator, err);
 }
 
@@ -701,9 +714,18 @@ fn importDirective(p: *Self) Error!?Node.Index {
     const mod_token = try p.expectToken(.string_literal);
     _ = p.eatToken(.@";");
 
+    const error_loc = p.errorLoc(mod_token);
+    const extra = try p.addExtra(node_mod.Import{
+        .module = try p.getOrPutIdentAdvanced(true, mod_token),
+        .line_num = error_loc.line_num,
+        .line_start = error_loc.line_start,
+        .tok_start = error_loc.tok_start,
+        .tok_end = error_loc.tok_end,
+    });
+
     return try p.addNode(Node{ .import = .{
         .aliases = importAliases,
-        .module = try p.getOrPutIdentAdvanced(true, mod_token),
+        .import = extra,
     } });
 }
 
@@ -1545,7 +1567,7 @@ test "parser error" {
     const expected_err = Node.Error{
         .tag = 10,
         .expected_token_tag = 0,
-        .source_info = 2,
+        .error_loc = 2,
     };
     try std.testing.expectEqual(expected_err, tree.node(roots[1]).@"error");
 }

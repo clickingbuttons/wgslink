@@ -3,6 +3,7 @@ const std = @import("std");
 const node_mod = @import("./Node.zig");
 const WgslParsingError = @import("../wgsl/ParsingError.zig");
 const Language = @import("../file/File.zig").Language;
+const FileError = @import("../file/Error.zig");
 
 const Allocator = std.mem.Allocator;
 const Self = @This();
@@ -68,26 +69,22 @@ pub fn renderErrors(
     self: Self,
     writer: anytype,
     term: std.io.tty.Config,
+    source: [:0]const u8,
     file_path: ?[]const u8,
 ) !void {
     for (self.spanToList(0)) |i| {
         switch (self.node(i)) {
             .@"error" => |e| {
-                const source_info = self.extraData(node_mod.SourceInfo, e.source_info);
-                const line = self.identifier(source_info.line);
+                const loc = self.extraData(node_mod.ErrorLoc, e.error_loc);
+                try FileError.render(writer, term, source, file_path, loc);
                 switch (self.from_lang) {
                     .wgsl => {
-                        try WgslParsingError.render(
-                            writer,
-                            term,
-                            file_path,
-                            @enumFromInt(e.tag),
-                            @enumFromInt(e.expected_token_tag),
-                            line,
-                            source_info,
-                        );
+                        const tag: WgslParsingError.Tag = @enumFromInt(e.tag);
+                        try tag.render(writer, @enumFromInt(e.expected_token_tag));
                     },
                 }
+                try term.setColor(writer, .reset);
+                try writer.writeByte('\n');
             },
             else => {},
         }
@@ -120,4 +117,9 @@ pub fn globalName(self: Self, index: Node.Index) []const u8 {
 
 pub fn removeFromSpan(self: *Self, span_index: Node.Index, item_index: usize) void {
     self.nodes.items(.data)[span_index].span.orderedRemove(self.extra, item_index);
+}
+
+pub fn modName(self: Self, imp: Node.Import) []const u8 {
+    const extra = self.extraData(node_mod.Import, imp.import);
+    return self.identifier(extra.module);
 }

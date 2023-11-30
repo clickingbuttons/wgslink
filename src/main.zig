@@ -36,15 +36,30 @@ pub fn main() !void {
     var bundler = try Bundler.init(allocator, &thread_pool);
     defer bundler.deinit();
 
-    for (res.positionals) |pos| bundler.bundle(
-        stdout,
-        stderr,
-        std.io.tty.detectConfig(std.io.getStdErr()),
-        .{ .file = pos, .tree_shake = .{}, .minify = res.args.minify != 0 },
-    ) catch |err| {
-        stderr.print("error: {s} when bundling {s}\n", .{ @errorName(err), pos }) catch {};
-        continue;
-    };
+    var errconfig = std.io.tty.detectConfig(std.io.getStdErr());
+
+    var failed = false;
+    for (res.positionals) |pos| {
+        const opts = Bundler.Options{
+            .file = pos,
+            .tree_shake = .{},
+            .minify = res.args.minify != 0,
+        };
+        bundler.bundle(stdout, stderr, errconfig, opts) catch |err| {
+            errconfig.setColor(stderr, .red) catch {};
+            switch (err) {
+                error.UnparsedModule => {},
+                else => {
+                    stderr.print("error: {s} when bundling {s}\n", .{ @errorName(err), pos }) catch {};
+                },
+            }
+            errconfig.setColor(stderr, .reset) catch {};
+            failed = true;
+            continue;
+        };
+    }
+
+    if (failed) std.os.exit(1);
 }
 
 test "renderer" {

@@ -1,5 +1,6 @@
 const std = @import("std");
 const Loc = @import("../file/Loc.zig");
+pub const ErrorLoc = @import("../file/Error.zig").ErrorLoc;
 
 pub const Node = union(enum) {
     pub const Index = Loc.Index;
@@ -11,7 +12,7 @@ pub const Node = union(enum) {
     pub const Error = struct {
         tag: u8,
         expected_token_tag: u8 = 0,
-        source_info: ExtraIndex,
+        error_loc: ExtraIndex,
     };
     /// For storing lists of nodes
     pub const Span = struct {
@@ -45,7 +46,7 @@ pub const Node = union(enum) {
     pub const DiagnosticDirective = struct { diagnostic_control: ExtraIndex };
     pub const GlobalVar = struct { global_var: ExtraIndex, initializer: Index };
     pub const Override = struct { override: ExtraIndex, initializer: Index };
-    pub const Import = struct { aliases: Index, module: IdentIndex };
+    pub const Import = struct { aliases: Index, import: ExtraIndex };
 
     pub const IdentList = struct { idents: Index };
     pub const ImportAlias = struct {
@@ -97,7 +98,7 @@ pub const Node = union(enum) {
     diagnostic_directive: DiagnosticDirective,
     enable_directive: IdentList,
     requires_directive: IdentList,
-    import: Import,
+    import: Self.Import,
     import_alias: ImportAlias,
     // Global declarations
     global_var: Self.GlobalVar,
@@ -279,9 +280,10 @@ pub const Interpolation = struct {
     type: Node.Index,
     sampling_expr: Node.Index = 0,
 };
-pub const SourceInfo = struct {
-    line: Node.IdentIndex,
-    line_num: u32,
-    col_num: u32,
-    tok_len: u32,
+pub const Import = struct {
+    module: Node.IdentIndex,
+    line_num: Loc.Index,
+    line_start: Loc.Index,
+    tok_start: Loc.Index,
+    tok_end: Loc.Index,
 };

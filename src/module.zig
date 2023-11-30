@@ -5,23 +5,49 @@ const TreeShaker = @import("./ast/TreeShaker.zig");
 const Parser = @import("./wgsl/Parser.zig");
 const File = @import("./file/File.zig");
 
+pub const Error = error{UnsupportedLanguage};
+pub const resolveFrom = File.resolveFrom;
 const Allocator = std.mem.Allocator;
 const Self = @This();
-pub const resolveFrom = File.resolveFrom;
 
 allocator: Allocator,
-name: []const u8,
+path: []const u8,
 imported_by: []const u8,
 file: ?File = null,
 
-pub fn deinit(self: *Self) void {
-    if (self.file) |*f| f.deinit(self.allocator);
+fn getLanguage(path: []const u8) ?File.Language {
+    if (std.mem.endsWith(u8, path, ".wgsl")) return .wgsl;
+
+    return null;
 }
 
-pub fn init(self: *Self, tree_shake: ?TreeShaker.Options) !void {
-    const path = self.name;
+pub fn init(allocator: Allocator, path: []const u8, imported_by: []const u8) Self {
+    return Self{ .allocator = allocator, .path = path, .imported_by = imported_by };
+}
 
-    var source_file = try std.fs.cwd().openFile(path, .{});
+fn sourceAdvanced(self: Self, size: usize) ![:0]const u8 {
+    // TODO: mmap so errors don't have to read whole file
+    var source_file = try std.fs.cwd().openFile(self.path, .{});
+    defer source_file.close();
+
+    const res = try self.allocator.allocSentinel(u8, size, 0);
+    errdefer self.allocator.free(res);
+
+    const amt = try source_file.readAll(res);
+    if (amt != size) return error.UnexpectedEndOfFile;
+
+    return res;
+}
+
+/// Caller owns returned memory
+pub fn source(self: Self) ![:0]const u8 {
+    return try self.sourceAdvanced(self.file.?.stat.size);
+}
+
+pub fn load(self: *Self, tree_shake: ?TreeShaker.Options) !void {
+    const language = getLanguage(self.path) orelse return Error.UnsupportedLanguage;
+
+    var source_file = try std.fs.cwd().openFile(self.path, .{});
     defer source_file.close();
     const stat = brk: {
         const s = try source_file.stat();
@@ -35,13 +61,21 @@ pub fn init(self: *Self, tree_shake: ?TreeShaker.Options) !void {
 
     if (self.file) |f| if (f.stat.eql(stat)) return;
 
-    const source = try self.allocator.allocSentinel(u8, stat.size, 0);
-    defer self.allocator.free(source);
-    const amt = try source_file.readAll(source);
-    if (amt != stat.size) return error.UnexpectedEndOfFile;
+    const file_source = try self.sourceAdvanced(stat.size);
 
-    self.file = try File.init(self.allocator, path, stat, source, tree_shake);
+    self.file = try File.init(
+        self.allocator,
+        self.path,
+        stat,
+        language,
+        file_source,
+        tree_shake,
+    );
     if (self.file.?.tree.hasError()) return error.Parsing;
+}
+
+pub fn deinit(self: *Self) void {
+    if (self.file) |*f| f.deinit(self.allocator);
 }
 
 pub fn hasError(self: Self) bool {
@@ -49,11 +83,12 @@ pub fn hasError(self: Self) bool {
     return false;
 }
 
-pub fn renderErrors(self: Self, errwriter: anytype, errconfig: std.io.tty.Config) !void {
-    if (self.file) |f| try f.renderErrors(errwriter, errconfig);
+pub fn renderErrors(self: Self, writer: anytype, config: std.io.tty.Config) !void {
+    const file_source = try self.source();
+    if (self.file) |f| try f.renderErrors(writer, config, self.path, file_source);
 }
 
 /// Caller owns returned slice
 pub fn resolve(self: Self, relpath: []const u8) ![]const u8 {
-    return try File.resolveFrom(self.allocator, self.name, relpath);
+    return try File.resolveFrom(self.allocator, self.path, relpath);
 }

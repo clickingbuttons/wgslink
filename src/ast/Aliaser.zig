@@ -263,10 +263,14 @@ fn visit(self: *Self, tree: Ast, index: Node.Index) Error!Node.Index {
 
             return try self.listToSpan(self.scratch.items[scratch_top..]);
         },
-        .import => |n| Node{ .import = .{
-            .aliases = try self.visit(tree, n.aliases),
-            .module = try self.getOrPutIdent(.token, tree.identifier(n.module)),
-        } },
+        .import => |n| brk: {
+            var extra = tree.extraData(node_mod.Import, n.import);
+            extra.module = try self.getOrPutIdent(.token, tree.identifier(extra.module));
+            break :brk Node{ .import = .{
+                .aliases = try self.visit(tree, n.aliases),
+                .import = try self.addExtra(extra),
+            } };
+        },
         .import_alias => |n| brk: {
             var n2 = n;
             n2.old = try self.getOrPutIdent(.token, tree.identifier(n2.old));

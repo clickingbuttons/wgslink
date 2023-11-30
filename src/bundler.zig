@@ -4,6 +4,8 @@ const Renderer = @import("./WgslRenderer.zig").Renderer;
 const TreeShakeOptions = @import("./ast/TreeShaker.zig").Options;
 const Ast = @import("./ast/Ast.zig");
 const Aliaser = @import("./ast/Aliaser.zig");
+const FileError = @import("./file/Error.zig");
+const node_mod = @import("./ast/Node.zig");
 
 const Self = @This();
 const Allocator = std.mem.Allocator;
@@ -34,13 +36,13 @@ pub fn deinit(self: *Self) void {
 }
 
 pub fn alias(self: Self, aliaser: *Aliaser, visited: *Visited, module: *Module) !void {
-    if ((try visited.getOrPut(module.name)).found_existing) return;
+    if ((try visited.getOrPut(module.path)).found_existing) return;
     if (module.file) |*f| {
         for (f.import_table.keys()) |k| {
             const m = self.modules.getPtr(k).?;
             try self.alias(aliaser, visited, m);
         }
-        try aliaser.appendComment(module.name);
+        try aliaser.appendComment(module.path);
         try aliaser.append(f.tree);
     }
 }
@@ -58,14 +60,9 @@ pub fn bundle(
     errconfig: std.io.tty.Config,
     opts: Options,
 ) !void {
-    const resolved = try Module.resolveFrom(self.allocator, "./foo.wgsl", opts.file);
-    defer self.allocator.free(resolved);
-    try self.modules.put(resolved, Module{
-        .allocator = self.allocator,
-        .name = resolved,
-        .imported_by = "bundle api",
-    });
-    const mod = self.modules.getPtr(resolved).?;
+    const root_mod = Module.init(self.allocator, opts.file, "bundle api");
+    try self.modules.put(root_mod.path, root_mod);
+    const mod = self.modules.getPtr(root_mod.path).?;
 
     var wait_group: WaitGroup = .{};
     wait_group.start();
@@ -107,39 +104,43 @@ fn workerAst(
 ) void {
     defer wait_group.finish();
 
-    mod.init(tree_shake) catch |err| {
+    mod.load(tree_shake) catch |err| {
         self.stderr_mutex.lock();
         defer self.stderr_mutex.unlock();
         switch (err) {
             error.Parsing => mod.renderErrors(errwriter, errconfig) catch {},
-            error.FileTooBig => {},
-            error.UnsupportedLanguage => {},
+            // Some kind of file error...
             else => |t| {
-                errwriter.print("error: {s} for {s} (imported by {s})\n", .{
-                    @errorName(t),
-                    mod.name,
-                    mod.imported_by,
-                }) catch {};
-                // if (self.modules.get(mod.imported_by)) |imp| {
-                //     const tree: Ast = imp.file.?.tree;
-                //     for (tree.spanToList(0)) |node| {
-                //         switch (node) {
-                //             .import => |i| {
-                //                 const mod_name = tree.identifier(i.module);
-                //                 const resolved = imp.resolve(mod_name) catch continue;
-                //                 defer self.allocator.free(resolved);
-                //                 if (std.mem.eql(u8, resolved, mod.name)) {
-                //                     tree.renderError(Ast.Error{
-                //                         .tag = .unresolved_module,
-                //                         .token = tree.nodeRHS(node).?,
-                //                     }, errwriter, errconfig, mod.imported_by) catch {};
-                //                 }
-                //             },
-                //             else => {}
-                //         }
-                //     }
-                // }
-                //},
+                const imp: Module = self.modules.get(mod.imported_by).?;
+                // Assertion: we don't queue import table for modules with errors
+                const file = imp.file.?;
+                const tree: Ast = file.tree;
+                for (tree.spanToList(0)) |i| {
+                    switch (tree.node(i)) {
+                        .import => |n| {
+                            const mod_name = tree.modName(n);
+                            const resolved = imp.resolve(mod_name) catch continue;
+                            defer self.allocator.free(resolved);
+                            if (std.mem.eql(u8, resolved, mod.path)) {
+                                const extra = tree.extraData(node_mod.Import, n.import);
+                                const error_loc = node_mod.ErrorLoc{
+                                    .line_num = extra.line_num,
+                                    .line_start = extra.line_start,
+                                    .tok_start = extra.tok_start,
+                                    .tok_end = extra.tok_end,
+                                };
+                                const source = imp.source() catch return;
+                                defer self.allocator.free(source);
+                                FileError.render(errwriter, errconfig, source, imp.path, error_loc) catch return;
+
+                                errwriter.print("{s} opening file {s}", .{ @errorName(t), mod.path }) catch return;
+                                errconfig.setColor(errwriter, .reset) catch return;
+                                errwriter.writeByte('\n') catch return;
+                            }
+                        },
+                        else => {},
+                    }
+                }
             },
         }
         return;
@@ -153,11 +154,7 @@ fn workerAst(
         const mod_symbols = kv.value_ptr.*.keys();
         const gop = self.modules.getOrPut(mod_name) catch return;
         if (!gop.found_existing) {
-            gop.value_ptr.* = Module{
-                .allocator = self.allocator,
-                .name = mod_name,
-                .imported_by = mod.name,
-            };
+            gop.value_ptr.* = Module.init(self.allocator, mod_name, mod.path);
             wait_group.start();
             const next_tree_shake = if (mod_symbols.len == 0) null else TreeShakeOptions{
                 .symbols = mod_symbols,

@@ -287,8 +287,9 @@ pub fn Renderer(comptime UnderlyingWriter: type) type {
                         try self.writeList(tree, n.aliases, .{ .start = "{ ", .sep = "\n", .end = " }" });
                         try self.writeTokenSpaced(.k_from);
                     }
+                    const extra = tree.extraData(node_mod.Import, n.import);
                     try self.writeByte('"');
-                    try self.writeIdentifier(tree, n.module);
+                    try self.writeIdentifier(tree, extra.module);
                     try self.writeByte('"');
                 },
                 .@"struct" => |n| {
@@ -719,7 +720,7 @@ fn testWrite(
         const stderr = std.io.getStdErr();
         const term = std.io.tty.detectConfig(stderr);
         try stderr.writer().writeByte('\n');
-        try tree.renderErrors(stderr.writer(), term, null);
+        try tree.renderErrors(stderr.writer(), term, source, null);
     } else {
         var renderer = Renderer(@TypeOf(writer)).init(writer, minify, imports);
         try renderer.writeTranslationUnit(tree);

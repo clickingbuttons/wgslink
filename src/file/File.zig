@@ -3,6 +3,7 @@ const Loc = @import("./Loc.zig");
 const Ast = @import("../ast/Ast.zig");
 const TreeShaker = @import("../ast/TreeShaker.zig");
 const Parser = @import("../wgsl/Parser.zig");
+const node_mod = @import("../ast/Node.zig");
 
 pub const Language = enum { wgsl };
 pub const Stat = struct {
@@ -14,15 +15,12 @@ pub const Stat = struct {
         return self.inode == o.inode and self.size == o.size and self.mtime == o.mtime;
     }
 };
-pub const Error = error{UnsupportedLanguage};
 pub const max_size = std.math.maxInt(Loc.Index);
 const StringSet = std.StringArrayHashMapUnmanaged(void);
 const ImportTable = std.StringArrayHashMapUnmanaged(StringSet);
 const Allocator = std.mem.Allocator;
 const Self = @This();
 
-path: []const u8,
-language: Language,
 stat: Stat,
 tree: Ast,
 import_table: ImportTable,
@@ -31,19 +29,16 @@ pub fn init(
     allocator: Allocator,
     path: []const u8,
     stat: Stat,
+    language: Language,
     source: [:0]const u8,
     tree_shake: ?TreeShaker.Options,
 ) !Self {
-    const language = getLanguage(path) orelse return Error.UnsupportedLanguage;
-
     var tree = switch (language) {
         .wgsl => try Parser.parse(allocator, source),
     };
     if (tree_shake) |opts| try TreeShaker.treeShake(allocator, &tree, opts);
     const import_table = try importTable(allocator, path, tree);
     return Self{
-        .path = path,
-        .language = language,
         .stat = stat,
         .tree = tree,
         .import_table = import_table,
@@ -76,7 +71,7 @@ fn importTable(allocator: Allocator, path: []const u8, tree: Ast) !ImportTable {
     for (tree.spanToList(0)) |r| {
         switch (tree.node(r)) {
             .import => |n| {
-                const mod_name = tree.identifier(n.module);
+                const mod_name = tree.modName(n);
                 const resolved = try resolveFrom(allocator, path, mod_name);
                 const mod_imports = try res.getOrPut(allocator, resolved);
                 if (!mod_imports.found_existing) mod_imports.value_ptr.* = StringSet{};
@@ -99,12 +94,12 @@ fn importTable(allocator: Allocator, path: []const u8, tree: Ast) !ImportTable {
     return res;
 }
 
-fn getLanguage(path: []const u8) ?Language {
-    if (std.mem.endsWith(u8, path, ".wgsl")) return .wgsl;
-
-    return null;
-}
-
-pub fn renderErrors(self: Self, errwriter: anytype, errconfig: std.io.tty.Config) !void {
-    try self.tree.renderErrors(errwriter, errconfig, self.path);
+pub fn renderErrors(
+    self: Self,
+    writer: anytype,
+    config: std.io.tty.Config,
+    path: []const u8,
+    source: [:0]const u8,
+) !void {
+    try self.tree.renderErrors(writer, config, source, path);
 }
