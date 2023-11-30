@@ -1,4 +1,4 @@
-// import { b } from './c.wgsl';
+// import { b } from './b.wgsl';
 
 var a = 1.0 + b;
 

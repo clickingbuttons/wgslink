@@ -466,7 +466,7 @@ fn visit(self: *Self, tree: Ast, index: Node.Index) Error!Node.Index {
         } },
         .@"return" => |n| Node{ .@"return" = .{ .expr = try self.visit(tree, n.expr) } },
         .continuing => |n| Node{ .continuing = .{ .body = try self.visit(tree, n.body) } },
-        .break_if => |n| Node{ .break_if = .{ .condition = try self.visit(tree, n.condition) } },
+        .break_if => |n| Node{ .break_if = .{ .expr = try self.visit(tree, n.expr) } },
         .call => |n| Node{ .call = .{
             .ident = try self.visit(tree, n.ident),
             .arguments = try self.visit(tree, n.arguments),

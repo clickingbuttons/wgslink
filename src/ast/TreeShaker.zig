@@ -143,13 +143,12 @@ fn visit(tree: *Ast, used: *Used, node: Node.Index) Allocator.Error!void {
         .@"while" => |n| try visitAll(tree, used, &.{ n.condition, n.body }),
         .@"return" => |n| try visit(tree, used, n.expr),
         .continuing => |n| try visit(tree, used, n.body),
-        .break_if => |n| try visit(tree, used, n.condition),
         .call => |n| try visitAll(tree, used, &.{ n.ident, n.arguments }),
         .@"var" => |n| {
             const extra = tree.extraData(node_mod.Var, n.@"var");
             try visitAll(tree, used, &.{ extra.template_list, extra.name, extra.type, n.initializer });
         },
-        // zig fmt off
+        .break_if,
         .const_assert,
         .increment,
         .decrement,
@@ -160,7 +159,6 @@ fn visit(tree: *Ast, used: *Used, node: Node.Index) Allocator.Error!void {
         .negative,
         .deref,
         .ref,
-        // zig fmt on
         => |n| try visit(tree, used, n.expr),
         .@"=", .@"+=", .@"-=", .@"*=", .@"/=", .@"%=", .@"&=", .@"|=", .@"^=", .@"<<=", .@">>=" => |n| {
             try visitAll(tree, used, &.{ n.lhs_expr, n.rhs_expr });
@@ -206,20 +204,23 @@ pub fn treeShake(allocator: Allocator, tree: *Ast, opts: Options) Allocator.Erro
     defer allocator.free(og_roots);
 
     // Find all used identifiers
-    for (og_roots) |i| {
-        switch (tree.node(i)) {
+    for (og_roots) |r| {
+        switch (tree.node(r)) {
             .global_var, .override, .@"const", .@"struct", .@"fn", .type_alias => {
-                if (used.get(tree.globalName(i))) |_| try visit(tree, &used, i);
+                if (used.get(tree.globalName(r))) |_| try visit(tree, &used, r);
             },
             else => {},
         }
     }
 
-    for (og_roots, 0..) |ni, i| {
-        switch (tree.node(ni)) {
+    for (0..og_roots.len) |k| {
+        const i = og_roots.len - k - 1;
+        const r = og_roots[i];
+
+        switch (tree.node(r)) {
             // Set unused root span nodes to empty.
             .global_var, .override, .@"const", .@"struct", .@"fn", .type_alias => {
-                if (used.get(tree.globalName(ni)) == null) tree.removeFromSpan(0, i);
+                if (used.get(tree.globalName(r)) == null) tree.removeFromSpan(0, i);
             },
             // Set unused import nodes to empty.
             .import => |n| {

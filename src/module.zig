@@ -25,6 +25,7 @@ pub fn init(allocator: Allocator, path: []const u8, imported_by: []const u8) Sel
     return Self{ .allocator = allocator, .path = path, .imported_by = imported_by };
 }
 
+/// Called owns returned slice
 fn sourceAdvanced(self: Self, size: usize) ![:0]const u8 {
     // TODO: mmap so errors don't have to read whole file
     var source_file = try std.fs.cwd().openFile(self.path, .{});
@@ -62,6 +63,7 @@ pub fn load(self: *Self, tree_shake: ?TreeShaker.Options) !void {
     if (self.file) |f| if (f.stat.eql(stat)) return;
 
     const file_source = try self.sourceAdvanced(stat.size);
+    defer self.allocator.free(file_source);
 
     self.file = try File.init(
         self.allocator,
@@ -85,6 +87,7 @@ pub fn hasError(self: Self) bool {
 
 pub fn renderErrors(self: Self, writer: anytype, config: std.io.tty.Config) !void {
     const file_source = try self.source();
+    defer self.allocator.free(file_source);
     if (self.file) |f| try f.renderErrors(writer, config, self.path, file_source);
 }
 

@@ -509,7 +509,7 @@ pub fn Renderer(comptime UnderlyingWriter: type) type {
                 .break_if => |n| {
                     try self.writeTokenSpace(.k_break);
                     try self.writeTokenSpace(.k_if);
-                    try self.writeIndex(tree, n.condition);
+                    try self.writeIndex(tree, n.expr);
                 },
                 .logical_not, .bitwise_complement, .negative, .deref, .ref => |n| {
                     const token: Token = switch (node) {

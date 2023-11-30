@@ -899,9 +899,9 @@ fn breakIfStatement(p: *Self) Error!?Node.Index {
     if (p.peekToken(.tag, 0) == .k_break and p.peekToken(.tag, 1) == .k_if) {
         _ = p.advanceToken();
         _ = p.advanceToken();
-        const cond = try p.expectExpression();
+        const expr = try p.expectExpression();
         _ = try p.expectToken(.@";");
-        return try p.addNode(Node{ .break_if = .{ .condition = cond } });
+        return try p.addNode(Node{ .break_if = .{ .expr = expr } });
     }
     return null;
 }

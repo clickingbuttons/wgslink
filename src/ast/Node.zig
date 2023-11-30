@@ -42,7 +42,6 @@ pub const Node = union(enum) {
     pub const ShortCircuitExpr = struct { lhs_relational_expr: Index, rhs_relational_expr: Index };
     pub const BitwiseExpr = struct { lhs_bitwise_expr: Index, rhs_unary_expr: Index };
 
-    pub const n_directive_tags = 4;
     pub const DiagnosticDirective = struct { diagnostic_control: ExtraIndex };
     pub const GlobalVar = struct { global_var: ExtraIndex, initializer: Index };
     pub const Override = struct { override: ExtraIndex, initializer: Index };
@@ -67,15 +66,11 @@ pub const Node = union(enum) {
     pub const Switch = struct { expr: Index, switch_body: Index };
     pub const SwitchBody = struct { attributes: Index, clauses: Index };
     pub const CaseClause = struct { selectors: Index, body: Index };
-    pub const CaseSelector = struct {
+    pub const MaybeExpr = struct {
         /// 0 means `default`
         expr: Index,
     };
     pub const While = struct { condition: Index, body: Index };
-    pub const Return = struct {
-        /// 0 means no expression
-        expr: Index,
-    };
     pub const Call = struct {
         ident: Index,
         /// 0 means no arguments
@@ -83,23 +78,23 @@ pub const Node = union(enum) {
     };
     pub const Var = struct { @"var": ExtraIndex, initializer: Index };
     pub const Continuing = struct { body: Index };
-    pub const BreakIf = struct { condition: Index };
     pub const Else = struct { @"if": Index, body: Index };
     pub const ElseIf = struct { if1: Index, if2: Index };
     pub const FieldAccess = struct { lhs_expr: Index, member: IdentIndex };
     pub const IndexAccess = struct { lhs_expr: Index, index_expr: Index };
     pub const Number = struct { value: IdentIndex };
 
-    // Util
-    @"error": Error,
-    span: Span,
-    comment: Comment,
+    pub const n_directive_tags = 4;
     // Directives
     diagnostic_directive: DiagnosticDirective,
     enable_directive: IdentList,
     requires_directive: IdentList,
     import: Self.Import,
-    import_alias: ImportAlias,
+    import_alias: ImportAlias, // import helper
+    // Util
+    @"error": Error,
+    span: Span,
+    comment: Comment,
     // Global declarations
     global_var: Self.GlobalVar,
     override: Self.Override,
@@ -109,12 +104,15 @@ pub const Node = union(enum) {
     type_alias: TypeAlias,
     @"struct": Struct,
     struct_member: StructMember,
+    const_assert: SingleExpr, // also a statement
     // Global declaration helpers
     attribute: Attribute,
     ident: Ident,
     type: Ident,
     // Statements
     loop: Loop,
+    continuing: Continuing, // Loop helper
+    break_if: SingleExpr, // Continuing helper
     compound: Compound,
     @"for": For,
     @"if": If,
@@ -123,9 +121,9 @@ pub const Node = union(enum) {
     @"switch": Switch,
     switch_body: SwitchBody,
     case_clause: CaseClause,
-    case_selector: CaseSelector,
+    case_selector: MaybeExpr,
     @"while": While,
-    @"return": Return,
+    @"return": MaybeExpr,
     call: Call,
     // variable_or_value_statement
     @"var": Self.Var,
@@ -149,9 +147,6 @@ pub const Node = union(enum) {
     @"^=": Assign,
     @"<<=": Assign,
     @">>=": Assign,
-    const_assert: SingleExpr, // also a global declaration
-    continuing: Continuing, // Loop helper
-    break_if: BreakIf, // Continuing helper
     // Expressions
     // https://www.w3.org/TR/WGSL/#operator-precedence-associativity
     paren: SingleExpr,

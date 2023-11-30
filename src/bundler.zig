@@ -60,9 +60,11 @@ pub fn bundle(
     errconfig: std.io.tty.Config,
     opts: Options,
 ) !void {
-    const root_mod = Module.init(self.allocator, opts.file, "bundle api");
-    try self.modules.put(root_mod.path, root_mod);
-    const mod = self.modules.getPtr(root_mod.path).?;
+    const resolved = try Module.resolveFrom(self.allocator, "./a", opts.file);
+    defer self.allocator.free(resolved);
+    const root_mod = Module.init(self.allocator, resolved, "bundle api");
+    try self.modules.put(resolved, root_mod);
+    const mod = self.modules.getPtr(resolved).?;
 
     var wait_group: WaitGroup = .{};
     wait_group.start();
