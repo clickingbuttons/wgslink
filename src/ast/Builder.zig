@@ -2,6 +2,7 @@ const std = @import("std");
 const Ast = @import("./Ast.zig");
 const Node = @import("./Node.zig").Node;
 const Language = @import("../file/File.zig").Language;
+const Loc = @import("../file/Loc.zig");
 
 const Self = @This();
 const Allocator = std.mem.Allocator;
@@ -14,12 +15,15 @@ nodes: Ast.NodeList = .{},
 identifiers: std.StringArrayHashMapUnmanaged(void) = .{},
 /// For nodes with more data than @sizeOf(Node)
 extra: std.ArrayListUnmanaged(Node.Index) = .{},
+/// Offsets of newlines for error messages
+newlines: std.ArrayListUnmanaged(Loc.Index) = .{},
 
 pub fn deinit(self: *Self, allocator: Allocator) void {
     self.nodes.deinit(allocator);
     for (self.identifiers.keys()) |k| allocator.free(k);
     self.identifiers.deinit(allocator);
     self.extra.deinit(allocator);
+    self.newlines.deinit(allocator);
 }
 
 pub fn listToSpan(
@@ -57,6 +61,7 @@ pub fn toOwnedAst(self: *Self, allocator: Allocator, lang: Language) Allocator.E
         .identifiers = self.identifiers.entries.toOwnedSlice(),
         .extra = try self.extra.toOwnedSlice(allocator),
         .from_lang = lang,
+        .newlines = try self.newlines.toOwnedSlice(allocator),
     };
 }
 

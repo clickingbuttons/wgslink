@@ -17,10 +17,10 @@ pub const TokenIndex = Loc.Index;
 
 allocator: Allocator,
 /// Used to check validity of some idents (like severity and attributes) and
-/// read into identifier map.
+/// write into identifier map.
 source: [:0]const u8,
 /// Need to store all of these to mutate for template tags.
-tokens: TokenList,
+tokens: TokenList = .{},
 /// Current parsing position
 tok_i: TokenIndex = 0,
 /// The main event
@@ -29,21 +29,23 @@ builder: AstBuilder = .{},
 scratch: std.ArrayListUnmanaged(Node.Index) = .{},
 
 pub fn init(allocator: Allocator, source: [:0]const u8) Allocator.Error!Self {
-    var toks = TokenList{};
-    try toks.ensureTotalCapacity(allocator, source.len / 8);
-    var tokenizer = Tokenizer.init(source);
-    while (true) {
-        const token = tokenizer.next();
-        try toks.append(allocator, token);
-        if (token.tag == .eof) break;
-    }
-
     var parser = Self{
         .allocator = allocator,
         .source = source,
-        .tokens = toks,
     };
-    try parser.builder.nodes.ensureTotalCapacity(allocator, toks.len / 2 + 1);
+
+    try parser.tokens.ensureTotalCapacity(allocator, source.len / 8);
+    var tokenizer = Tokenizer.init(source);
+    while (true) {
+        const token = tokenizer.next();
+        switch (token.tag) {
+            .@"\n" => try parser.builder.newlines.append(allocator, token.loc.start),
+            else => try parser.tokens.append(allocator, token),
+        }
+        if (token.tag == .eof) break;
+    }
+    try parser.builder.nodes.ensureTotalCapacity(allocator, parser.tokens.len / 2 + 1);
+
     return parser;
 }
 

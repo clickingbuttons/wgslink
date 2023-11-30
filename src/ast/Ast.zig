@@ -4,6 +4,7 @@ const node_mod = @import("./Node.zig");
 const WgslParsingError = @import("../wgsl/ParsingError.zig");
 const Language = @import("../file/File.zig").Language;
 const FileError = @import("../file/Error.zig");
+const Loc = @import("../file/Loc.zig");
 
 const Allocator = std.mem.Allocator;
 const Self = @This();
@@ -14,18 +15,23 @@ pub const Identifiers = std.MultiArrayList(std.StringArrayHashMapUnmanaged(void)
 /// Node 0 is a span of directives followed by declarations. Since there can be no
 /// references to this root node, 0 is available to indicate null
 nodes: NodeList.Slice,
-/// For nodes with identifiers
+/// Nodes with identifers store indexes into here.
+/// For `var foo: u32 = baz();` this will store `foo`, `u32`, and `baz`
+/// Owns the strings so that `source` may be freed after parsing is finished.
 identifiers: Identifiers.Slice,
-/// For lists and nodes with too much inseperable data
+/// For nodes with more data than @sizeOf(Node)
 extra: []Node.Index,
 /// For rendering lannguage-dependent errors
 from_lang: Language,
+/// Offsets of newlines for error messages
+newlines: []Loc.Index,
 
 pub fn deinit(self: *Self, allocator: Allocator) void {
+    self.nodes.deinit(allocator);
     for (self.identifiers.items(.key)) |k| allocator.free(k);
     self.identifiers.deinit(allocator);
-    self.nodes.deinit(allocator);
     allocator.free(self.extra);
+    allocator.free(self.newlines);
     self.* = undefined;
 }
 

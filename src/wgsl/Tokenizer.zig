@@ -2,9 +2,51 @@ const std = @import("std");
 const Token = @import("Token.zig");
 const Loc = @import("../file/Loc.zig");
 
+const State = union(enum) {
+    start,
+    ident,
+    number: struct {
+        is_hex: bool = false,
+        allow_leading_sign: bool = false,
+        has_attr: bool = false,
+    },
+    line_comment,
+    block_comment,
+    block_comment_ending,
+    @"&",
+    @"!",
+    @"=",
+    @"<",
+    @"<<",
+    @">",
+    @">>",
+    @"-",
+    @"%",
+    @".",
+    @"|",
+    @"+",
+    @"/",
+    @"*",
+    @"^",
+    _,
+    __,
+    @"'",
+    @"\"",
+};
+
 pub const Tokenizer = struct {
     buffer: [:0]const u8,
     index: Loc.Index,
+    state: State = .start,
+    token: Token = .{
+        .tag = .eof,
+        .loc = .{
+            .start = 0,
+            .end = undefined,
+        },
+    },
+
+    const Self = @This();
 
     pub fn init(buffer: [:0]const u8) Tokenizer {
         // > A WGSL module is Unicode text using the UTF-8 encoding, with no byte order mark (BOM).
@@ -17,145 +59,42 @@ pub const Tokenizer = struct {
     }
 
     // For debugging
-    pub fn dump(self: *Tokenizer, token: Token) void {
+    pub fn dump(self: *Self, token: Token) void {
         std.debug.print("{s} \"{s}\"\n", .{
             @tagName(token.tag),
             self.buffer[token.loc.start..token.loc.end],
         });
     }
 
-    pub fn peek(self: *Tokenizer) Token {
-        const State = union(enum) {
-            start,
-            ident,
-            number: struct {
-                is_hex: bool = false,
-                allow_leading_sign: bool = false,
-                has_attr: bool = false,
-            },
-            line_comment,
-            block_comment,
-            block_comment_ending,
-            @"&",
-            @"!",
-            @"=",
-            @"<",
-            @"<<",
-            @">",
-            @">>",
-            @"-",
-            @"%",
-            @".",
-            @"|",
-            @"+",
-            @"/",
-            @"*",
-            @"^",
-            _,
-            __,
-            @"'",
-            @"\"",
-        };
+    pub fn peek(self: *Self) Token {
         var index = self.index;
-        var state: State = .start;
-        var result = Token{
-            .tag = .eof,
-            .loc = .{
-                .start = index,
-                .end = undefined,
-            },
-        };
+        var res = self.token;
+        res.loc.start = index;
 
         while (true) : (index += 1) {
             var c = self.buffer[index];
-            switch (state) {
+            switch (self.state) {
                 .start => switch (c) {
                     0 => {
                         if (index != self.buffer.len) {
-                            result.tag = .invalid;
+                            res.tag = .invalid;
                             index += 1;
                         }
                         break;
                     },
-                    ' ', '\n', '\t', '\r' => result.loc.start = index + 1,
-
-                    'a'...'z', 'A'...'Z' => state = .ident,
-                    '0'...'9' => state = .{ .number = .{} },
-                    '&' => state = .@"&",
-                    '!' => state = .@"!",
-                    '=' => state = .@"=",
-                    '<' => state = .@"<",
-                    '>' => state = .@">",
-                    '-' => state = .@"-",
-                    '%' => state = .@"%",
-                    '.' => state = .@".",
-                    '|' => state = .@"|",
-                    '+' => state = .@"+",
-                    '/' => state = .@"/",
-                    '*' => state = .@"*",
-                    '_' => state = ._,
-                    '^' => state = .@"^",
-                    '\'' => state = .@"'",
-                    '"' => state = .@"\"",
-
-                    '@' => {
-                        result.tag = .@"@";
+                    ' ', '\t', '\r' => res.loc.start = index + 1,
+                    'a'...'z', 'A'...'Z' => self.state = .ident,
+                    '0'...'9' => self.state = .{ .number = .{} },
+                    inline '&', '!', '=', '<', '>', '-', '%', '.', '|', '+', '/', '*', '_', '^', '\'', '"' => |t| {
+                        self.state = @unionInit(State, &.{t}, {});
+                    },
+                    inline '@', '[', ']', '{', '}', ':', ',', '(', ')', ';', '~', '\n' => |t| {
+                        res.tag = std.meta.stringToEnum(Token.Tag, &.{t}) orelse unreachable;
                         index += 1;
                         break;
                     },
-                    '[' => {
-                        result.tag = .@"[";
-                        index += 1;
-                        break;
-                    },
-                    ']' => {
-                        result.tag = .@"]";
-                        index += 1;
-                        break;
-                    },
-                    '{' => {
-                        result.tag = .@"{";
-                        index += 1;
-                        break;
-                    },
-                    '}' => {
-                        result.tag = .@"}";
-                        index += 1;
-                        break;
-                    },
-                    ':' => {
-                        result.tag = .@":";
-                        index += 1;
-                        break;
-                    },
-                    ',' => {
-                        result.tag = .@",";
-                        index += 1;
-                        break;
-                    },
-                    '(' => {
-                        result.tag = .@"(";
-                        index += 1;
-                        break;
-                    },
-                    ')' => {
-                        result.tag = .@")";
-                        index += 1;
-                        break;
-                    },
-                    ';' => {
-                        result.tag = .@";";
-                        index += 1;
-                        break;
-                    },
-                    '~' => {
-                        result.tag = .@"~";
-                        index += 1;
-                        break;
-                    },
-
                     else => {
-                        result.tag = .invalid;
+                        res.tag = .invalid;
                         index += 1;
                         break;
                     },
@@ -163,27 +102,27 @@ pub const Tokenizer = struct {
                 .ident => switch (c) {
                     'a'...'z', 'A'...'Z', '0'...'9', '_' => {},
                     else => {
-                        result.tag = .ident;
-                        if (Token.keywords.get(self.buffer[result.loc.start..index])) |tag| {
-                            result.tag = tag;
-                        } else if (Token.reserved.get(self.buffer[result.loc.start..index])) |_| {
-                            result.tag = .invalid;
+                        res.tag = .ident;
+                        if (Token.keywords.get(self.buffer[res.loc.start..index])) |tag| {
+                            res.tag = tag;
+                        } else if (Token.reserved.get(self.buffer[res.loc.start..index])) |_| {
+                            res.tag = .invalid;
                         }
                         break;
                     },
                 },
                 ._ => switch (c) {
-                    'a'...'z', 'A'...'Z', '0'...'9' => state = .ident,
-                    '_' => state = .__,
+                    'a'...'z', 'A'...'Z', '0'...'9' => self.state = .ident,
+                    '_' => self.state = .__,
                     else => {
-                        result.tag = ._;
+                        res.tag = ._;
                         break;
                     },
                 },
                 .__ => switch (c) {
                     'a'...'z', 'A'...'Z', '0'...'9', '_' => {},
                     else => {
-                        result.tag = .invalid;
+                        res.tag = .invalid;
                         break;
                     },
                 },
@@ -191,7 +130,7 @@ pub const Tokenizer = struct {
                 // https://github.com/gfx-rs/naga/blob/master/src/front/wgsl/parse/number.rs
                 .number => |*number| {
                     // https://www.w3.org/TR/WGSL/#numeric-literals
-                    result.tag = .number;
+                    res.tag = .number;
                     switch (c) {
                         '0'...'9' => {},
                         'a'...'d', 'A'...'D' => if (!number.is_hex) break,
@@ -224,227 +163,242 @@ pub const Tokenizer = struct {
                 },
                 .line_comment => switch (c) {
                     0 => {
-                        result.loc.start = index;
+                        res.loc.start = index;
                         if (index != self.buffer.len) {
-                            result.tag = .invalid;
+                            res.tag = .invalid;
                             index += 1;
                         }
                         break;
                     },
                     't' => {
-                        if (std.mem.eql(u8, Token.Tag.k_import.symbol(), self.buffer[result.loc.start .. index + 1])) {
-                            result.tag = .k_import;
+                        const until_t = self.buffer[res.loc.start .. index + 1];
+                        if (std.mem.eql(u8, Token.Tag.k_import.symbol(), until_t)) {
+                            res.tag = .k_import;
                             index += 1;
                             break;
                         }
                     },
+                    // Skip comments
                     '\n' => {
-                        result.loc.start = index + 1;
-                        state = .start;
+                        self.state = .start;
+                        index -= 1;
                     },
                     else => {},
                 },
                 .block_comment => switch (c) {
-                    '*' => state = .block_comment_ending,
+                    '*' => self.state = .block_comment_ending,
+                    '\n' => {
+                        return .{ .tag = .@"\n", .loc = .{
+                            .start = index,
+                            .end = index + 1,
+                        } };
+                    },
                     else => {},
                 },
                 .block_comment_ending => switch (c) {
-                    '/' => state = .start,
-                    else => state = .block_comment,
+                    // Skip comments
+                    '/' => self.state = .start,
+                    '\n' => {
+                        return .{ .tag = .@"\n", .loc = .{
+                            .start = index,
+                            .end = index + 1,
+                        } };
+                    },
+                    else => self.state = .block_comment,
                 },
                 .@"&" => switch (c) {
                     '&' => {
-                        result.tag = .@"&&";
+                        res.tag = .@"&&";
                         index += 1;
                         break;
                     },
                     '=' => {
-                        result.tag = .@"&=";
+                        res.tag = .@"&=";
                         index += 1;
                         break;
                     },
                     else => {
-                        result.tag = .@"&";
+                        res.tag = .@"&";
                         break;
                     },
                 },
                 .@"!" => switch (c) {
                     '=' => {
-                        result.tag = .@"!=";
+                        res.tag = .@"!=";
                         index += 1;
                         break;
                     },
                     else => {
-                        result.tag = .@"!";
+                        res.tag = .@"!";
                         break;
                     },
                 },
                 .@"=" => switch (c) {
                     '=' => {
-                        result.tag = .@"==";
+                        res.tag = .@"==";
                         index += 1;
                         break;
                     },
                     else => {
-                        result.tag = .@"=";
+                        res.tag = .@"=";
                         break;
                     },
                 },
                 .@"<" => switch (c) {
-                    '<' => state = .@"<<",
+                    '<' => self.state = .@"<<",
                     '=' => {
-                        result.tag = .@"<=";
+                        res.tag = .@"<=";
                         index += 1;
                         break;
                     },
                     else => {
-                        result.tag = .@"<";
+                        res.tag = .@"<";
                         break;
                     },
                 },
                 .@"<<" => switch (c) {
                     '=' => {
-                        result.tag = .@"<<=";
+                        res.tag = .@"<<=";
                         index += 1;
                         break;
                     },
                     else => {
-                        result.tag = .@"<<";
+                        res.tag = .@"<<";
                         break;
                     },
                 },
                 .@">" => switch (c) {
-                    '>' => state = .@">>",
+                    '>' => self.state = .@">>",
                     '=' => {
-                        result.tag = .@">=";
+                        res.tag = .@">=";
                         index += 1;
                         break;
                     },
                     else => {
-                        result.tag = .@">";
+                        res.tag = .@">";
                         break;
                     },
                 },
                 .@">>" => switch (c) {
                     '=' => {
-                        result.tag = .@">>=";
+                        res.tag = .@">>=";
                         index += 1;
                         break;
                     },
                     else => {
-                        result.tag = .@">>";
+                        res.tag = .@">>";
                         break;
                     },
                 },
                 .@"-" => switch (c) {
                     '-' => {
-                        result.tag = .@"--";
+                        res.tag = .@"--";
                         index += 1;
                         break;
                     },
                     '=' => {
-                        result.tag = .@"-=";
+                        res.tag = .@"-=";
                         index += 1;
                         break;
                     },
                     '>' => {
-                        result.tag = .@"->";
+                        res.tag = .@"->";
                         index += 1;
                         break;
                     },
                     else => {
-                        result.tag = .@"-";
+                        res.tag = .@"-";
                         break;
                     },
                 },
                 .@"%" => switch (c) {
                     '=' => {
-                        result.tag = .@"%=";
+                        res.tag = .@"%=";
                         index += 1;
                         break;
                     },
                     else => {
-                        result.tag = .@"%";
+                        res.tag = .@"%";
                         break;
                     },
                 },
                 .@"|" => switch (c) {
                     '|' => {
-                        result.tag = .@"||";
+                        res.tag = .@"||";
                         index += 1;
                         break;
                     },
                     '=' => {
-                        result.tag = .@"|=";
+                        res.tag = .@"|=";
                         index += 1;
                         break;
                     },
                     else => {
-                        result.tag = .@"|";
+                        res.tag = .@"|";
                         break;
                     },
                 },
                 .@"." => switch (c) {
-                    '0'...'9' => state = .{ .number = .{} },
+                    '0'...'9' => self.state = .{ .number = .{} },
                     else => {
-                        result.tag = .@".";
+                        res.tag = .@".";
                         break;
                     },
                 },
                 .@"+" => switch (c) {
                     '+' => {
-                        result.tag = .@"++";
+                        res.tag = .@"++";
                         index += 1;
                         break;
                     },
                     '=' => {
-                        result.tag = .@"+=";
+                        res.tag = .@"+=";
                         index += 1;
                         break;
                     },
                     else => {
-                        result.tag = .@"+";
+                        res.tag = .@"+";
                         break;
                     },
                 },
                 .@"/" => switch (c) {
-                    '/' => state = .line_comment,
-                    '*' => state = .block_comment,
+                    '/' => self.state = .line_comment,
+                    '*' => self.state = .block_comment,
                     '=' => {
-                        result.tag = .@"/=";
+                        res.tag = .@"/=";
                         index += 1;
                         break;
                     },
                     else => {
-                        result.tag = .@"/";
+                        res.tag = .@"/";
                         break;
                     },
                 },
                 .@"*" => switch (c) {
                     '=' => {
-                        result.tag = .@"*=";
+                        res.tag = .@"*=";
                         index += 1;
                         break;
                     },
                     else => {
-                        result.tag = .@"*";
+                        res.tag = .@"*";
                         break;
                     },
                 },
                 .@"^" => switch (c) {
                     '=' => {
-                        result.tag = .@"^=";
+                        res.tag = .@"^=";
                         index += 1;
                         break;
                     },
                     else => {
-                        result.tag = .@"^";
+                        res.tag = .@"^";
                         break;
                     },
                 },
                 .@"'" => switch (c) {
                     '\'' => {
-                        result.tag = .string_literal;
+                        res.tag = .string_literal;
                         index += 1;
                         break;
                     },
@@ -452,7 +406,7 @@ pub const Tokenizer = struct {
                 },
                 .@"\"" => switch (c) {
                     '"' => {
-                        result.tag = .string_literal;
+                        res.tag = .string_literal;
                         index += 1;
                         break;
                     },
@@ -461,13 +415,17 @@ pub const Tokenizer = struct {
             }
         }
 
-        result.loc.end = index;
-        return result;
+        res.loc.end = index;
+        return res;
     }
 
-    pub fn next(self: *Tokenizer) Token {
+    pub fn next(self: *Self) Token {
         const tok = self.peek();
         self.index = tok.loc.end;
+        switch (self.state) {
+            .block_comment, .block_comment_ending => {},
+            else => self.state = .start,
+        }
         return tok;
     }
 };
@@ -482,7 +440,8 @@ fn testTokenize(buffer: [:0]const u8, comptime expected_token_tags: []const Toke
         try tokens.append(allocator, token);
         if (token.tag == .eof) break;
     }
-    try std.testing.expectEqualSlices(Token.Tag, expected_token_tags ++ &[_]Token.Tag{Token.Tag.eof}, tokens.items(.tag));
+    const expected = expected_token_tags ++ &[_]Token.Tag{Token.Tag.eof};
+    try std.testing.expectEqualSlices(Token.Tag, expected, tokens.items(.tag));
     const last_token = tokens.pop();
     try std.testing.expectEqual(buffer.len, last_token.loc.end);
     try std.testing.expectEqual(buffer.len, last_token.loc.start);
@@ -510,10 +469,15 @@ test "numbers" {
 test "comments" {
     try testTokenize(
         \\// comment
+        \\iden
+    , &.{ .@"\n", .ident });
+
+    try testTokenize(
+        \\// comment
         \\/*
         \\ block*comment
         \\ */iden
-    , &.{.ident});
+    , &.{ .@"\n", .@"\n", .@"\n", .ident });
 }
 
 test "EOF comment" {
@@ -527,6 +491,7 @@ test "function" {
         \\// comment
         \\fn D_GGX(NH: f32, roughness : f32) -> f32 { return 1.0f; }
     , &.{
+        .@"\n",
         .k_fn,
         .ident,
         .@"(",
@@ -552,7 +517,9 @@ test "import" {
     try testTokenize(
         \\// comment
         \\// import { Foo, Bart } from './foo.wgsl';
+        \\// cogent
     , &.{
+        .@"\n",
         .k_import,
         .@"{",
         .ident,
@@ -562,6 +529,7 @@ test "import" {
         .k_from,
         .string_literal,
         .@";",
+        .@"\n",
     });
 }
 
@@ -648,4 +616,27 @@ test "decimal hex literals" {
     try testTokenize("0x3p+2h;", &.{ .number, .@";" });
     try testTokenize("0X1.fp-4;", &.{ .number, .@";" });
     try testTokenize("0x3.2p+2h;", &.{ .number, .@";" });
+}
+
+test "newline indices" {
+    const source =
+        \\0123
+        \\45
+        \\6
+    ;
+    var tokenizer = Tokenizer.init(source);
+    const tokens: []const Token = &.{
+        .{ .tag = .number, .loc = .{ .start = 0, .end = 4 } },
+        .{ .tag = .@"\n", .loc = .{ .start = 4, .end = 5 } },
+        .{ .tag = .number, .loc = .{ .start = 5, .end = 7 } },
+        .{ .tag = .@"\n", .loc = .{ .start = 7, .end = 8 } },
+        .{ .tag = .number, .loc = .{ .start = 8, .end = 9 } },
+        .{ .tag = .eof, .loc = .{ .start = 9, .end = 9 } },
+    };
+    try std.testing.expectEqual(tokens[0], tokenizer.next());
+    try std.testing.expectEqual(tokens[1], tokenizer.next());
+    try std.testing.expectEqual(tokens[2], tokenizer.next());
+    try std.testing.expectEqual(tokens[3], tokenizer.next());
+    try std.testing.expectEqual(tokens[4], tokenizer.next());
+    try std.testing.expectEqual(tokens[5], tokenizer.next());
 }

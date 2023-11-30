@@ -58,6 +58,8 @@ pub const Tag = enum(u8) {
     @">>",
     @">>=",
     @"_",
+    // For errors
+    @"\n",
 
     k_alias,
     k_break,

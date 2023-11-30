@@ -62,10 +62,6 @@ pub fn main() !void {
     if (failed) std.os.exit(1);
 }
 
-test "renderer" {
-    _ = @import("./WgslRenderer.zig");
-}
-
 test "bundler" {
     _ = @import("./bundler.zig");
 }
