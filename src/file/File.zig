@@ -68,23 +68,17 @@ pub fn resolveFrom(
 fn importTable(allocator: Allocator, path: []const u8, tree: Ast) !ImportTable {
     var res = ImportTable{};
 
-    for (tree.spanToList(0)) |r| {
-        switch (tree.node(r)) {
-            .import => |n| {
-                const mod_name = tree.modName(n);
+    for (tree.spanToList(0)) |i| {
+        switch (tree.node(i).tag) {
+            .import => {
+                const mod_name = tree.modName(i);
                 const resolved = try resolveFrom(allocator, path, mod_name);
                 const mod_imports = try res.getOrPut(allocator, resolved);
                 if (!mod_imports.found_existing) mod_imports.value_ptr.* = StringSet{};
 
-                const aliases = tree.spanToList(if (n.aliases != 0) n.aliases else null);
-                for (aliases) |j| {
-                    switch (tree.node(j)) {
-                        .import_alias => |a| {
-                            const mod_symbol = tree.identifier(a.old);
-                            try mod_imports.value_ptr.*.put(allocator, mod_symbol, {});
-                        },
-                        else => {},
-                    }
+                for (tree.modAliases(i)) |j| {
+                    const mod_symbol = tree.identifier(tree.node(j).lhs);
+                    try mod_imports.value_ptr.*.put(allocator, mod_symbol, {});
                 }
             },
             else => {},

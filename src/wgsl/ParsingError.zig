@@ -58,7 +58,7 @@ pub const Tag = enum(u8) {
             .invalid_assignment_op => writer.writeAll("invalid assignment op"),
             .invalid_attribute => {
                 try writer.writeAll("invalid attribute");
-                try renderList(writer, Node.Attribute.Tag);
+                try renderList(writer, Node.Attribute);
             },
             .invalid_element_count => writer.writeAll("invalid element count"),
             .invalid_initializer => writer.writeAll("variable requires a type or initializer"),

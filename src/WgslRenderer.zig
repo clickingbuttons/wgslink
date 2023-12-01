@@ -1,12 +1,11 @@
 const std = @import("std");
 const Ast = @import("./ast/Ast.zig");
-const node_mod = @import("./ast/Node.zig");
+const Node = @import("./ast/Node.zig");
 const Parser = @import("./wgsl/Parser.zig");
 const Visitor = @import("./ast/Visitor.zig").Visitor;
 const Token = @import("./wgsl/Token.zig").Tag;
 
 const Allocator = std.mem.Allocator;
-const Node = node_mod.Node;
 
 /// Renders bundles of modules back into WGSL.
 pub fn Renderer(comptime UnderlyingWriter: type) type {
@@ -190,11 +189,12 @@ pub fn Renderer(comptime UnderlyingWriter: type) type {
                 std.debug.assert(index != 0);
                 // std.debug.print("{d} / {d} = {d} {any}\n", .{ i, indices.len, index, tree.node(index) });
                 try self.writeIndex(tree, index);
-                switch (tree.node(index)) {
+                const tag = tree.node(index).tag;
+                switch (tag) {
                     .import => if (!self.imports) continue,
                     else => {},
                 }
-                switch (tree.node(index)) {
+                switch (tag) {
                     .diagnostic_directive,
                     .enable_directive,
                     .requires_directive,
@@ -212,43 +212,43 @@ pub fn Renderer(comptime UnderlyingWriter: type) type {
         }
 
         fn writeNode(self: *Self, tree: Ast, node: Node) RetType {
-            switch (node) {
-                inline .@"error", .span => |_, tag| {
-                    std.debug.panic("unexpected node of type {s}", .{@tagName(tag)});
+            switch (node.tag) {
+                inline .@"error", .span => |t| {
+                    std.debug.panic("unexpected node of type {s}", .{@tagName(t)});
                 },
-                .comment => |n| {
+                .comment => {
                     if (self.minify) return;
                     try self.writeAll("// ");
-                    try self.writeIdentifier(tree, n.ident);
+                    try self.writeIdentifier(tree, node.lhs);
                 },
-                .diagnostic_directive => |n| {
+                .diagnostic_directive => {
                     try self.writeToken(.k_diagnostic);
-                    try self.writeDiagnostic(tree, n.diagnostic_control);
+                    try self.writeDiagnostic(tree, node.lhs);
                 },
-                .enable_directive => |n| {
+                .enable_directive => {
                     try self.writeTokenSpace(.k_enable);
-                    try self.writeIdentList(tree, n.idents, .{ .sep = "," });
+                    try self.writeIdentList(tree, node.lhs, .{ .sep = "," });
                 },
-                .requires_directive => |n| {
+                .requires_directive => {
                     try self.writeTokenSpace(.k_requires);
-                    try self.writeIdentList(tree, n.idents, .{ .sep = "," });
+                    try self.writeIdentList(tree, node.lhs, .{ .sep = "," });
                 },
-                .global_var => |n| {
-                    const global_var = tree.extraData(node_mod.GlobalVar, n.global_var);
+                .global_var => {
+                    const global_var = tree.extraData(Node.GlobalVar, node.lhs);
                     try self.writeAttributes(tree, global_var.attrs);
                     try self.writeToken(.k_var);
                     try self.writeTemplateList(tree, global_var.template_list);
                     if (global_var.template_list != 0) try self.writeSpace() else try self.writeByte(' ');
-                    try self.writeOptionallyTypedIdent(tree, global_var.name, global_var.type, n.initializer);
+                    try self.writeOptionallyTypedIdent(tree, global_var.name, global_var.type, node.rhs);
                 },
-                .override => |n| {
-                    const override = tree.extraData(node_mod.Override, n.override);
+                .override => {
+                    const override = tree.extraData(Node.Override, node.lhs);
                     try self.writeAttributes(tree, override.attrs);
                     try self.writeTokenSpace(.k_override);
-                    try self.writeOptionallyTypedIdent(tree, override.name, override.type, n.initializer);
+                    try self.writeOptionallyTypedIdent(tree, override.name, override.type, node.rhs);
                 },
-                .@"fn" => |n| {
-                    const header = tree.extraData(node_mod.FnHeader, n.fn_header);
+                .@"fn" => {
+                    const header = tree.extraData(Node.FnHeader, node.lhs);
                     try self.writeAttributes(tree, header.attrs);
                     try self.writeTokenSpace(.k_fn);
                     try self.writeIdentifier(tree, header.name);
@@ -261,92 +261,92 @@ pub fn Renderer(comptime UnderlyingWriter: type) type {
                         try self.writeIndex(tree, header.return_type);
                     }
                     try self.writeSpace();
-                    try self.writeIndex(tree, n.body);
+                    try self.writeIndex(tree, node.rhs);
                 },
-                .@"const", .let => |n| {
-                    const typed_ident = tree.extraData(node_mod.TypedIdent, n.typed_ident);
-                    const token = switch (node) {
+                .@"const", .let => |t| {
+                    const typed_ident = tree.extraData(Node.TypedIdent, node.lhs);
+                    const token = switch (t) {
                         .@"const" => Token.k_const,
                         .let => Token.k_let,
                         else => unreachable,
                     };
                     try self.writeAll(token.symbol());
                     try self.writeByte(' ');
-                    try self.writeOptionallyTypedIdent(tree, typed_ident.name, typed_ident.type, n.initializer);
+                    try self.writeOptionallyTypedIdent(tree, typed_ident.name, typed_ident.type, node.rhs);
                 },
-                .type_alias => |n| {
+                .type_alias => {
                     try self.writeTokenSpace(.k_alias);
-                    try self.writeIdentifier(tree, n.new_name);
+                    try self.writeIdentifier(tree, node.lhs);
                     try self.writeTokenSpaced(.@"=");
-                    try self.writeIndex(tree, n.old_type);
+                    try self.writeIndex(tree, node.rhs);
                 },
-                .import => |n| {
+                .import => {
                     if (!self.imports) return;
                     try self.writeTokenSpace(.k_import);
-                    if (n.aliases != 0) {
-                        try self.writeList(tree, n.aliases, .{ .start = "{ ", .sep = "\n", .end = " }" });
+                    if (node.lhs != 0) {
+                        try self.writeList(tree, node.lhs, .{ .start = "{ ", .sep = "\n", .end = " }" });
                         try self.writeTokenSpaced(.k_from);
                     }
-                    const extra = tree.extraData(node_mod.Import, n.import);
                     try self.writeByte('"');
-                    try self.writeIdentifier(tree, extra.module);
+                    try self.writeIdentifier(tree, node.rhs);
                     try self.writeByte('"');
                 },
-                .@"struct" => |n| {
+                .@"struct" => {
                     try self.writeTokenSpace(.k_struct);
-                    try self.writeIdentifier(tree, n.name);
+                    try self.writeIdentifier(tree, node.lhs);
                     try self.writeSpace();
                     try self.startBlock();
-                    try self.writeList(tree, n.members, .{ .sep = ",\n" });
+                    try self.writeList(tree, node.rhs, .{ .sep = ",\n" });
                     try self.endBlock();
                 },
-                .struct_member => |n| {
-                    const typed_ident = tree.extraData(node_mod.TypedIdent, n.typed_ident);
-                    try self.writeAttributes(tree, n.attributes);
+                .struct_member => {
+                    try self.writeAttributes(tree, node.lhs);
+                    const typed_ident = tree.extraData(Node.TypedIdent, node.rhs);
                     try self.writeOptionallyTypedIdent(tree, typed_ident.name, typed_ident.type, 0);
                 },
-                .import_alias => |n| {
-                    try self.writeIdentifier(tree, n.old);
-                    if (n.new != 0) {
+                .import_alias => {
+                    try self.writeIdentifier(tree, node.lhs);
+                    if (node.rhs != 0) {
                         try self.writeByte(' ');
                         try self.writeTokenSpace(.k_as);
                         try self.writeByte(' ');
-                        try self.writeIdentifier(tree, n.new);
+                        try self.writeIdentifier(tree, node.rhs);
                     }
                 },
-                .fn_param => |n| {
-                    const param = tree.extraData(node_mod.FnParam, n.fn_param);
-                    try self.writeAttributes(tree, n.attributes);
+                .fn_param => {
+                    try self.writeAttributes(tree, node.lhs);
+                    const param = tree.extraData(Node.FnParam, node.rhs);
                     try self.writeIdentifier(tree, param.name);
                     try self.writeArgType(tree, param.type);
                 },
-                .type, .ident => |n| {
-                    try self.writeIdentifier(tree, n.name);
-                    try self.writeTemplateList(tree, n.template_list);
+                .type, .ident => {
+                    try self.writeIdentifier(tree, node.lhs);
+                    try self.writeTemplateList(tree, node.rhs);
                 },
-                .const_assert => |n| {
+                .const_assert => {
                     try self.writeTokenSpace(.k_const_assert);
-                    try self.writeIndex(tree, n.expr);
+                    try self.writeIndex(tree, node.lhs);
                 },
-                .paren => |n| {
+                .paren => {
                     try self.writeToken(.@"(");
-                    try self.writeIndex(tree, n.expr);
+                    try self.writeIndex(tree, node.lhs);
                     try self.writeToken(.@")");
                 },
-                .number => |n| try self.writeIdentifier(tree, n.value),
-                .attribute => |a| {
+                .number => try self.writeIdentifier(tree, node.lhs),
+                .attribute => {
                     try self.writeToken(.@"@");
-                    try self.writeAll(@tagName(a));
-                    switch (a) {
+                    const attr: Node.Attribute = @enumFromInt(node.lhs);
+                    try self.writeAll(@tagName(attr));
+                    switch (attr) {
                         .compute, .@"const", .fragment, .invariant, .must_use, .vertex => {},
-                        .@"align", .binding, .builtin, .group, .id, .location, .size => |e| {
+                        .@"align", .binding, .builtin, .group, .id, .location, .size => {
                             try self.writeToken(.@"(");
-                            try self.writeIndex(tree, e);
+                            try self.writeIndex(tree, node.rhs);
                             try self.writeToken(.@")");
                         },
-                        .diagnostic => |d| try self.writeDiagnostic(tree, d),
-                        .interpolate => |i| {
-                            const interpolation = tree.extraData(node_mod.Interpolation, i);
+                        .diagnostic => try self.writeDiagnostic(tree, node.rhs),
+                        .interpolate => {
+                            const interpolation = tree.extraData(Node.Interpolation, node.rhs);
                             try self.writeIndices(
                                 false,
                                 tree,
@@ -354,8 +354,8 @@ pub fn Renderer(comptime UnderlyingWriter: type) type {
                                 .{ .start = "(", .sep = ",", .end = ")" },
                             );
                         },
-                        .workgroup_size => |w| {
-                            const workgroup_size = tree.extraData(node_mod.WorkgroupSize, w);
+                        .workgroup_size => {
+                            const workgroup_size = tree.extraData(Node.WorkgroupSize, node.rhs);
                             var indices: []const Node.Index = &.{ workgroup_size.x, workgroup_size.y, workgroup_size.z };
                             var len: usize = 1;
                             if (workgroup_size.y != 0) len += 1;
@@ -369,25 +369,25 @@ pub fn Renderer(comptime UnderlyingWriter: type) type {
                         },
                     }
                 },
-                .loop => |n| {
+                .loop => {
                     try self.writeToken(.k_loop);
-                    try self.writeAttributes(tree, n.attributes);
+                    try self.writeAttributes(tree, node.lhs);
                     try self.writeSpace();
-                    try self.writeIndex(tree, n.body);
+                    try self.writeIndex(tree, node.rhs);
                 },
-                .compound => |n| {
-                    try self.writeAttributes(tree, n.attributes);
-                    const indices = tree.spanToList(if (n.statements == 0) null else n.statements);
+                .compound => {
+                    try self.writeAttributes(tree, node.lhs);
+                    const indices = tree.spanToList(if (node.rhs == 0) null else node.rhs);
                     if (indices.len == 0) {
                         try self.writeToken(.@"{");
                         try self.writeToken(.@"}");
                         return;
                     }
-                    if (n.attributes != 0) try self.writeSpace();
+                    if (node.lhs != 0) try self.writeSpace();
                     try self.startBlock();
                     for (indices, 0..) |index, i| {
                         try self.writeIndex(tree, index);
-                        switch (tree.node(index)) {
+                        switch (tree.node(index).tag) {
                             .loop, .compound, .@"for", .@"if", .else_if, .@"else", .@"switch", .@"while", .continuing => {},
                             else => try self.writeToken(.@";"),
                         }
@@ -395,8 +395,8 @@ pub fn Renderer(comptime UnderlyingWriter: type) type {
                     }
                     try self.endBlock();
                 },
-                .@"for" => |n| {
-                    const header = tree.extraData(node_mod.ForHeader, n.for_header);
+                .@"for" => {
+                    const header = tree.extraData(Node.ForHeader, node.lhs);
                     try self.writeAttributes(tree, header.attrs);
                     try self.writeToken(.k_for);
                     try self.writeSpace();
@@ -407,112 +407,112 @@ pub fn Renderer(comptime UnderlyingWriter: type) type {
                         .{ .start = "(", .sep = ";", .sep_space = true, .end = ")" },
                     );
                     try self.writeSpace();
-                    try self.writeIndex(tree, n.body);
+                    try self.writeIndex(tree, node.rhs);
                 },
-                .@"if" => |n| {
+                .@"if" => {
                     try self.writeTokenSpace(.k_if);
-                    try self.writeIndex(tree, n.condition);
+                    try self.writeIndex(tree, node.lhs);
                     try self.writeSpace();
-                    try self.writeIndex(tree, n.body);
+                    try self.writeIndex(tree, node.rhs);
                 },
-                .else_if => |n| {
-                    try self.writeIndex(tree, n.if1);
+                .else_if => {
+                    try self.writeIndex(tree, node.lhs);
                     try self.writeSpace();
                     try self.writeTokenSpace(.k_else);
-                    try self.writeIndex(tree, n.if2);
+                    try self.writeIndex(tree, node.rhs);
                 },
-                .@"else" => |n| {
-                    try self.writeIndex(tree, n.@"if");
+                .@"else" => {
+                    try self.writeIndex(tree, node.lhs);
                     try self.writeSpace();
                     try self.writeToken(.k_else);
                     try self.writeSpace();
-                    try self.writeIndex(tree, n.body);
+                    try self.writeIndex(tree, node.rhs);
                 },
-                .@"switch" => |n| {
+                .@"switch" => {
                     try self.writeTokenSpace(.k_switch);
-                    try self.writeIndex(tree, n.expr);
-                    try self.writeIndex(tree, n.switch_body);
+                    try self.writeIndex(tree, node.lhs);
+                    try self.writeIndex(tree, node.rhs);
                 },
-                .switch_body => |n| {
-                    try self.writeAttributes(tree, n.attributes);
+                .switch_body => {
+                    try self.writeAttributes(tree, node.lhs);
                     try self.writeSpace();
                     try self.startBlock();
-                    try self.writeList(tree, n.clauses, .{ .sep = "\n" });
+                    try self.writeList(tree, node.rhs, .{ .sep = "\n" });
                     try self.endBlock();
                 },
-                .case_clause => |n| {
-                    if (n.selectors != 0) {
+                .case_clause => {
+                    if (node.lhs != 0) {
                         try self.writeTokenSpace(.k_case);
-                        try self.writeList(tree, n.selectors, .{ .sep = ",", .sep_space = true });
+                        try self.writeList(tree, node.lhs, .{ .sep = ",", .sep_space = true });
                     } else {
                         try self.writeToken(.k_default);
                     }
                     try self.writeSpace();
-                    try self.writeIndex(tree, n.body);
+                    try self.writeIndex(tree, node.rhs);
                 },
-                .case_selector => |n| {
-                    if (n.expr == 0) {
+                .case_selector => {
+                    if (node.lhs == 0) {
                         try self.writeToken(.k_default);
                     } else {
-                        try self.writeIndex(tree, n.expr);
+                        try self.writeIndex(tree, node.lhs);
                     }
                 },
-                .@"while" => |n| {
+                .@"while" => {
                     try self.writeTokenSpace(.k_while);
-                    try self.writeIndex(tree, n.condition);
+                    try self.writeIndex(tree, node.lhs);
                     try self.writeSpace();
-                    try self.writeIndex(tree, n.body);
+                    try self.writeIndex(tree, node.rhs);
                 },
-                .@"return" => |n| {
+                .@"return" => {
                     try self.writeToken(.k_return);
-                    if (n.expr != 0) {
+                    if (node.lhs != 0) {
                         try self.writeByte(' ');
-                        try self.writeIndex(tree, n.expr);
+                        try self.writeIndex(tree, node.lhs);
                     }
                 },
-                .call => |n| {
-                    try self.writeIndex(tree, n.ident);
-                    const indices = tree.spanToList(if (n.arguments == 0) null else n.arguments);
+                .call => {
+                    try self.writeIndex(tree, node.lhs);
+                    const indices = tree.spanToList(if (node.rhs == 0) null else node.rhs);
                     try self.writeIndices(false, tree, indices, .{ .start = "(", .sep = ",", .sep_space = true, .end = ")" });
                 },
-                .@"var" => |n| {
-                    const extra = tree.extraData(node_mod.Var, n.@"var");
+                .@"var" => {
+                    const extra = tree.extraData(Node.Var, node.lhs);
                     try self.writeToken(.k_var);
                     try self.writeTemplateList(tree, extra.template_list);
                     try self.writeByte(' ');
-                    try self.writeOptionallyTypedIdent(tree, extra.name, extra.type, n.initializer);
+                    try self.writeOptionallyTypedIdent(tree, extra.name, extra.type, node.rhs);
                 },
-                .increment, .decrement => |n| {
-                    try self.writeIndex(tree, n.expr);
-                    const op = switch (node) {
+                .increment, .decrement => |t| {
+                    try self.writeIndex(tree, node.lhs);
+                    const op = switch (t) {
                         .increment => Token.@"++",
                         .decrement => Token.@"--",
                         else => unreachable,
                     };
                     try self.writeToken(op);
                 },
-                .phony_assign => |n| {
+                .phony_assign => {
                     try self.writeToken(._);
                     try self.writeTokenSpaced(.@"=");
-                    try self.writeIndex(tree, n.expr);
+                    try self.writeIndex(tree, node.rhs);
                 },
-                .@"=", .@"+=", .@"-=", .@"*=", .@"/=", .@"%=", .@"&=", .@"|=", .@"^=", .@"<<=", .@">>=" => |n| {
-                    try self.writeIndex(tree, n.lhs_expr);
-                    try self.writeSpaced(@tagName(node));
-                    try self.writeIndex(tree, n.rhs_expr);
+                .@"=", .@"+=", .@"-=", .@"*=", .@"/=", .@"%=", .@"&=", .@"|=", .@"^=", .@"<<=", .@">>=" => {
+                    try self.writeIndex(tree, node.lhs);
+                    try self.writeSpaced(@tagName(node.tag));
+                    try self.writeIndex(tree, node.rhs);
                 },
-                .continuing => |n| {
+                .continuing => {
                     try self.writeToken(.k_continuing);
                     try self.writeSpace();
-                    try self.writeIndex(tree, n.body);
+                    try self.writeIndex(tree, node.lhs);
                 },
-                .break_if => |n| {
+                .break_if => {
                     try self.writeTokenSpace(.k_break);
                     try self.writeTokenSpace(.k_if);
-                    try self.writeIndex(tree, n.expr);
+                    try self.writeIndex(tree, node.lhs);
                 },
-                .logical_not, .bitwise_complement, .negative, .deref, .ref => |n| {
-                    const token: Token = switch (node) {
+                .logical_not, .bitwise_complement, .negative, .deref, .ref => |t| {
+                    const token: Token = switch (t) {
                         .logical_not => .@"!",
                         .bitwise_complement => .@"~",
                         .negative => .@"-",
@@ -521,38 +521,39 @@ pub fn Renderer(comptime UnderlyingWriter: type) type {
                         else => unreachable,
                     };
                     try self.writeToken(token);
-                    try self.writeIndex(tree, n.expr);
+                    try self.writeIndex(tree, node.rhs);
                 },
-                .lshift, .rshift => |n| {
-                    try self.writeOp(tree, node, n.lhs_unary_expr, n.rhs_unary_expr);
-                },
-                .lt, .gt, .lte, .gte, .eq, .neq => |n| {
-                    try self.writeOp(tree, node, n.lhs_shift_expr, n.rhs_shift_expr);
-                },
-                .mul, .div, .mod => |n| {
-                    try self.writeOp(tree, node, n.lhs_multiplicative_expr, n.rhs_unary_expr);
-                },
-                .add, .sub => |n| {
-                    try self.writeOp(tree, node, n.lhs_additive_expr, n.rhs_mul_expr);
-                },
-                .logical_and, .logical_or => |n| {
-                    try self.writeOp(tree, node, n.lhs_relational_expr, n.rhs_relational_expr);
-                },
-                .bitwise_and, .bitwise_or, .bitwise_xor => |n| {
-                    try self.writeOp(tree, node, n.lhs_bitwise_expr, n.rhs_unary_expr);
-                },
-                .field_access => |n| {
-                    try self.writeIndex(tree, n.lhs_expr);
+                .lshift,
+                .rshift,
+                .lt,
+                .gt,
+                .lte,
+                .gte,
+                .eq,
+                .neq,
+                .mul,
+                .div,
+                .mod,
+                .add,
+                .sub,
+                .logical_and,
+                .logical_or,
+                .bitwise_and,
+                .bitwise_or,
+                .bitwise_xor,
+                => try self.writeOp(tree, node, node.lhs, node.rhs),
+                .field_access => {
+                    try self.writeIndex(tree, node.lhs);
                     try self.writeToken(.@".");
-                    try self.writeIdentifier(tree, n.member);
+                    try self.writeIdentifier(tree, node.rhs);
                 },
-                .index_access => |n| {
-                    try self.writeIndex(tree, n.lhs_expr);
+                .index_access => {
+                    try self.writeIndex(tree, node.lhs);
                     try self.writeToken(.@"[");
-                    try self.writeIndex(tree, n.index_expr);
+                    try self.writeIndex(tree, node.rhs);
                     try self.writeToken(.@"]");
                 },
-                .true, .false, .@"break", .@"continue", .discard => try self.writeAll(@tagName(node)),
+                .true, .false, .@"break", .@"continue", .discard => |t| try self.writeAll(@tagName(t)),
             }
         }
 
@@ -584,7 +585,7 @@ pub fn Renderer(comptime UnderlyingWriter: type) type {
         }
 
         fn writeOp(self: *Self, tree: Ast, node: Node, lhs: Node.Index, rhs: Node.Index) RetType {
-            const token: Token = switch (node) {
+            const token: Token = switch (node.tag) {
                 .lt => .@"<",
                 .gt => .@">",
                 .lte => .@"<=",
@@ -677,8 +678,8 @@ pub fn Renderer(comptime UnderlyingWriter: type) type {
 
         fn writeDiagnostic(self: *Self, tree: Ast, node: Node.ExtraIndex) RetType {
             try self.writeToken(.@"(");
-            const diagnostic = tree.extraData(node_mod.DiagnosticControl, node);
-            const sev: node_mod.Severity = @enumFromInt(diagnostic.severity);
+            const diagnostic = tree.extraData(Node.DiagnosticControl, node);
+            const sev: Node.Severity = @enumFromInt(diagnostic.severity);
             try self.writeAll(@tagName(sev));
             try self.writeToken(.@",");
             try self.writeIdentifier(tree, diagnostic.name);

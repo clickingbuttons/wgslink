@@ -1,21 +1,21 @@
 /// Immutable abstract syntax tree.
 const std = @import("std");
-const node_mod = @import("./Node.zig");
+const Node = @import("./Node.zig");
 const WgslParsingError = @import("../wgsl/ParsingError.zig");
+const WgslTokenizer = @import("../wgsl/Tokenizer.zig");
 const Language = @import("../file/File.zig").Language;
 const FileError = @import("../file/Error.zig");
 const Loc = @import("../file/Loc.zig");
 
 const Allocator = std.mem.Allocator;
 const Self = @This();
-const Node = node_mod.Node;
 pub const NodeList = std.MultiArrayList(Node);
 pub const Identifiers = std.MultiArrayList(std.StringArrayHashMapUnmanaged(void).Data);
 
 /// Node 0 is a span of directives followed by declarations. Since there can be no
 /// references to this root node, 0 is available to indicate null
 nodes: NodeList.Slice,
-/// Nodes with identifers store indexes into here.
+/// Nodes with identifers store indexes into here. They stored offset by +1 so that `0` is a null sentinel.
 /// For `var foo: u32 = baz();` this will store `foo`, `u32`, and `baz`
 /// Owns the strings so that `source` may be freed after parsing is finished.
 identifiers: Identifiers.Slice,
@@ -36,7 +36,7 @@ pub fn deinit(self: *Self, allocator: Allocator) void {
 }
 
 pub fn identifier(self: Self, index: Node.IdentIndex) []const u8 {
-    return self.identifiers.get(index).key;
+    return self.identifiers.get(index - 1).key;
 }
 
 pub fn extraData(self: Self, comptime T: type, index: Node.Index) T {
@@ -54,21 +54,49 @@ pub fn node(self: Self, index: Node.Index) Node {
 
 pub fn spanToList(self: Self, index: ?Node.Index) []const Node.Index {
     if (index) |i| {
-        std.debug.assert(self.nodes.items(.tags)[i] == .span);
-        const span = self.nodes.get(i).span;
-        return self.extra[span.from..span.to];
+        std.debug.assert(self.node(i).tag == .span);
+        const span = self.node(i);
+        return self.extra[span.lhs..span.rhs];
     }
     return &.{};
 }
 
 pub fn hasError(self: Self) bool {
     for (self.spanToList(0)) |i| {
-        switch (self.node(i)) {
+        switch (self.node(i).tag) {
             .@"error" => return true,
             else => {},
         }
     }
     return false;
+}
+
+pub fn getErrorLoc(self: Self, source: [:0]const u8, index: Node.Index) FileError.ErrorLoc {
+    const n = self.node(index);
+    var line_num: Loc.Index = 0;
+    var line_start: Loc.Index = 0;
+
+    var i: usize = 0;
+    while (n.src_offset < self.newlines[i]) : (i += 1) {
+        line_num += 1;
+        line_start = self.newlines[i];
+    }
+
+    var tok_end = n.src_offset;
+    switch (self.from_lang) {
+        .wgsl => {
+            var tokenizer = WgslTokenizer.init(source[n.src_offset..]);
+            const tok = tokenizer.next();
+            tok_end = tok.loc.end;
+        },
+    }
+
+    return .{
+        .line_num = line_num,
+        .line_start = line_start,
+        .tok_start = n.src_offset,
+        .tok_end = tok_end,
+    };
 }
 
 pub fn renderErrors(
@@ -79,14 +107,15 @@ pub fn renderErrors(
     file_path: ?[]const u8,
 ) !void {
     for (self.spanToList(0)) |i| {
-        switch (self.node(i)) {
-            .@"error" => |e| {
-                const loc = self.extraData(node_mod.ErrorLoc, e.error_loc);
-                try FileError.render(writer, term, source, file_path, loc);
+        const n = self.node(i);
+        switch (n.tag) {
+            .@"error" => {
+                const error_loc = self.getErrorLoc(source, i);
+                try FileError.render(writer, term, source, file_path, error_loc);
                 switch (self.from_lang) {
                     .wgsl => {
-                        const tag: WgslParsingError.Tag = @enumFromInt(e.tag);
-                        try tag.render(writer, @enumFromInt(e.expected_token_tag));
+                        const tag: WgslParsingError.Tag = @enumFromInt(n.lhs);
+                        try tag.render(writer, @enumFromInt(n.rhs));
                     },
                 }
                 try term.setColor(writer, .reset);
@@ -98,34 +127,44 @@ pub fn renderErrors(
 }
 
 pub fn globalName(self: Self, index: Node.Index) []const u8 {
-    switch (self.node(index)) {
-        .global_var => |n| {
-            const global_var = self.extraData(node_mod.GlobalVar, n.global_var);
+    const n = self.node(index);
+    switch (n.tag) {
+        .global_var => {
+            const global_var = self.extraData(Node.GlobalVar, n.lhs);
             return self.identifier(global_var.name);
         },
-        .override => |n| {
-            const override = self.extraData(node_mod.Override, n.override);
+        .override => {
+            const override = self.extraData(Node.Override, n.lhs);
             return self.identifier(override.name);
         },
-        .@"fn" => |n| {
-            const header = self.extraData(node_mod.FnHeader, n.fn_header);
+        .@"fn" => {
+            const header = self.extraData(Node.FnHeader, n.lhs);
             return self.identifier(header.name);
         },
-        .@"const" => |n| {
-            const typed_ident = self.extraData(node_mod.TypedIdent, n.typed_ident);
+        .@"const" => {
+            const typed_ident = self.extraData(Node.TypedIdent, n.lhs);
             return self.identifier(typed_ident.name);
         },
-        .type_alias => |n| return self.identifier(n.new_name),
-        .@"struct" => |n| return self.identifier(n.name),
+        .type_alias, .@"struct" => return self.identifier(n.lhs),
         else => return "",
     }
 }
 
 pub fn removeFromSpan(self: *Self, span_index: Node.Index, item_index: usize) void {
-    self.nodes.items(.data)[span_index].span.orderedRemove(self.extra, item_index);
+    const n = self.node(span_index);
+    for (n.lhs + item_index..n.rhs - 1) |j| {
+        self.extra[j] = self.extra[j + 1];
+    }
+    self.nodes.items(.rhs)[span_index] -= 1;
 }
 
-pub fn modName(self: Self, imp: Node.Import) []const u8 {
-    const extra = self.extraData(node_mod.Import, imp.import);
-    return self.identifier(extra.module);
+pub fn modName(self: Self, imp: Node.Index) []const u8 {
+    const n = self.node(imp);
+    return self.identifier(n.rhs);
+}
+
+pub fn modAliases(self: Self, imp: Node.Index) []const Node.Index {
+    const n = self.node(imp);
+    std.debug.assert(n.tag == .import);
+    return self.spanToList(if (n.lhs == 0) null else n.lhs);
 }

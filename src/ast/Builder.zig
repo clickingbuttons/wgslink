@@ -1,22 +1,36 @@
 const std = @import("std");
 const Ast = @import("./Ast.zig");
-const Node = @import("./Node.zig").Node;
+const Node = @import("./Node.zig");
 const Language = @import("../file/File.zig").Language;
 const Loc = @import("../file/Loc.zig");
 
 const Self = @This();
 const Allocator = std.mem.Allocator;
+const Identifiers = std.StringArrayHashMapUnmanaged(void);
 
 /// Main data structure
-nodes: Ast.NodeList = .{},
+nodes: Ast.NodeList,
 /// Nodes with identifers store indexes into here.
 /// For `var foo: u32 = baz();` this will store `foo`, `u32`, and `baz`
 /// Owns the strings so that `source` may be freed after parsing is finished.
-identifiers: std.StringArrayHashMapUnmanaged(void) = .{},
+identifiers: Identifiers = .{},
 /// For nodes with more data than @sizeOf(Node)
 extra: std.ArrayListUnmanaged(Node.Index) = .{},
 /// Offsets of newlines for error messages
 newlines: std.ArrayListUnmanaged(Loc.Index) = .{},
+
+pub fn init(allocator: Allocator) !Self {
+    var nodes = Ast.NodeList{};
+    // Root node must be index 0.
+    try nodes.append(allocator, Node{
+        .src_offset = 0,
+        .tag = .span,
+        .lhs = 0,
+        .rhs = 0,
+    });
+
+    return .{ .nodes = nodes };
+}
 
 pub fn deinit(self: *Self, allocator: Allocator) void {
     self.nodes.deinit(allocator);
@@ -29,14 +43,17 @@ pub fn deinit(self: *Self, allocator: Allocator) void {
 pub fn listToSpan(
     self: *Self,
     allocator: Allocator,
+    src_offset: Loc.Index,
     list: []const Node.Index,
 ) Allocator.Error!Node.Index {
     if (list.len == 0) return 0;
     try self.extra.appendSlice(allocator, list);
-    return try self.addNode(allocator, Node{ .span = .{
-        .from = @intCast(self.extra.items.len - list.len),
-        .to = @intCast(self.extra.items.len),
-    } });
+    return try self.addNode(allocator, Node{
+        .src_offset = src_offset,
+        .tag = .span,
+        .lhs = @intCast(self.extra.items.len - list.len),
+        .rhs = @intCast(self.extra.items.len),
+    });
 }
 
 pub fn addNode(self: *Self, allocator: Allocator, node: Node) Allocator.Error!Node.Index {
@@ -74,5 +91,10 @@ pub fn getOrPutIdent(
     if (!gop.found_existing) {
         gop.key_ptr.* = try allocator.dupe(u8, ident);
     }
-    return @intCast(gop.index);
+    return @intCast(gop.index + 1);
+}
+
+pub fn finishRootSpan(self: *Self, span_len: usize) void {
+    self.nodes.items(.lhs)[0] = @intCast(self.extra.items.len - span_len);
+    self.nodes.items(.rhs)[0] = @intCast(self.extra.items.len);
 }

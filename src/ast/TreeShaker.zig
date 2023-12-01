@@ -1,19 +1,20 @@
 const std = @import("std");
 const Ast = @import("./Ast.zig");
-const node_mod = @import("./Node.zig");
+const Node = @import("./Node.zig");
 
-const Node = node_mod.Node;
 const Allocator = std.mem.Allocator;
 const Used = std.StringHashMap(void);
 
 fn findSymbols(used: *Used, tree: *Ast) !void {
     for (tree.spanToList(0)) |i| {
-        switch (tree.node(i)) {
-            .@"fn" => |n| {
-                const header = tree.extraData(node_mod.FnHeader, n.fn_header);
+        const node = tree.node(i);
+        switch (node.tag) {
+            .@"fn" => {
+                const header = tree.extraData(Node.FnHeader, node.lhs);
                 if (header.attrs == 0) continue;
                 for (tree.spanToList(header.attrs)) |a| {
-                    const attr = tree.node(a).attribute;
+                    const attr_node = tree.node(a);
+                    const attr: Node.Attribute = @enumFromInt(attr_node.lhs);
                     switch (attr) {
                         .vertex, .fragment, .compute => {
                             try used.put(tree.globalName(i), {});
@@ -33,7 +34,7 @@ fn addUsedSymbol(tree: *Ast, used: *Used, ident: Node.IdentIndex) Allocator.Erro
     if (symbol.len == 0 or used.get(symbol) != null) return;
     try used.put(symbol, {});
     for (tree.spanToList(0)) |i| {
-        switch (tree.node(i)) {
+        switch (tree.node(i).tag) {
             .global_var, .override, .@"const", .@"struct", .@"fn", .type_alias => {
                 if (std.mem.eql(u8, tree.globalName(i), symbol)) try visit(tree, used, i);
             },
@@ -46,73 +47,75 @@ fn visitAll(tree: *Ast, used: *Used, nodes: []const Node.Index) Allocator.Error!
     for (nodes) |n| try visit(tree, used, n);
 }
 
-fn visit(tree: *Ast, used: *Used, node: Node.Index) Allocator.Error!void {
-    if (node == 0) return;
-    switch (tree.node(node)) {
-        .span => for (tree.spanToList(node)) |i| try visit(tree, used, i),
-        .global_var => |n| {
-            const global_var = tree.extraData(node_mod.GlobalVar, n.global_var);
+fn visit(tree: *Ast, used: *Used, index: Node.Index) Allocator.Error!void {
+    if (index == 0) return;
+    const node = tree.node(index);
+    switch (node.tag) {
+        .span => for (tree.spanToList(index)) |i| try visit(tree, used, i),
+        .global_var => {
+            const global_var = tree.extraData(Node.GlobalVar, node.lhs);
             try visitAll(tree, used, &.{
                 global_var.attrs,
                 global_var.template_list,
                 global_var.type,
-                n.initializer,
+                node.rhs,
             });
         },
-        .override => |n| {
-            const override = tree.extraData(node_mod.Override, n.override);
+        .override => {
+            const override = tree.extraData(Node.Override, node.lhs);
             try visitAll(tree, used, &.{
                 override.attrs,
                 override.type,
-                n.initializer,
+                node.rhs,
             });
         },
-        .@"fn" => |n| {
-            const header = tree.extraData(node_mod.FnHeader, n.fn_header);
+        .@"fn" => {
+            const header = tree.extraData(Node.FnHeader, node.lhs);
             try visitAll(tree, used, &.{
                 header.attrs,
                 header.params,
                 header.return_attrs,
                 header.return_type,
-                n.body,
+                node.rhs,
             });
         },
-        .@"const", .let => |n| {
-            const typed_ident = tree.extraData(node_mod.TypedIdent, n.typed_ident);
+        .@"const", .let => {
+            const typed_ident = tree.extraData(Node.TypedIdent, node.lhs);
             try visitAll(tree, used, &.{
                 typed_ident.name,
                 typed_ident.type,
-                n.initializer,
+                node.rhs,
             });
         },
-        .type_alias => |n| try visit(tree, used, n.old_type),
-        .@"struct" => |n| try visit(tree, used, n.members),
-        .struct_member => |n| {
-            const typed_ident = tree.extraData(node_mod.TypedIdent, n.typed_ident);
+        .type_alias => try visit(tree, used, node.rhs),
+        .@"struct" => try visit(tree, used, node.rhs),
+        .struct_member => {
+            const typed_ident = tree.extraData(Node.TypedIdent, node.rhs);
             try visitAll(tree, used, &.{
-                n.attributes,
+                node.lhs,
                 typed_ident.type,
             });
         },
-        .fn_param => |n| {
-            const param = tree.extraData(node_mod.FnParam, n.fn_param);
+        .fn_param => {
+            const param = tree.extraData(Node.FnParam, node.rhs);
             try visitAll(tree, used, &.{
-                n.attributes,
+                node.lhs,
                 param.type,
             });
         },
-        .type, .ident => |n| {
-            try addUsedSymbol(tree, used, n.name);
-            try visit(tree, used, n.template_list);
+        .type, .ident => {
+            try addUsedSymbol(tree, used, node.lhs);
+            try visit(tree, used, node.rhs);
         },
-        .attribute => |n| {
-            switch (n) {
+        .attribute => {
+            const attr: Node.Attribute = @enumFromInt(node.lhs);
+            switch (attr) {
                 .compute, .@"const", .fragment, .invariant, .must_use, .vertex, .diagnostic, .interpolate => {},
-                .@"align", .binding, .builtin, .group, .id, .location, .size => |e| {
-                    try visit(tree, used, e);
+                .@"align", .binding, .builtin, .group, .id, .location, .size => {
+                    try visit(tree, used, node.rhs);
                 },
-                .workgroup_size => |w| {
-                    const workgroup_size = tree.extraData(node_mod.WorkgroupSize, w);
+                .workgroup_size => {
+                    const workgroup_size = tree.extraData(Node.WorkgroupSize, node.rhs);
                     try visitAll(tree, used, &.{
                         workgroup_size.x,
                         workgroup_size.y,
@@ -121,32 +124,19 @@ fn visit(tree: *Ast, used: *Used, node: Node.Index) Allocator.Error!void {
                 },
             }
         },
-        .@"for" => |n| {
-            const header = tree.extraData(node_mod.ForHeader, n.for_header);
+        .@"for" => {
+            const header = tree.extraData(Node.ForHeader, node.lhs);
             try visitAll(tree, used, &.{
                 header.attrs,
                 header.init,
                 header.cond,
                 header.update,
-                n.body,
+                node.rhs,
             });
         },
-        .loop => |n| try visitAll(tree, used, &.{ n.attributes, n.body }),
-        .compound => |n| try visit(tree, used, n.statements),
-        .@"if" => |n| try visitAll(tree, used, &.{ n.condition, n.body }),
-        .else_if => |n| try visitAll(tree, used, &.{ n.if1, n.if2 }),
-        .@"else" => |n| try visitAll(tree, used, &.{ n.@"if", n.body }),
-        .@"switch" => |n| try visitAll(tree, used, &.{ n.expr, n.switch_body }),
-        .switch_body => |n| try visitAll(tree, used, &.{ n.attributes, n.clauses }),
-        .case_clause => |n| try visitAll(tree, used, &.{ n.selectors, n.body }),
-        .case_selector => |n| try visit(tree, used, n.expr),
-        .@"while" => |n| try visitAll(tree, used, &.{ n.condition, n.body }),
-        .@"return" => |n| try visit(tree, used, n.expr),
-        .continuing => |n| try visit(tree, used, n.body),
-        .call => |n| try visitAll(tree, used, &.{ n.ident, n.arguments }),
-        .@"var" => |n| {
-            const extra = tree.extraData(node_mod.Var, n.@"var");
-            try visitAll(tree, used, &.{ extra.template_list, extra.name, extra.type, n.initializer });
+        .@"var" => {
+            const extra = tree.extraData(Node.Var, node.lhs);
+            try visitAll(tree, used, &.{ extra.template_list, extra.name, extra.type, node.rhs });
         },
         .break_if,
         .const_assert,
@@ -159,28 +149,56 @@ fn visit(tree: *Ast, used: *Used, node: Node.Index) Allocator.Error!void {
         .negative,
         .deref,
         .ref,
-        => |n| try visit(tree, used, n.expr),
-        .@"=", .@"+=", .@"-=", .@"*=", .@"/=", .@"%=", .@"&=", .@"|=", .@"^=", .@"<<=", .@">>=" => |n| {
-            try visitAll(tree, used, &.{ n.lhs_expr, n.rhs_expr });
+        => {
+            std.debug.assert(node.rhs == 0);
+            try visit(tree, used, node.lhs);
         },
-        .lshift, .rshift => |n| {
-            try visitAll(tree, used, &.{ n.lhs_unary_expr, n.rhs_unary_expr });
-        },
-        .lt, .gt, .lte, .gte, .eq, .neq => |n| {
-            try visitAll(tree, used, &.{ n.lhs_shift_expr, n.rhs_shift_expr });
-        },
-        .mul, .div, .mod => |n| {
-            try visitAll(tree, used, &.{ n.lhs_multiplicative_expr, n.rhs_unary_expr });
-        },
-        .add, .sub => |n| try visitAll(tree, used, &.{ n.lhs_additive_expr, n.rhs_mul_expr }),
-        .logical_and, .logical_or => |n| {
-            try visitAll(tree, used, &.{ n.lhs_relational_expr, n.rhs_relational_expr });
-        },
-        .bitwise_and, .bitwise_or, .bitwise_xor => |n| {
-            try visitAll(tree, used, &.{ n.lhs_bitwise_expr, n.rhs_unary_expr });
-        },
-        .field_access => |n| try visit(tree, used, n.lhs_expr),
-        .index_access => |n| try visitAll(tree, used, &.{ n.lhs_expr, n.index_expr }),
+        // lhs rhs
+        .loop,
+        .compound,
+        .@"if",
+        .else_if,
+        .@"else",
+        .@"switch",
+        .switch_body,
+        .case_clause,
+        .case_selector,
+        .@"while",
+        .@"return",
+        .continuing,
+        .call,
+        .@"=",
+        .@"+=",
+        .@"-=",
+        .@"*=",
+        .@"/=",
+        .@"%=",
+        .@"&=",
+        .@"|=",
+        .@"^=",
+        .@"<<=",
+        .@">>=",
+        .lshift,
+        .rshift,
+        .lt,
+        .gt,
+        .lte,
+        .gte,
+        .eq,
+        .neq,
+        .mul,
+        .div,
+        .mod,
+        .add,
+        .sub,
+        .logical_and,
+        .logical_or,
+        .bitwise_and,
+        .bitwise_or,
+        .bitwise_xor,
+        .index_access,
+        => try visitAll(tree, used, &.{ node.lhs, node.rhs }),
+        .field_access => try visit(tree, used, node.lhs),
         .diagnostic_directive, .enable_directive, .requires_directive, .import_alias => {},
         .import, .number, .true, .false, .@"break", .@"continue", .discard, .@"error", .comment => {},
     }
@@ -205,7 +223,7 @@ pub fn treeShake(allocator: Allocator, tree: *Ast, opts: Options) Allocator.Erro
 
     // Find all used identifiers
     for (og_roots) |r| {
-        switch (tree.node(r)) {
+        switch (tree.node(r).tag) {
             .global_var, .override, .@"const", .@"struct", .@"fn", .type_alias => {
                 if (used.get(tree.globalName(r))) |_| try visit(tree, &used, r);
             },
@@ -216,26 +234,24 @@ pub fn treeShake(allocator: Allocator, tree: *Ast, opts: Options) Allocator.Erro
     for (0..og_roots.len) |k| {
         const i = og_roots.len - k - 1;
         const r = og_roots[i];
+        const node = tree.node(r);
 
-        switch (tree.node(r)) {
+        switch (node.tag) {
             // Set unused root span nodes to empty.
             .global_var, .override, .@"const", .@"struct", .@"fn", .type_alias => {
                 if (used.get(tree.globalName(r)) == null) tree.removeFromSpan(0, i);
             },
             // Set unused import nodes to empty.
-            .import => |n| {
-                var import_used = false;
-                if (n.aliases != 0) {
-                    for (tree.spanToList(n.aliases)) |j| {
-                        const alias = tree.node(j).import_alias;
-                        if (used.get(tree.identifier(alias.old))) |_| {
-                            import_used = true;
-                        } else {
-                            tree.removeFromSpan(n.aliases, j);
-                        }
+            .import => {
+                const aliases = tree.modAliases(r);
+                var import_used = aliases.len == 0;
+                for (aliases) |j| {
+                    const alias = tree.node(j);
+                    if (used.get(tree.identifier(alias.lhs))) |_| {
+                        import_used = true;
+                    } else {
+                        tree.removeFromSpan(node.lhs, j);
                     }
-                } else {
-                    import_used = true;
                 }
                 if (!import_used) tree.removeFromSpan(0, i);
             },

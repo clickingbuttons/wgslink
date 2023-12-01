@@ -118,29 +118,20 @@ fn workerAst(
                 const file = imp.file.?;
                 const tree: Ast = file.tree;
                 for (tree.spanToList(0)) |i| {
-                    switch (tree.node(i)) {
-                        .import => |n| {
-                            const mod_name = tree.modName(n);
-                            const resolved = imp.resolve(mod_name) catch continue;
-                            defer self.allocator.free(resolved);
-                            if (std.mem.eql(u8, resolved, mod.path)) {
-                                const extra = tree.extraData(node_mod.Import, n.import);
-                                const error_loc = node_mod.ErrorLoc{
-                                    .line_num = extra.line_num,
-                                    .line_start = extra.line_start,
-                                    .tok_start = extra.tok_start,
-                                    .tok_end = extra.tok_end,
-                                };
-                                const source = imp.source() catch return;
-                                defer self.allocator.free(source);
-                                FileError.render(errwriter, errconfig, source, imp.path, error_loc) catch return;
+                    const node = tree.node(i);
+                    if (node.tag != .import) continue;
+                    const mod_name = tree.modName(i);
+                    const resolved = imp.resolve(mod_name) catch continue;
+                    defer self.allocator.free(resolved);
+                    if (std.mem.eql(u8, resolved, mod.path)) {
+                        const source = imp.source() catch return;
+                        defer self.allocator.free(source);
+                        const error_loc = tree.getErrorLoc(source, node.rhs);
+                        FileError.render(errwriter, errconfig, source, imp.path, error_loc) catch return;
 
-                                errwriter.print("{s} opening file {s}", .{ @errorName(t), mod.path }) catch return;
-                                errconfig.setColor(errwriter, .reset) catch return;
-                                errwriter.writeByte('\n') catch return;
-                            }
-                        },
-                        else => {},
+                        errwriter.print("error: {s} when opening file {s}", .{ @errorName(t), mod.path }) catch return;
+                        errconfig.setColor(errwriter, .reset) catch return;
+                        errwriter.writeByte('\n') catch return;
                     }
                 }
             },

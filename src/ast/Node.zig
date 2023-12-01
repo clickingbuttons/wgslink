@@ -2,283 +2,274 @@ const std = @import("std");
 const Loc = @import("../file/Loc.zig");
 pub const ErrorLoc = @import("../file/Error.zig").ErrorLoc;
 
-pub const Node = union(enum) {
-    pub const Index = Loc.Index;
-    pub const ExtraIndex = Loc.Index;
-    pub const IdentIndex = Loc.Index;
-    pub const Tag = std.meta.FieldEnum(Self);
+pub const IndexTag = enum {
+    node,
+    ident,
+    extra,
+    @"opaque",
+    empty,
+};
+pub const ExtraIndex = Loc.Index;
+pub const IdentIndex = Loc.Index;
+pub const Index = Loc.Index;
 
-    const Self = @This();
-    pub const Error = struct {
-        tag: u8,
-        expected_token_tag: u8 = 0,
-        error_loc: ExtraIndex,
-    };
-    /// For storing lists of nodes
-    pub const Span = struct {
-        from: Index,
-        to: Index,
+/// Used for error messages
+src_offset: Loc.Index = 0,
+/// Determines what is stored in lhs and rhs.
+tag: Tag,
+/// Opaque type. See Tag.lhsTag for IndexTag.
+lhs: Index = 0,
+/// Opaque type. See Tag.rhsTag for IndexTag. Parser guarantees to come from token AFTER lhs.
+rhs: Index = 0,
 
-        pub fn orderedRemove(self: *@This(), arr: []Node.Index, i: usize) void {
-            for (self.from + i..self.to - 1) |j| {
-                arr[j] = arr[j + 1];
-            }
-            self.to -= 1;
-        }
-    };
-    pub const Comment = struct { ident: IdentIndex };
-    pub const Ident = struct {
-        name: IdentIndex,
-        /// 0 means empty
-        template_list: Index,
-    };
-    pub const Let = struct { typed_ident: ExtraIndex, initializer: Index };
-    pub const SingleExpr = struct { expr: Index };
-    pub const Assign = struct { lhs_expr: Index, rhs_expr: Index };
-    pub const ShiftExpr = struct { lhs_unary_expr: Index, rhs_unary_expr: Index };
-    pub const RelationalExpr = struct { lhs_shift_expr: Index, rhs_shift_expr: Index };
-    pub const MultiplicativeExpr = struct { lhs_multiplicative_expr: Index, rhs_unary_expr: Index };
-    pub const AdditiveExpr = struct { lhs_additive_expr: Index, rhs_mul_expr: Index };
-    pub const ShortCircuitExpr = struct { lhs_relational_expr: Index, rhs_relational_expr: Index };
-    pub const BitwiseExpr = struct { lhs_bitwise_expr: Index, rhs_unary_expr: Index };
-
-    pub const DiagnosticDirective = struct { diagnostic_control: ExtraIndex };
-    pub const GlobalVar = struct { global_var: ExtraIndex, initializer: Index };
-    pub const Override = struct { override: ExtraIndex, initializer: Index };
-    pub const Import = struct { aliases: Index, import: ExtraIndex };
-
-    pub const IdentList = struct { idents: Index };
-    pub const ImportAlias = struct {
-        old: IdentIndex,
-        /// 0 means no alias
-        new: IdentIndex,
-    };
-
-    pub const Fn = struct { fn_header: ExtraIndex, body: Index };
-    pub const TypeAlias = struct { new_name: IdentIndex, old_type: Index };
-    pub const Struct = struct { name: IdentIndex, members: Index };
-    pub const StructMember = struct { attributes: Index, typed_ident: ExtraIndex };
-    pub const FnParam = struct { attributes: Index, fn_param: ExtraIndex };
-    pub const Loop = struct { attributes: Index, body: Index };
-    pub const Compound = struct { attributes: Index, statements: Index };
-    pub const For = struct { for_header: ExtraIndex, body: Index };
-    pub const If = struct { condition: Index, body: Index };
-    pub const Switch = struct { expr: Index, switch_body: Index };
-    pub const SwitchBody = struct { attributes: Index, clauses: Index };
-    pub const CaseClause = struct { selectors: Index, body: Index };
-    pub const MaybeExpr = struct {
-        /// 0 means `default`
-        expr: Index,
-    };
-    pub const While = struct { condition: Index, body: Index };
-    pub const Call = struct {
-        ident: Index,
-        /// 0 means no arguments
-        arguments: Index,
-    };
-    pub const Var = struct { @"var": ExtraIndex, initializer: Index };
-    pub const Continuing = struct { body: Index };
-    pub const Else = struct { @"if": Index, body: Index };
-    pub const ElseIf = struct { if1: Index, if2: Index };
-    pub const FieldAccess = struct { lhs_expr: Index, member: IdentIndex };
-    pub const IndexAccess = struct { lhs_expr: Index, index_expr: Index };
-    pub const Number = struct { value: IdentIndex };
-
-    pub const n_directive_tags = 4;
+pub const Tag = enum(u8) {
+    pub const n_directives = 4;
     // Directives
-    diagnostic_directive: DiagnosticDirective,
-    enable_directive: IdentList,
-    requires_directive: IdentList,
-    import: Self.Import,
-    import_alias: ImportAlias, // import helper
+    diagnostic_directive,
+    enable_directive,
+    requires_directive,
+    import,
+    import_alias, // import helper
     // Util
-    @"error": Error,
-    span: Span,
-    comment: Comment,
+    @"error",
+    span,
+    comment,
     // Global declarations
-    global_var: Self.GlobalVar,
-    override: Self.Override,
-    @"fn": Fn,
-    fn_param: Self.FnParam,
-    @"const": Let,
-    type_alias: TypeAlias,
-    @"struct": Struct,
-    struct_member: StructMember,
-    const_assert: SingleExpr, // also a statement
+    global_var,
+    override,
+    @"fn",
+    fn_param,
+    @"const",
+    type_alias,
+    @"struct",
+    struct_member,
+    const_assert, // also a statement
     // Global declaration helpers
-    attribute: Attribute,
-    ident: Ident,
-    type: Ident,
+    attribute,
+    ident,
+    type,
     // Statements
-    loop: Loop,
-    continuing: Continuing, // Loop helper
-    break_if: SingleExpr, // Continuing helper
-    compound: Compound,
-    @"for": For,
-    @"if": If,
-    @"else": Else,
-    else_if: ElseIf,
-    @"switch": Switch,
-    switch_body: SwitchBody,
-    case_clause: CaseClause,
-    case_selector: MaybeExpr,
-    @"while": While,
-    @"return": MaybeExpr,
-    call: Call,
-    // variable_or_value_statement
-    @"var": Self.Var,
-    let: Let,
+    loop,
+    continuing, // Loop helper
+    break_if, // Continuing helper
+    compound,
+    @"for",
+    @"if",
+    @"else",
+    else_if,
+    @"switch",
+    switch_body,
+    case_clause,
+    case_selector,
+    @"while",
+    @"return",
+    call,
+    @"var",
+    let,
     // const
-    @"break": void,
-    @"continue": void,
-    discard: void,
+    @"break",
+    @"continue",
+    discard,
     // There's plenty of space in this tag to list all operators.
-    increment: SingleExpr,
-    decrement: SingleExpr,
-    phony_assign: SingleExpr,
-    @"=": Assign,
-    @"+=": Assign,
-    @"-=": Assign,
-    @"*=": Assign,
-    @"/=": Assign,
-    @"%=": Assign,
-    @"&=": Assign,
-    @"|=": Assign,
-    @"^=": Assign,
-    @"<<=": Assign,
-    @">>=": Assign,
+    increment,
+    decrement,
+    phony_assign,
+    @"=",
+    @"+=",
+    @"-=",
+    @"*=",
+    @"/=",
+    @"%=",
+    @"&=",
+    @"|=",
+    @"^=",
+    @"<<=",
+    @">>=",
     // Expressions
     // https://www.w3.org/TR/WGSL/#operator-precedence-associativity
-    paren: SingleExpr,
-    logical_not: SingleExpr,
-    bitwise_complement: SingleExpr,
-    negative: SingleExpr,
-    deref: SingleExpr,
-    ref: SingleExpr,
-    lshift: ShiftExpr,
-    rshift: ShiftExpr,
-    lt: RelationalExpr,
-    gt: RelationalExpr,
-    lte: RelationalExpr,
-    gte: RelationalExpr,
-    eq: RelationalExpr,
-    neq: RelationalExpr,
-    mul: MultiplicativeExpr,
-    div: MultiplicativeExpr,
-    mod: MultiplicativeExpr,
-    add: AdditiveExpr,
-    sub: AdditiveExpr,
-    logical_and: ShortCircuitExpr,
-    logical_or: ShortCircuitExpr,
-    bitwise_and: BitwiseExpr,
-    bitwise_or: BitwiseExpr,
-    bitwise_xor: BitwiseExpr,
-    field_access: FieldAccess,
-    index_access: IndexAccess,
+    // Unary
+    paren,
+    logical_not,
+    bitwise_complement,
+    negative,
+    deref,
+    ref,
+    // Non-unary
+    lshift,
+    rshift,
+    lt,
+    gt,
+    lte,
+    gte,
+    eq,
+    neq,
+    mul,
+    div,
+    mod,
+    add,
+    sub,
+    logical_and,
+    logical_or,
+    bitwise_and,
+    bitwise_or,
+    bitwise_xor,
+    field_access,
+    index_access,
     // Literals
-    true: void,
-    false: void,
-    number: Number,
-
-    comptime {
-        // Size will be 9 in MultiArrayList because tag will shrink from 4 bytes to 1
-        std.debug.assert(@sizeOf(Self) == 12);
-    }
+    true,
+    false,
+    number,
 };
+
+const Self = @This();
+
+pub fn lhsTag(self: Self) IndexTag {
+    return switch (self) {
+        .@"error",
+        .attribute,
+        .span,
+        => .@"opaque",
+        .true, .false, .number => .empty,
+        .comment, .ident, .import_alias, .type_alias, .@"struct", .number => .ident,
+        .let,
+        .@"const",
+        .diagnostic_directive,
+        .global_var,
+        .override,
+        .@"fn",
+        .@"for",
+        .@"var",
+        => .extra,
+        else => .node,
+    };
+}
+
+pub fn rhsTag(self: Self) IndexTag {
+    return switch (self) {
+        .@"error" => .tag,
+        .import, .import_alias, .field_access => .ident,
+        .struct_member, .fn_param => .extra,
+        .let,
+        .@"const",
+        .@"=",
+        .lshift,
+        .rshift,
+        .lt,
+        .gt,
+        .lte,
+        .gte,
+        .eq,
+        .neq,
+        .mul,
+        .div,
+        .mod,
+        .add,
+        .sub,
+        .logical_and,
+        .logical_or,
+        .bitwise_and,
+        .bitwise_or,
+        .bitwise_xor,
+        .index_access,
+        => .node,
+        .attribute => {
+            const att: Attribute = @enumFromInt(self.lhs);
+            return att.indexTag();
+        },
+        else => .empty,
+    };
+}
+
+// pub fn orderedRemove(self: *@This(), arr: []Node.Index, i: usize) void {
+//     for (self.from + i..self.to - 1) |j| {
+//         arr[j] = arr[j + 1];
+//     }
+//     self.to -= 1;
+// }
 
 // For parsing
-pub const Attribute = union(enum) {
-    pub const Tag = std.meta.FieldEnum(@This());
-    pub const SingleExpr = Node.Index;
-    pub const DiagnosticControl = Node.ExtraIndex;
-    pub const Interpolate = Node.ExtraIndex;
-    pub const WorkgroupSize = Node.ExtraIndex;
-    const Self = @This();
+pub const Attribute = enum(Loc.Index) {
+    compute,
+    @"const",
+    fragment,
+    invariant,
+    must_use,
+    vertex,
+    @"align",
+    binding,
+    builtin,
+    group,
+    id,
+    location,
+    size,
+    diagnostic,
+    interpolate,
+    workgroup_size,
 
-    compute: void,
-    @"const": void,
-    fragment: void,
-    invariant: void,
-    must_use: void,
-    vertex: void,
-    @"align": SingleExpr,
-    binding: SingleExpr,
-    builtin: SingleExpr,
-    group: SingleExpr,
-    id: SingleExpr,
-    location: SingleExpr,
-    size: SingleExpr,
-    diagnostic: Self.DiagnosticControl,
-    interpolate: Interpolate,
-    workgroup_size: Self.WorkgroupSize,
-
-    comptime {
-        std.debug.assert(@sizeOf(Self) == 8);
+    pub fn indexTag(self: @This()) IndexTag {
+        switch (self) {
+            .compute, .@"const", .fragment, .invariant, .must_use, .vertex => .empty,
+            .@"align", .binding, .builtin, .group, .id, .location, .size => .node,
+            .diagnostic, .interpolate, .workgroup_size => .extra,
+        }
     }
 };
-pub const Severity = enum(Node.Index) {
+
+pub const GlobalVar = struct {
+    attrs: Index = 0,
+    name: IdentIndex,
+    template_list: Index = 0,
+    type: Index = 0,
+};
+pub const Var = struct {
+    name: IdentIndex,
+    template_list: Index = 0,
+    type: Index = 0,
+};
+pub const TypedIdent = struct {
+    name: IdentIndex,
+    type: Index,
+};
+pub const Override = struct {
+    attrs: Index = 0,
+    name: IdentIndex,
+    type: Index = 0,
+};
+pub const WorkgroupSize = struct {
+    x: Index,
+    y: Index = 0,
+    z: Index = 0,
+};
+pub const FnParam = struct {
+    name: IdentIndex,
+    type: Index = 0,
+};
+pub const FnHeader = struct {
+    attrs: Index = 0,
+    name: IdentIndex,
+    params: Index = 0,
+    return_attrs: Index = 0,
+    return_type: Index = 0,
+};
+pub const ForHeader = struct {
+    attrs: Index = 0,
+    init: Index = 0,
+    cond: Index = 0,
+    update: Index = 0,
+};
+pub const Interpolation = struct {
+    type: Index,
+    sampling_expr: Index = 0,
+};
+
+pub const Severity = enum(Loc.Index) {
     @"error",
     warning,
     info,
     off,
 };
-
-// For ast.extraData
-pub const GlobalVar = struct {
-    attrs: Node.Index = 0,
-    name: Node.IdentIndex,
-    template_list: Node.Index = 0,
-    type: Node.Index = 0,
-};
-pub const Var = struct {
-    name: Node.IdentIndex,
-    template_list: Node.Index = 0,
-    type: Node.Index = 0,
-};
-pub const TypedIdent = struct {
-    name: Node.IdentIndex,
-    type: Node.Index,
-};
-pub const Override = struct {
-    attrs: Node.Index = 0,
-    name: Node.IdentIndex,
-    type: Node.Index = 0,
-};
-pub const WorkgroupSize = struct {
-    x: Node.Index,
-    y: Node.Index = 0,
-    z: Node.Index = 0,
-};
-pub const FnParam = struct {
-    name: Node.IdentIndex,
-    type: Node.Index = 0,
-};
-pub const FnHeader = struct {
-    attrs: Node.Index = 0,
-    name: Node.IdentIndex,
-    params: Node.Index = 0,
-    return_attrs: Node.Index = 0,
-    return_type: Node.Index = 0,
-};
-pub const ForHeader = struct {
-    attrs: Node.Index = 0,
-    init: Node.Index = 0,
-    cond: Node.Index = 0,
-    update: Node.Index = 0,
-};
 pub const DiagnosticControl = struct {
-    severity: Node.Index,
-    name: Node.IdentIndex,
-    field: Node.IdentIndex = 0,
-};
-pub const Interpolation = struct {
-    type: Node.Index,
-    sampling_expr: Node.Index = 0,
-};
-pub const Import = struct {
-    module: Node.IdentIndex,
-    line_num: Loc.Index,
-    line_start: Loc.Index,
-    tok_start: Loc.Index,
-    tok_end: Loc.Index,
+    severity: Index,
+    name: IdentIndex,
+    field: IdentIndex = 0,
 };
