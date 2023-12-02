@@ -213,7 +213,7 @@ pub fn Renderer(comptime UnderlyingWriter: type) type {
 
         fn writeNode(self: *Self, tree: Ast, node: Node) RetType {
             switch (node.tag) {
-                inline .@"error", .span => |t| {
+                inline .span => |t| {
                     std.debug.panic("unexpected node of type {s}", .{@tagName(t)});
                 },
                 .comment => {
@@ -717,11 +717,11 @@ fn testWrite(
     var tree = try Parser.parse(allocator, source);
     defer tree.deinit(allocator);
 
-    if (tree.hasError()) {
+    if (tree.errors.len > 0) {
         const stderr = std.io.getStdErr();
         const term = std.io.tty.detectConfig(stderr);
         try stderr.writer().writeByte('\n');
-        try tree.renderErrors(stderr.writer(), term, source, null);
+        try tree.writeErrors(stderr.writer(), term, null, source);
     } else {
         var renderer = Renderer(@TypeOf(writer)).init(writer, minify, imports);
         try renderer.writeTranslationUnit(tree);

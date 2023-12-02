@@ -5,10 +5,11 @@ const WgslParsingError = @import("../wgsl/ParsingError.zig");
 const WgslTokenizer = @import("../wgsl/Tokenizer.zig");
 const Language = @import("../file/File.zig").Language;
 const FileError = @import("../file/Error.zig");
-const Loc = @import("../file/Loc.zig");
+const File = @import("../file/File.zig");
 
 const Allocator = std.mem.Allocator;
 const Self = @This();
+const Loc = File.Loc;
 pub const NodeList = std.MultiArrayList(Node);
 pub const Identifiers = std.MultiArrayList(std.StringArrayHashMapUnmanaged(void).Data);
 
@@ -21,10 +22,12 @@ nodes: NodeList.Slice,
 identifiers: Identifiers.Slice,
 /// For nodes with more data than @sizeOf(Node)
 extra: []Node.Index,
-/// For rendering lannguage-dependent errors
-from_lang: Language,
 /// Offsets of newlines for error messages
 newlines: []Loc.Index,
+/// For locating language dependent errors
+from_lang: Language,
+/// No one's perfect...
+errors: []File.Error,
 
 pub fn deinit(self: *Self, allocator: Allocator) void {
     self.nodes.deinit(allocator);
@@ -32,6 +35,7 @@ pub fn deinit(self: *Self, allocator: Allocator) void {
     self.identifiers.deinit(allocator);
     allocator.free(self.extra);
     allocator.free(self.newlines);
+    allocator.free(self.errors);
     self.* = undefined;
 }
 
@@ -61,68 +65,43 @@ pub fn spanToList(self: Self, index: ?Node.Index) []const Node.Index {
     return &.{};
 }
 
-pub fn hasError(self: Self) bool {
-    for (self.spanToList(0)) |i| {
-        switch (self.node(i).tag) {
-            .@"error" => return true,
-            else => {},
-        }
-    }
-    return false;
-}
-
-pub fn getErrorLoc(self: Self, source: [:0]const u8, index: Node.Index) FileError.ErrorLoc {
-    const n = self.node(index);
-    var line_num: Loc.Index = 0;
+pub fn getErrorLoc(self: Self, source: [:0]const u8, src_offset: Loc.Index,) FileError.ErrorLoc {
+    var line_num: Loc.Index = 1;
     var line_start: Loc.Index = 0;
 
     var i: usize = 0;
-    while (n.src_offset < self.newlines[i]) : (i += 1) {
+    while (src_offset >= self.newlines[i]) : (i += 1) {
         line_num += 1;
-        line_start = self.newlines[i];
+        line_start = self.newlines[i] + 1;
     }
 
-    var tok_end = n.src_offset;
+    var tok_end = src_offset;
     switch (self.from_lang) {
         .wgsl => {
-            var tokenizer = WgslTokenizer.init(source[n.src_offset..]);
+            var tokenizer = WgslTokenizer.init(source[src_offset..]);
             const tok = tokenizer.next();
-            tok_end = tok.loc.end;
+            tok_end += tok.loc.end;
         },
     }
 
     return .{
         .line_num = line_num,
         .line_start = line_start,
-        .tok_start = n.src_offset,
+        .tok_start = src_offset,
         .tok_end = tok_end,
     };
 }
 
-pub fn renderErrors(
+pub fn writeErrors(
     self: Self,
     writer: anytype,
-    term: std.io.tty.Config,
+    config: std.io.tty.Config,
+    path: ?[]const u8,
     source: [:0]const u8,
-    file_path: ?[]const u8,
 ) !void {
-    for (self.spanToList(0)) |i| {
-        const n = self.node(i);
-        switch (n.tag) {
-            .@"error" => {
-                const error_loc = self.getErrorLoc(source, i);
-                try FileError.render(writer, term, source, file_path, error_loc);
-                switch (self.from_lang) {
-                    .wgsl => {
-                        const tag: WgslParsingError.Tag = @enumFromInt(n.lhs);
-                        try tag.render(writer, @enumFromInt(n.rhs));
-                    },
-                }
-                try term.setColor(writer, .reset);
-                try writer.writeByte('\n');
-            },
-            else => {},
-        }
+    for (self.errors) |e| {
+        const error_loc = self.getErrorLoc(source, e.src_offset);
+        try e.write(writer, config, path, source, error_loc);
     }
 }
 
@@ -152,6 +131,7 @@ pub fn globalName(self: Self, index: Node.Index) []const u8 {
 
 pub fn removeFromSpan(self: *Self, span_index: Node.Index, item_index: usize) void {
     const n = self.node(span_index);
+    std.debug.assert(n.tag == .span);
     for (n.lhs + item_index..n.rhs - 1) |j| {
         self.extra[j] = self.extra[j + 1];
     }

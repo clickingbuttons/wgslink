@@ -2,10 +2,11 @@ const std = @import("std");
 const Ast = @import("./Ast.zig");
 const Node = @import("./Node.zig");
 const Language = @import("../file/File.zig").Language;
-const Loc = @import("../file/Loc.zig");
+const File = @import("../file/File.zig");
 
 const Self = @This();
 const Allocator = std.mem.Allocator;
+const Loc = File.Loc;
 const Identifiers = std.StringArrayHashMapUnmanaged(void);
 
 /// Main data structure
@@ -18,6 +19,8 @@ identifiers: Identifiers = .{},
 extra: std.ArrayListUnmanaged(Node.Index) = .{},
 /// Offsets of newlines for error messages
 newlines: std.ArrayListUnmanaged(Loc.Index) = .{},
+/// While most errors can fit in a Node, it's much easier to have a seperate array
+errors: std.ArrayListUnmanaged(File.Error) = .{},
 
 pub fn init(allocator: Allocator) !Self {
     var nodes = Ast.NodeList{};
@@ -38,6 +41,7 @@ pub fn deinit(self: *Self, allocator: Allocator) void {
     self.identifiers.deinit(allocator);
     self.extra.deinit(allocator);
     self.newlines.deinit(allocator);
+    self.errors.deinit(allocator);
 }
 
 pub fn listToSpan(
@@ -45,7 +49,7 @@ pub fn listToSpan(
     allocator: Allocator,
     src_offset: Loc.Index,
     list: []const Node.Index,
-) Allocator.Error!Node.Index {
+) !Node.Index {
     if (list.len == 0) return 0;
     try self.extra.appendSlice(allocator, list);
     return try self.addNode(allocator, Node{
@@ -56,13 +60,13 @@ pub fn listToSpan(
     });
 }
 
-pub fn addNode(self: *Self, allocator: Allocator, node: Node) Allocator.Error!Node.Index {
+pub fn addNode(self: *Self, allocator: Allocator, node: Node) !Node.Index {
     const i: Node.Index = @intCast(self.nodes.len);
     try self.nodes.append(allocator, node);
     return i;
 }
 
-pub fn addExtra(self: *Self, allocator: Allocator, extra: anytype) Allocator.Error!Node.Index {
+pub fn addExtra(self: *Self, allocator: Allocator, extra: anytype) !Node.Index {
     const fields = std.meta.fields(@TypeOf(extra));
     try self.extra.ensureUnusedCapacity(allocator, fields.len);
     const result: Node.Index = @intCast(self.extra.items.len);
@@ -72,13 +76,14 @@ pub fn addExtra(self: *Self, allocator: Allocator, extra: anytype) Allocator.Err
     return result;
 }
 
-pub fn toOwnedAst(self: *Self, allocator: Allocator, lang: Language) Allocator.Error!Ast {
+pub fn toOwnedAst(self: *Self, allocator: Allocator, lang: Language) !Ast {
     return Ast{
         .nodes = self.nodes.toOwnedSlice(),
         .identifiers = self.identifiers.entries.toOwnedSlice(),
         .extra = try self.extra.toOwnedSlice(allocator),
         .from_lang = lang,
         .newlines = try self.newlines.toOwnedSlice(allocator),
+        .errors = try self.errors.toOwnedSlice(allocator),
     };
 }
 
@@ -86,7 +91,7 @@ pub fn getOrPutIdent(
     self: *Self,
     allocator: Allocator,
     ident: []const u8,
-) Allocator.Error!Node.IdentIndex {
+) !Node.IdentIndex {
     const gop = try self.identifiers.getOrPut(allocator, ident);
     if (!gop.found_existing) {
         gop.key_ptr.* = try allocator.dupe(u8, ident);

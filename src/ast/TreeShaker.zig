@@ -200,7 +200,7 @@ fn visit(tree: *Ast, used: *Used, index: Node.Index) Allocator.Error!void {
         => try visitAll(tree, used, &.{ node.lhs, node.rhs }),
         .field_access => try visit(tree, used, node.lhs),
         .diagnostic_directive, .enable_directive, .requires_directive, .import_alias => {},
-        .import, .number, .true, .false, .@"break", .@"continue", .discard, .@"error", .comment => {},
+        .import, .number, .true, .false, .@"break", .@"continue", .discard, .comment => {},
     }
 }
 
@@ -245,8 +245,8 @@ pub fn treeShake(allocator: Allocator, tree: *Ast, opts: Options) Allocator.Erro
             .import => {
                 const aliases = tree.modAliases(r);
                 var import_used = aliases.len == 0;
-                for (aliases) |j| {
-                    const alias = tree.node(j);
+                for (aliases, 0..) |a, j| {
+                    const alias = tree.node(a);
                     if (used.get(tree.identifier(alias.lhs))) |_| {
                         import_used = true;
                     } else {

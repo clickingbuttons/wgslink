@@ -33,19 +33,18 @@ pub fn main() !void {
     try thread_pool.init(.{ .allocator = allocator });
     defer thread_pool.deinit();
 
-    var bundler = try Bundler.init(allocator, &thread_pool);
+    const opts = Bundler.Options{
+        .tree_shake = .{},
+        .minify = res.args.minify != 0,
+    };
+    var bundler = try Bundler.init(allocator, &thread_pool, opts);
     defer bundler.deinit();
 
     var errconfig = std.io.tty.detectConfig(std.io.getStdErr());
 
     var failed = false;
     for (res.positionals) |pos| {
-        const opts = Bundler.Options{
-            .file = pos,
-            .tree_shake = .{},
-            .minify = res.args.minify != 0,
-        };
-        bundler.bundle(stdout, stderr, errconfig, opts) catch |err| {
+        bundler.bundle(stdout, stderr, errconfig, pos) catch |err| {
             errconfig.setColor(stderr, .red) catch {};
             switch (err) {
                 error.UnparsedModule => {},

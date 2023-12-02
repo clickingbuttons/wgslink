@@ -1,58 +1,74 @@
 const std = @import("std");
-const Loc = @import("./Loc.zig");
+pub const Loc = @import("./Loc.zig");
 const Ast = @import("../ast/Ast.zig");
 const TreeShaker = @import("../ast/TreeShaker.zig");
 const Parser = @import("../wgsl/Parser.zig");
-const node_mod = @import("../ast/Node.zig");
+const Node = @import("../ast/Node.zig");
 
-pub const Language = enum { wgsl };
+pub const Error = @import("./Error.zig");
+pub const Language = enum {
+    wgsl,
+
+    pub fn fromPath(path: []const u8) ?@This() {
+        if (std.mem.endsWith(u8, path, ".wgsl")) return .wgsl;
+
+        return null;
+    }
+};
+pub const max_size = std.math.maxInt(Loc.Index);
 pub const Stat = struct {
     inode: std.fs.File.INode,
     size: u64,
     mtime: i128,
 
+    pub fn init(file: std.fs.File) !@This() {
+        const s = try file.stat();
+        if (s.size > max_size) return error.FileTooBig;
+        return .{
+            .inode = s.inode,
+            .size = s.size,
+            .mtime = s.mtime,
+        };
+    }
+
     pub fn eql(self: Stat, o: Stat) bool {
         return self.inode == o.inode and self.size == o.size and self.mtime == o.mtime;
     }
 };
-pub const max_size = std.math.maxInt(Loc.Index);
-const StringSet = std.StringArrayHashMapUnmanaged(void);
-const ImportTable = std.StringArrayHashMapUnmanaged(StringSet);
 const Allocator = std.mem.Allocator;
 const Self = @This();
 
-stat: Stat,
-tree: Ast,
-import_table: ImportTable,
+allocator: Allocator,
+path: []const u8,
+source_file: ?std.fs.File = null,
+stat: ?Stat = null,
+source: ?[:0]u8 = null,
+tree: ?Ast = null,
 
-pub fn init(
-    allocator: Allocator,
-    path: []const u8,
-    stat: Stat,
-    language: Language,
-    source: [:0]const u8,
-    tree_shake: ?TreeShaker.Options,
-) !Self {
-    var tree = switch (language) {
-        .wgsl => try Parser.parse(allocator, source),
-    };
-    if (tree_shake) |opts| try TreeShaker.treeShake(allocator, &tree, opts);
-    const import_table = try importTable(allocator, path, tree);
-    return Self{
-        .stat = stat,
-        .tree = tree,
-        .import_table = import_table,
+pub fn load(self: *Self) !void {
+    const language = Language.fromPath(self.path) orelse return error.UnsupportedLanguage;
+
+    if (self.source_file == null) self.source_file = try std.fs.cwd().openFile(self.path, .{});
+
+    const new_stat = try Stat.init(self.source_file.?);
+    if (self.stat != null and self.stat.?.eql(new_stat)) return;
+    self.stat = new_stat;
+
+    const size = self.stat.?.size;
+    self.source = try self.allocator.allocSentinel(u8, size, 0);
+    const amt = try self.source_file.?.readAll(self.source.?);
+    if (amt != size) return error.UnexpectedEndOfFile;
+
+    self.tree = switch (language) {
+        .wgsl => try Parser.parse(self.allocator, self.source.?),
     };
 }
 
-pub fn deinit(self: *Self, allocator: Allocator) void {
-    self.tree.deinit(allocator);
-    var iter = self.import_table.iterator();
-    while (iter.next()) |kv| {
-        allocator.free(kv.key_ptr.*);
-        kv.value_ptr.*.deinit(allocator);
-    }
-    self.import_table.deinit(allocator);
+pub fn deinit(self: *Self) void {
+    const allocator = self.allocator;
+    if (self.tree) |*t| t.deinit(allocator);
+    if (self.source) |s| self.allocator.free(s);
+    if (self.source_file) |*f| f.close();
 }
 
 /// Caller owns returned slice
@@ -65,35 +81,6 @@ pub fn resolveFrom(
     return try std.fs.path.resolve(allocator, &[_][]const u8{ dirname, relpath });
 }
 
-fn importTable(allocator: Allocator, path: []const u8, tree: Ast) !ImportTable {
-    var res = ImportTable{};
-
-    for (tree.spanToList(0)) |i| {
-        switch (tree.node(i).tag) {
-            .import => {
-                const mod_name = tree.modName(i);
-                const resolved = try resolveFrom(allocator, path, mod_name);
-                const mod_imports = try res.getOrPut(allocator, resolved);
-                if (!mod_imports.found_existing) mod_imports.value_ptr.* = StringSet{};
-
-                for (tree.modAliases(i)) |j| {
-                    const mod_symbol = tree.identifier(tree.node(j).lhs);
-                    try mod_imports.value_ptr.*.put(allocator, mod_symbol, {});
-                }
-            },
-            else => {},
-        }
-    }
-
-    return res;
-}
-
-pub fn renderErrors(
-    self: Self,
-    writer: anytype,
-    config: std.io.tty.Config,
-    path: []const u8,
-    source: [:0]const u8,
-) !void {
-    try self.tree.renderErrors(writer, config, source, path);
+pub fn getErrorLoc(self: Self, index: Node.Index) Error.ErrorLoc {
+    return self.tree.?.getErrorLoc(self.source.?, index);
 }

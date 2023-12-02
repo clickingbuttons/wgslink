@@ -66,7 +66,7 @@ pub const Tag = enum(u8) {
                 try writer.writeAll("invalid severity");
                 try renderList(writer, Node.Severity);
             },
-            .type_needs_ext => writer.writeAll("type requires an extension"),
+            .type_needs_ext => writer.writeAll("type requires an extension directive at the top of the program"),
         };
     }
 };

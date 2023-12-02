@@ -5,8 +5,9 @@ const Node = @import("../ast/Node.zig");
 const AstBuilder = @import("../ast/Builder.zig");
 const ParsingError = @import("./ParsingError.zig");
 const Tokenizer = @import("./Tokenizer.zig");
-const Loc = @import("../file/Loc.zig");
+const File = @import("../file/File.zig");
 
+const Loc = File.Loc;
 const Self = @This();
 const Allocator = std.mem.Allocator;
 const Error = Allocator.Error || error{Parsing};
@@ -223,9 +224,15 @@ fn addErrorAdvanced(
     expected_token: Token.Tag,
 ) !void {
     const tok = token orelse p.tok_i;
-    const err = try p.addNode(tok, .@"error", @intFromEnum(tag), @intFromEnum(expected_token));
-    // This assumes we are not called from a function that modifies p.scratch besides parseTranslationUnit
-    try p.scratch.append(p.allocator, err);
+
+    const err = File.Error{
+        .src_offset = p.tokens.items(.loc)[tok].start,
+        .data = .{ .wgsl = .{
+            .tag = tag,
+            .expected_token = expected_token,
+        } },
+    };
+    try p.builder.errors.append(p.allocator, err);
 }
 
 fn addError(p: *Self, tag: ParsingError.Tag, token: ?TokenIndex) !void {
@@ -1518,13 +1525,11 @@ test "parser error" {
     defer tree.deinit(allocator);
 
     const roots = tree.spanToList(0);
-    try std.testing.expectEqual(@as(usize, 3), roots.len);
-    try std.testing.expectEqual(true, tree.hasError());
-    const expected_err = Node{
+    try std.testing.expectEqual(@as(usize, 2), roots.len);
+    try std.testing.expectEqual(@as(usize, 1), tree.errors.len);
+    const expected_err = File.Error{
         .src_offset = 19,
-        .tag = .@"error",
-        .lhs = @intFromEnum(ParsingError.Tag.expected_global_decl),
-        .rhs = 0,
+        .data = .{ .wgsl = .{ .tag = ParsingError.Tag.expected_global_decl }},
     };
-    try std.testing.expectEqual(expected_err, tree.node(roots[1]));
+    try std.testing.expectEqual(expected_err, tree.errors[0]);
 }

@@ -1,14 +1,6 @@
 const std = @import("std");
 const Loc = @import("../file/Loc.zig");
-pub const ErrorLoc = @import("../file/Error.zig").ErrorLoc;
 
-pub const IndexTag = enum {
-    node,
-    ident,
-    extra,
-    @"opaque",
-    empty,
-};
 pub const ExtraIndex = Loc.Index;
 pub const IdentIndex = Loc.Index;
 pub const Index = Loc.Index;
@@ -17,9 +9,9 @@ pub const Index = Loc.Index;
 src_offset: Loc.Index = 0,
 /// Determines what is stored in lhs and rhs.
 tag: Tag,
-/// Opaque type. See Tag.lhsTag for IndexTag.
+/// Opaque type. See Parser for details.
 lhs: Index = 0,
-/// Opaque type. See Tag.rhsTag for IndexTag. Parser guarantees to come from token AFTER lhs.
+/// Opaque type. See Parser for details. Parser guarantees to come from token AFTER lhs.
 rhs: Index = 0,
 
 pub const Tag = enum(u8) {
@@ -31,7 +23,6 @@ pub const Tag = enum(u8) {
     import,
     import_alias, // import helper
     // Util
-    @"error",
     span,
     comment,
     // Global declarations
@@ -123,63 +114,6 @@ pub const Tag = enum(u8) {
 
 const Self = @This();
 
-pub fn lhsTag(self: Self) IndexTag {
-    return switch (self) {
-        .@"error",
-        .attribute,
-        .span,
-        => .@"opaque",
-        .true, .false, .number => .empty,
-        .comment, .ident, .import_alias, .type_alias, .@"struct", .number => .ident,
-        .let,
-        .@"const",
-        .diagnostic_directive,
-        .global_var,
-        .override,
-        .@"fn",
-        .@"for",
-        .@"var",
-        => .extra,
-        else => .node,
-    };
-}
-
-pub fn rhsTag(self: Self) IndexTag {
-    return switch (self) {
-        .@"error" => .tag,
-        .import, .import_alias, .field_access => .ident,
-        .struct_member, .fn_param => .extra,
-        .let,
-        .@"const",
-        .@"=",
-        .lshift,
-        .rshift,
-        .lt,
-        .gt,
-        .lte,
-        .gte,
-        .eq,
-        .neq,
-        .mul,
-        .div,
-        .mod,
-        .add,
-        .sub,
-        .logical_and,
-        .logical_or,
-        .bitwise_and,
-        .bitwise_or,
-        .bitwise_xor,
-        .index_access,
-        => .node,
-        .attribute => {
-            const att: Attribute = @enumFromInt(self.lhs);
-            return att.indexTag();
-        },
-        else => .empty,
-    };
-}
-
 // pub fn orderedRemove(self: *@This(), arr: []Node.Index, i: usize) void {
 //     for (self.from + i..self.to - 1) |j| {
 //         arr[j] = arr[j + 1];
@@ -205,14 +139,6 @@ pub const Attribute = enum(Loc.Index) {
     diagnostic,
     interpolate,
     workgroup_size,
-
-    pub fn indexTag(self: @This()) IndexTag {
-        switch (self) {
-            .compute, .@"const", .fragment, .invariant, .must_use, .vertex => .empty,
-            .@"align", .binding, .builtin, .group, .id, .location, .size => .node,
-            .diagnostic, .interpolate, .workgroup_size => .extra,
-        }
-    }
 };
 
 pub const GlobalVar = struct {

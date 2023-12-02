@@ -1,8 +1,33 @@
 const std = @import("std");
 const Loc = @import("./Loc.zig");
+const WgslParsingError = @import("../wgsl/ParsingError.zig");
+const WgslToken = @import("../wgsl/Token.zig");
 
-pub const Tag = enum {
-    unresolved_module,
+const Self = @This();
+const Config = std.io.tty.Config;
+
+severity: Severity = .@"error",
+src_offset: Loc.Index,
+data: Data,
+
+pub const Severity = enum {
+    @"error",
+    warning,
+    note,
+};
+
+pub const Data = union(enum) {
+    wgsl: struct {
+        tag: WgslParsingError.Tag,
+        expected_token: WgslToken.Tag = .invalid,
+    },
+    unresolved_module: struct {
+        errname: []const u8,
+        mod_path: []const u8,
+    },
+    symbol_already_declared: struct {
+        //other_loc: *const Self,
+    },
 };
 
 pub const ErrorLoc = struct {
@@ -12,16 +37,16 @@ pub const ErrorLoc = struct {
     tok_end: Loc.Index,
 };
 
-pub fn renderHeader(
+fn writeHeader(
     writer: anytype,
-    term: std.io.tty.Config,
-    file_path: ?[]const u8,
+    term: Config,
+    path: ?[]const u8,
     line_num: Loc.Index,
     col_num: Loc.Index,
 ) !void {
     // 'file:line:column error: MSG'
     try term.setColor(writer, .bold);
-    if (file_path) |f| try writer.print("{s}:", .{f});
+    if (path) |f| try writer.print("{s}:", .{f});
     try writer.print("{d}:{d}\n", .{ line_num, col_num + 1 });
     try term.setColor(writer, .reset);
     try term.setColor(writer, .dim);
@@ -29,7 +54,7 @@ pub fn renderHeader(
     try term.setColor(writer, .reset);
 }
 
-pub fn renderSource(
+fn writeSource(
     writer: anytype,
     term: std.io.tty.Config,
     source: []const u8,
@@ -46,7 +71,7 @@ pub fn renderSource(
     try writer.writeByte('\n');
 }
 
-pub fn renderPointer(
+fn writePointer(
     writer: anytype,
     term: std.io.tty.Config,
     col_num: Loc.Index,
@@ -58,18 +83,34 @@ pub fn renderPointer(
     try writer.writeByte(' ');
 }
 
-pub fn render(
+pub fn write(
+    self: Self,
     writer: anytype,
     term: std.io.tty.Config,
-    source: []const u8,
-    file_path: ?[]const u8,
+    path: ?[]const u8,
+    source: [:0]const u8,
     loc: ErrorLoc,
 ) !void {
     const col_num = loc.tok_start - loc.line_start;
-    try renderHeader(writer, term, file_path, loc.line_num, col_num);
-    try renderSource(writer, term, source, loc.line_start, loc.tok_start, loc.tok_end);
+    try writeHeader(writer, term, path, loc.line_num, col_num);
+    try writeSource(writer, term, source, loc.line_start, loc.tok_start, loc.tok_end);
 
     // See renderHeader
     const line_number_len = std.math.log10(loc.line_num) + 4;
-    try renderPointer(writer, term, col_num + line_number_len);
+    try writePointer(writer, term, col_num + line_number_len);
+
+    switch (self.data) {
+        .wgsl => |e| {
+            try e.tag.render(writer, e.expected_token);
+        },
+        .unresolved_module => |e| {
+            try writer.print("error: {s} when opening file {s}", .{ e.errname, e.mod_path });
+        },
+        .symbol_already_declared => {
+            try writer.writeAll("error: symbol already declared");
+            //try s.other_loc.write(writer, term);
+        },
+    }
+    try term.setColor(writer, .reset);
+    try writer.writeByte('\n');
 }
