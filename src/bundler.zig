@@ -61,7 +61,13 @@ pub fn alias(
     const source = module.file.source.?;
     try aliaser.append(tree);
     for (aliaser.builder.errors.items[err_count..]) |e| {
-        try e.write(errwriter, errconfig, module.file.path, source, tree.getErrorLoc(source, e.src_offset),);
+        try e.write(
+            errwriter,
+            errconfig,
+            module.file.path,
+            source,
+            tree.getErrorLoc(source, e.src_offset),
+        );
     }
 }
 
@@ -144,7 +150,14 @@ fn workerAst(
                 .symbols = mod_symbols,
                 .find_symbols = false,
             };
-            self.thread_pool.spawn(workerAst, .{ self, errwriter, errconfig, wait_group, gop.value_ptr, next_tree_shake, }) catch {
+            self.thread_pool.spawn(workerAst, .{
+                self,
+                errwriter,
+                errconfig,
+                wait_group,
+                gop.value_ptr,
+                next_tree_shake,
+            }) catch {
                 wait_group.finish();
                 continue;
             };

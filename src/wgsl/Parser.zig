@@ -1529,7 +1529,7 @@ test "parser error" {
     try std.testing.expectEqual(@as(usize, 1), tree.errors.len);
     const expected_err = File.Error{
         .src_offset = 19,
-        .data = .{ .wgsl = .{ .tag = ParsingError.Tag.expected_global_decl }},
+        .data = .{ .wgsl = .{ .tag = ParsingError.Tag.expected_global_decl } },
     };
     try std.testing.expectEqual(expected_err, tree.errors[0]);
 }

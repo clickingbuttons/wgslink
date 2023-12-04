@@ -25,9 +25,7 @@ pub const Data = union(enum) {
         errname: []const u8,
         mod_path: []const u8,
     },
-    symbol_already_declared: struct {
-        //other_loc: *const Self,
-    },
+    symbol_already_declared: void,
 };
 
 pub const ErrorLoc = struct {
@@ -75,12 +73,20 @@ fn writePointer(
     writer: anytype,
     term: std.io.tty.Config,
     col_num: Loc.Index,
+    sev: Severity,
 ) !void {
     try writer.writeByteNTimes(' ', col_num);
     try term.setColor(writer, .bold);
-    try term.setColor(writer, .red);
+    const color: std.io.tty.Color = switch (sev) {
+        .@"error" => .red,
+        .warning => .yellow,
+        .note => .blue,
+    };
+    try term.setColor(writer, color);
     try writer.writeByte('^');
     try writer.writeByte(' ');
+    try writer.writeAll(@tagName(sev));
+    try writer.writeAll(": ");
 }
 
 pub fn write(
@@ -97,18 +103,21 @@ pub fn write(
 
     // See renderHeader
     const line_number_len = std.math.log10(loc.line_num) + 4;
-    try writePointer(writer, term, col_num + line_number_len);
+    try writePointer(writer, term, col_num + line_number_len, self.severity);
 
     switch (self.data) {
         .wgsl => |e| {
             try e.tag.render(writer, e.expected_token);
         },
         .unresolved_module => |e| {
-            try writer.print("error: {s} when opening file {s}", .{ e.errname, e.mod_path });
+            try writer.print("{s} when opening file {s}", .{ e.errname, e.mod_path });
         },
         .symbol_already_declared => {
-            try writer.writeAll("error: symbol already declared");
-            //try s.other_loc.write(writer, term);
+            const msg = switch (self.severity) {
+                .note => "symbol declared here",
+                else => "symbol already declared",
+            };
+            try writer.writeAll(msg);
         },
     }
     try term.setColor(writer, .reset);

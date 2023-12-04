@@ -65,7 +65,11 @@ pub fn spanToList(self: Self, index: ?Node.Index) []const Node.Index {
     return &.{};
 }
 
-pub fn getErrorLoc(self: Self, source: [:0]const u8, src_offset: Loc.Index,) FileError.ErrorLoc {
+pub fn getErrorLoc(
+    self: Self,
+    source: [:0]const u8,
+    src_offset: Loc.Index,
+) FileError.ErrorLoc {
     var line_num: Loc.Index = 1;
     var line_start: Loc.Index = 0;
 

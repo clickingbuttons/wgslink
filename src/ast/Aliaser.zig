@@ -21,7 +21,7 @@ builder: AstBuilder,
 scratch: std.ArrayListUnmanaged(Node.Index) = .{},
 roots: std.ArrayListUnmanaged(Node.Index) = .{},
 
-const Error = error {
+const Error = error{
     symbol_already_declared,
 };
 
@@ -166,12 +166,8 @@ fn getOrPutIdent(
 
             if (gop.found_existing) {
                 printScopes(self.scopes);
-                const err = File.Error{
-                    .src_offset = src_offset,
-                    .data = .{ .symbol_already_declared = .{} }
-                };
-                try self.builder.errors.append(self.allocator, err);
-                // const other_offset = gop.value_ptr.*.src_offset,
+                try self.builder.errors.append(self.allocator, File.Error{ .src_offset = src_offset, .data = .{ .symbol_already_declared = {} } });
+                try self.builder.errors.append(self.allocator, File.Error{ .severity = .note, .src_offset = gop.value_ptr.*.src_offset, .data = .{ .symbol_already_declared = {} } });
                 return Error.symbol_already_declared;
                 // const alias = try self.makeUniqueIdent(ident);
                 // defer self.allocator.free(alias);
