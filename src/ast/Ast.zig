@@ -69,44 +69,25 @@ pub fn getErrorLoc(
     self: Self,
     source: [:0]const u8,
     src_offset: Loc.Index,
+    token: anytype,
 ) FileError.ErrorLoc {
-    var line_num: Loc.Index = 1;
-    var line_start: Loc.Index = 0;
-
-    var i: usize = 0;
-    while (src_offset >= self.newlines[i]) : (i += 1) {
-        line_num += 1;
-        line_start = self.newlines[i] + 1;
-    }
-
-    var tok_end = src_offset;
+    var tok_start: Loc.Index = 0;
+    var tok_end: Loc.Index = 0;
     switch (self.from_lang) {
         .wgsl => {
             var tokenizer = WgslTokenizer.init(source[src_offset..]);
-            const tok = tokenizer.next();
-            tok_end += tok.loc.end;
+            while (true) {
+                const tok = tokenizer.next();
+                if (tok.tag == token or tok.tag == .eof) {
+                    tok_start = tok.loc.start;
+                    tok_end = tok.loc.end;
+                    break;
+                }
+            }
         },
     }
 
-    return .{
-        .line_num = line_num,
-        .line_start = line_start,
-        .tok_start = src_offset,
-        .tok_end = tok_end,
-    };
-}
-
-pub fn writeErrors(
-    self: Self,
-    writer: anytype,
-    config: std.io.tty.Config,
-    path: ?[]const u8,
-    source: [:0]const u8,
-) !void {
-    for (self.errors) |e| {
-        const error_loc = self.getErrorLoc(source, e.src_offset);
-        try e.write(writer, config, path, source, error_loc);
-    }
+    return FileError.ErrorLoc.init(self.newlines, src_offset + tok_start, src_offset + tok_end);
 }
 
 pub fn globalName(self: Self, index: Node.Index) []const u8 {

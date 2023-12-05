@@ -47,28 +47,14 @@ pub fn alias(
     errconfig: std.io.tty.Config,
     aliaser: *Aliaser,
     visited: *Visited,
-    module: Module,
+    module: *const Module,
 ) !void {
     if ((try visited.getOrPut(module.path)).found_existing) return;
     for (module.import_table.keys()) |k| {
-        const m = self.modules.get(k).?;
+        const m = self.modules.getPtr(k).?;
         try self.alias(errwriter, errconfig, aliaser, visited, m);
     }
-    if (!self.opts.minify) try aliaser.appendComment(module.path);
-
-    const err_count = aliaser.builder.errors.items.len;
-    const tree = module.file.tree.?;
-    const source = module.file.source.?;
-    try aliaser.append(tree);
-    for (aliaser.builder.errors.items[err_count..]) |e| {
-        try e.write(
-            errwriter,
-            errconfig,
-            module.file.path,
-            source,
-            tree.getErrorLoc(source, e.src_offset),
-        );
-    }
+    try aliaser.append(module);
 }
 
 pub fn bundle(
@@ -105,10 +91,13 @@ pub fn bundle(
     defer visited.deinit();
     var aliaser = try Aliaser.init(self.allocator, self.opts.minify);
     defer aliaser.deinit();
-    try self.alias(errwriter, errconfig, &aliaser, &visited, mod.*);
+    try self.alias(errwriter, errconfig, &aliaser, &visited, mod);
     var tree = try aliaser.toOwnedAst(.wgsl);
     defer tree.deinit(self.allocator);
-    if (tree.errors.len > 0) return error.Aliasing;
+    if (tree.errors.len > 0) {
+        for (tree.errors) |e| try e.write(errwriter, errconfig);
+        return error.Aliasing;
+    }
 
     var renderer = Renderer(@TypeOf(writer)).init(writer, self.opts.minify, false);
     try renderer.writeTranslationUnit(tree);
@@ -131,7 +120,7 @@ fn workerAst(
         switch (err) {
             error.Parsing => mod.writeParsingErrors(errwriter, errconfig) catch {},
             // Probably some kind of file opening error...
-            else => |t| self.writeModuleFileError(errwriter, errconfig, mod, @errorName(t)) catch {},
+            else => |t| self.writeFileOpenError(errwriter, errconfig, mod, @errorName(t)) catch {},
         }
         return;
     };
@@ -165,14 +154,17 @@ fn workerAst(
     }
 }
 
-fn writeModuleFileError(
+fn writeFileOpenError(
     self: Self,
     errwriter: anytype,
     errconfig: std.io.tty.Config,
-    mod: *const Module,
+    mod: *Module,
     errname: []const u8,
 ) !void {
-    const imp_by: Module = self.modules.get(mod.imported_by).?;
+    const imp_by: Module = self.modules.get(mod.imported_by) orelse {
+        try errwriter.print("{s} opening file {s}\n", .{ errname, mod.path });
+        return;
+    };
     // Assertion: we don't queue import table for modules with errors
     const file = imp_by.file;
     const tree: Ast = file.tree.?;
@@ -183,17 +175,12 @@ fn writeModuleFileError(
         const resolved = try imp_by.resolve(mod_name);
         defer self.allocator.free(resolved);
         if (std.mem.eql(u8, resolved, mod.path)) {
-            const err = FileError{
-                .src_offset = node.src_offset,
-                .data = .{
-                    .unresolved_module = .{
-                        .errname = errname,
-                        .mod_path = mod.path,
-                    },
-                },
-            };
-            const loc = file.getErrorLoc(i);
-            try err.write(errwriter, errconfig, mod.file.path, mod.file.source.?, loc);
+            const err = file.makeErrorAdvanced(
+                node.src_offset,
+                .string_literal,
+               .{ .unresolved_module = .{ .errname = errname, .mod_path = mod.path } },
+            );
+            try err.write(errwriter, errconfig);
         }
     }
 }

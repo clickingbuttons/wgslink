@@ -58,7 +58,7 @@ pub fn hasError(self: Self) bool {
 
 pub fn writeParsingErrors(self: Self, writer: anytype, config: std.io.tty.Config) !void {
     const t = self.file.tree.?;
-    try t.writeErrors(writer, config, self.file.path, self.file.source.?);
+    for (t.errors) |e| try e.write(writer, config);
 }
 
 /// Caller owns returned slice

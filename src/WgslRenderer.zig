@@ -714,14 +714,14 @@ fn testWrite(
     minify: bool,
     imports: bool,
 ) !void {
-    var tree = try Parser.parse(allocator, source);
+    var tree = try Parser.parse(allocator, null, source);
     defer tree.deinit(allocator);
 
     if (tree.errors.len > 0) {
         const stderr = std.io.getStdErr();
         const term = std.io.tty.detectConfig(stderr);
         try stderr.writer().writeByte('\n');
-        try tree.writeErrors(stderr.writer(), term, null, source);
+        for (tree.errors) |e| try e.write(stderr.writer(), term);
     } else {
         var renderer = Renderer(@TypeOf(writer)).init(writer, minify, imports);
         try renderer.writeTranslationUnit(tree);

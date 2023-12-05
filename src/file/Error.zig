@@ -2,12 +2,37 @@ const std = @import("std");
 const Loc = @import("./Loc.zig");
 const WgslParsingError = @import("../wgsl/ParsingError.zig");
 const WgslToken = @import("../wgsl/Token.zig");
+const AliaserErrorTag = @import("../ast/Aliaser.zig").ErrorTag;
 
 const Self = @This();
 const Config = std.io.tty.Config;
+pub const ErrorLoc = struct {
+    line_num: Loc.Index,
+    line_start: Loc.Index,
+    tok_start: Loc.Index,
+    tok_end: Loc.Index,
+
+    pub fn init(newlines: []Loc.Index, tok_start: Loc.Index, tok_end: Loc.Index) @This() {
+        var i: usize = 0;
+        var line_num: Loc.Index = 1;
+        var line_start: Loc.Index = 0;
+        while (tok_start >= newlines[i]) : (i += 1) {
+            line_num += 1;
+            line_start = newlines[i] + 1;
+        }
+        return .{
+            .line_num = line_num,
+            .line_start = line_start,
+            .tok_start = tok_start,
+            .tok_end = tok_end,
+        };
+    }
+};
 
 severity: Severity = .@"error",
-src_offset: Loc.Index,
+path: ?[]const u8,
+source: [:0]const u8,
+loc: ErrorLoc,
 data: Data,
 
 pub const Severity = enum {
@@ -25,14 +50,9 @@ pub const Data = union(enum) {
         errname: []const u8,
         mod_path: []const u8,
     },
-    symbol_already_declared: void,
-};
-
-pub const ErrorLoc = struct {
-    line_num: Loc.Index,
-    line_start: Loc.Index,
-    tok_start: Loc.Index,
-    tok_end: Loc.Index,
+    aliasing: struct {
+        tag: AliaserErrorTag,
+    },
 };
 
 fn writeHeader(
@@ -89,14 +109,10 @@ fn writePointer(
     try writer.writeAll(": ");
 }
 
-pub fn write(
-    self: Self,
-    writer: anytype,
-    term: std.io.tty.Config,
-    path: ?[]const u8,
-    source: [:0]const u8,
-    loc: ErrorLoc,
-) !void {
+pub fn write(self: Self, writer: anytype, term: std.io.tty.Config) !void {
+    const loc = self.loc;
+    const path = self.path;
+    const source = self.source;
     const col_num = loc.tok_start - loc.line_start;
     try writeHeader(writer, term, path, loc.line_num, col_num);
     try writeSource(writer, term, source, loc.line_start, loc.tok_start, loc.tok_end);
@@ -112,12 +128,17 @@ pub fn write(
         .unresolved_module => |e| {
             try writer.print("{s} when opening file {s}", .{ e.errname, e.mod_path });
         },
-        .symbol_already_declared => {
-            const msg = switch (self.severity) {
-                .note => "symbol declared here",
-                else => "symbol already declared",
-            };
-            try writer.writeAll(msg);
+        .aliasing => |a| switch (a.tag) {
+            .symbol_already_declared => {
+                const msg = switch (self.severity) {
+                    .note => "symbol declared here",
+                    else => "symbol already declared",
+                };
+                try writer.writeAll(msg);
+            },
+            .no_matching_export => {
+                try writer.writeAll("no matching export");
+            },
         },
     }
     try term.setColor(writer, .reset);

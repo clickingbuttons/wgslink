@@ -18,6 +18,8 @@ pub const TokenIndex = Loc.Index;
 allocator: Allocator,
 /// The main event
 builder: AstBuilder,
+/// Used for building errors.
+path: ?[]const u8,
 /// Used to check validity of some idents (like severity and attributes) and
 /// write into identifier map.
 source: [:0]const u8,
@@ -28,10 +30,11 @@ tok_i: TokenIndex = 0,
 /// Used to build lists
 scratch: std.ArrayListUnmanaged(Node.Index) = .{},
 
-pub fn init(allocator: Allocator, source: [:0]const u8) Allocator.Error!Self {
+pub fn init(allocator: Allocator, path: ?[]const u8, source: [:0]const u8) Allocator.Error!Self {
     var parser = Self{
         .allocator = allocator,
         .builder = try AstBuilder.init(allocator),
+        .path = path,
         .source = source,
     };
 
@@ -57,8 +60,8 @@ pub fn deinit(self: *Self) void {
     self.scratch.deinit(allocator);
 }
 
-pub fn parse(allocator: Allocator, source: [:0]const u8) Allocator.Error!Ast {
-    var parser = try init(allocator, source);
+pub fn parse(allocator: Allocator, path: ?[]const u8, source: [:0]const u8) Allocator.Error!Ast {
+    var parser = try init(allocator, path, source);
     defer parser.deinit();
     try parser.parseTranslationUnit();
 
@@ -224,9 +227,12 @@ fn addErrorAdvanced(
     expected_token: Token.Tag,
 ) !void {
     const tok = token orelse p.tok_i;
-
+    const tok_loc = p.tokens.items(.loc)[tok];
+    const loc = File.Error.ErrorLoc.init(p.builder.newlines.items, tok_loc.start, tok_loc.end);
     const err = File.Error{
-        .src_offset = p.tokens.items(.loc)[tok].start,
+        .loc = loc,
+        .path = p.path,
+        .source = p.source,
         .data = .{ .wgsl = .{
             .tag = tag,
             .expected_token = expected_token,
@@ -694,9 +700,11 @@ fn importAlias(p: *Self) Error!?Node.Index {
     return try p.addNode(tok, .import_alias, old, new);
 }
 
-// '{' import_alias (',' import_alias)* ','? '}'
+// | '*'
+// | '{' import_alias (',' import_alias)* ','? '}'
 fn importAliasList(p: *Self) Error!Node.Index {
-    const tok = p.eatToken(.@"{") orelse return 0;
+    if (p.eatToken(.@"*")) |_| return 0;
+    const tok = try p.expectToken(.@"{");
     const scratch_top = p.scratch.items.len;
     defer p.scratch.shrinkRetainingCapacity(scratch_top);
     while (true) {
@@ -708,11 +716,11 @@ fn importAliasList(p: *Self) Error!Node.Index {
     return try p.listToSpan(tok, imports);
 }
 
-/// 'import' (import_list 'from')? string_literal ';'?
+/// 'import' import_list 'from' string_literal ';'?
 fn importDirective(p: *Self) Error!?Node.Index {
     const tok = p.eatToken(.k_import) orelse return null;
     const importAliases = try p.importAliasList();
-    if (importAliases != 0) _ = try p.expectToken(.k_from);
+    _ = try p.expectToken(.k_from);
     const mod_token = try p.expectToken(.string_literal);
     _ = p.eatToken(.@";");
     const module = try p.getOrPutIdentAdvanced(true, mod_token);
@@ -1521,14 +1529,21 @@ test "parser error" {
         \\const b: u32 = 0u;
     ;
     const allocator = std.testing.allocator;
-    var tree = try parse(allocator, source);
+    var tree = try parse(allocator, null, source);
     defer tree.deinit(allocator);
 
     const roots = tree.spanToList(0);
     try std.testing.expectEqual(@as(usize, 2), roots.len);
     try std.testing.expectEqual(@as(usize, 1), tree.errors.len);
     const expected_err = File.Error{
-        .src_offset = 19,
+        .path = null,
+        .source = source,
+        .loc = .{
+            .line_num = 2,
+            .line_start = 19,
+            .tok_start = 19,
+            .tok_end = 22,
+        },
         .data = .{ .wgsl = .{ .tag = ParsingError.Tag.expected_global_decl } },
     };
     try std.testing.expectEqual(expected_err, tree.errors[0]);

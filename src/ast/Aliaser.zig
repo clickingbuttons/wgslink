@@ -5,12 +5,23 @@ const Node = @import("./Node.zig");
 const File = @import("../file/File.zig");
 const FileError = @import("../file/Error.zig");
 const Loc = @import("../file/Loc.zig");
+const Module = @import("../module.zig");
 
 const Self = @This();
 const Allocator = std.mem.Allocator;
+const Symbol = struct {
+    ident: Node.IdentIndex,
+    src_offset: Loc.Index,
+};
+const Scope = std.StringArrayHashMap(Symbol);
+const Scopes = std.ArrayList(Scope);
 
 allocator: Allocator,
 scopes: Scopes,
+// Used to check for redeclared symbols
+module_scope: Scope,
+/// Used to build errors
+module: ?*const Module = null,
 minify: bool,
 
 /// Accumulator since MUST be at top of WGSL file
@@ -21,17 +32,12 @@ builder: AstBuilder,
 scratch: std.ArrayListUnmanaged(Node.Index) = .{},
 roots: std.ArrayListUnmanaged(Node.Index) = .{},
 
-const Error = error{
+pub const Error = error{Aliasing};
+pub const ErrorTag = enum {
     symbol_already_declared,
+    no_matching_export,
 };
 
-// { [scope key]: [global alias] }
-const Symbol = struct {
-    ident: Node.IdentIndex,
-    src_offset: Loc.Index,
-};
-const Scope = std.StringArrayHashMap(Symbol);
-const Scopes = std.ArrayList(Scope);
 const Directives = struct {
     const StringSet = std.StringArrayHashMap(void);
     const Diagnostics = std.AutoArrayHashMap(Node.DiagnosticControl, void);
@@ -61,6 +67,7 @@ pub fn init(allocator: Allocator, minify: bool) !Self {
     var res = Self{
         .allocator = allocator,
         .scopes = scopes,
+        .module_scope = Scope.init(allocator),
         .minify = minify,
         .directives = Directives.init(allocator),
         .builder = try AstBuilder.init(allocator),
@@ -69,26 +76,37 @@ pub fn init(allocator: Allocator, minify: bool) !Self {
 }
 
 pub fn deinit(self: *Self) void {
-    for (self.scopes.items) |*s| s.deinit();
+    for (self.scopes.items) |*s| {
+        for (s.keys()) |k| self.allocator.free(k);
+        s.deinit();
+    }
     self.scopes.deinit();
+    self.module_scope.deinit();
     self.directives.deinit();
     self.builder.deinit(self.allocator);
     self.scratch.deinit(self.allocator);
     self.roots.deinit(self.allocator);
 }
 
-/// Add module to intermediate data structures. Check `builder.errors` after.
-pub fn append(self: *Self, tree: Ast) !void {
-    // These are only used per-module.
-    try self.pushScope();
+/// Add module to intermediate data structures. Caller should check `builder.errors` after.
+pub fn append(self: *Self, module: *const Module) !void {
+    self.module = module;
+    const tree = module.file.tree.?;
+    if (!self.minify) try self.appendComment(module.path);
+    self.module_scope.clearRetainingCapacity();
     for (tree.spanToList(0)) |n| {
         const index = self.visit(tree, n) catch |err| switch (err) {
-            Error.symbol_already_declared => continue,
+            Error.Aliasing => continue,
             else => return err,
         };
         if (index != 0) try self.roots.append(self.allocator, index);
     }
-    self.popScope();
+}
+
+fn appendComment(self: *Self, comment: []const u8) !void {
+    const text = try self.getOrPutIdent(.token, comment, 0);
+    const node = try self.addNode(Node{ .tag = .comment, .lhs = text });
+    try self.roots.append(self.allocator, node);
 }
 
 // For debugging
@@ -119,6 +137,7 @@ fn pushScope(self: *Self) !void {
 
 fn popScope(self: *Self) void {
     var s = self.scopes.pop();
+    for (s.keys()) |k| self.allocator.free(k);
     s.deinit();
 }
 
@@ -152,6 +171,48 @@ fn makeUniqueIdent(self: *Self, ident: []const u8) ![]const u8 {
     return new_ident;
 }
 
+fn getOrPutModuleDecl(
+    self: *Self,
+    ident: []const u8,
+    src_offset: Loc.Index,
+) !void {
+    var gop = try self.module_scope.getOrPut(ident);
+    if (gop.found_existing) {
+        // printScopes(self.scopes);
+        const file = self.module.?.file;
+
+        try self.builder.errors.append(
+            self.allocator,
+            file.makeError(
+                src_offset,
+                src_offset, // TODO: get identifier token
+                .{ .aliasing = .{ .tag = .symbol_already_declared } },
+            ),
+        );
+        var err = file.makeError(
+            gop.value_ptr.*.src_offset,
+            gop.value_ptr.*.src_offset, // TODO: get identifier token
+            .{ .aliasing = .{ .tag = .symbol_already_declared } },
+        );
+        err.severity = .note;
+        try self.builder.errors.append(self.allocator, err);
+        return Error.Aliasing;
+    } else {
+        gop.value_ptr.* = .{
+            .ident = try self.builder.getOrPutIdent(self.allocator, ident),
+            .src_offset = src_offset,
+        };
+    }
+}
+
+// const err = self.module.?.file.makeErrorAdvanced(
+//     src_offset,
+//     .ident,
+//     .{ .aliasing = .{ .tag = .no_matching_export } },
+// );
+// try self.builder.errors.append(self.allocator, err);
+// return Error.Aliasing;
+
 fn getOrPutIdent(
     self: *Self,
     comptime ty: IdentType,
@@ -160,43 +221,40 @@ fn getOrPutIdent(
 ) !Node.IdentIndex {
     switch (ty) {
         .decl => {
+            std.debug.print("getOrPutIdent {s} {s}\n", .{ @tagName(ty), ident });
+            try self.getOrPutModuleDecl(ident, src_offset);
             const scope_index = self.scopes.items.len - 1;
             var scope: *Scope = &self.scopes.items[scope_index];
-            var gop = try scope.getOrPut(ident);
 
-            if (gop.found_existing) {
-                printScopes(self.scopes);
-                try self.builder.errors.append(self.allocator, File.Error{ .src_offset = src_offset, .data = .{ .symbol_already_declared = {} } });
-                try self.builder.errors.append(self.allocator, File.Error{ .severity = .note, .src_offset = gop.value_ptr.*.src_offset, .data = .{ .symbol_already_declared = {} } });
-                return Error.symbol_already_declared;
-                // const alias = try self.makeUniqueIdent(ident);
-                // defer self.allocator.free(alias);
-                // gop.value_ptr.* = try self.builder.getOrPutIdent(self.allocator, alias);
-            } else {
-                gop.value_ptr.* = .{
-                    .ident = try self.builder.getOrPutIdent(self.allocator, ident),
-                    .src_offset = src_offset,
-                };
+            const clashes = scope.get(ident) != null;
+            const alias = if (clashes)try self.makeUniqueIdent(ident) else try self.allocator.dupe(u8, ident);
+
+            const symbol = Symbol{
+                .ident = try self.builder.getOrPutIdent(self.allocator, alias),
+                .src_offset = src_offset,
+            };
+            try scope.put(alias, symbol);
+            if (clashes) {
+                const gop = try scope.getOrPut(ident);
+                std.debug.assert(gop.found_existing);
+                gop.value_ptr.* = symbol;
             }
-            const alias = self.builder.identifiers.keys()[gop.value_ptr.*.ident - 1];
-            try scope.put(alias, gop.value_ptr.*);
-
-            std.debug.print("decl {s} alias {s} index {d}\n", .{ ident, alias, gop.value_ptr.*.ident });
-            return gop.value_ptr.*.ident;
+            return symbol.ident;
         },
         .ref => {
             for (0..self.scopes.items.len) |i| {
                 const s = self.scopes.items[self.scopes.items.len - i - 1];
                 if (s.get(ident)) |sym| {
-                    std.debug.print("ref {s} index {d}\n", .{ ident, sym.ident });
+                    // std.debug.print("ref {s} index {d}\n", .{ ident, sym.ident });
                     return sym.ident;
                 }
             }
-            std.debug.print("ref {s}\n", .{ident});
+            return try self.builder.getOrPutIdent(self.allocator, ident);
         },
-        .token => {},
+        .token => {
+            return try self.builder.getOrPutIdent(self.allocator, ident);
+        },
     }
-    return try self.builder.getOrPutIdent(self.allocator, ident);
 }
 
 inline fn identList(self: *Self, idents: [][]const u8) !Node.Index {
@@ -264,12 +322,6 @@ fn diagnosticControl(
         diagnostic.field = try self.getOrPutIdent(.token, field, 0);
     }
     return diagnostic;
-}
-
-pub fn appendComment(self: *Self, comment: []const u8) !void {
-    const text = try self.getOrPutIdent(.token, comment, 0);
-    const node = try self.addNode(Node{ .tag = .comment, .lhs = text });
-    try self.roots.append(self.allocator, node);
 }
 
 fn visit(self: *Self, tree: Ast, index: Node.Index) (Error || Allocator.Error)!Node.Index {
@@ -355,9 +407,16 @@ fn visit(self: *Self, tree: Ast, index: Node.Index) (Error || Allocator.Error)!N
             node.rhs = try self.visit(tree, node.rhs);
         },
         .import_alias => {
-            node.lhs = try self.getOrPutIdent(.token, tree.identifier(node.lhs), 0);
+            const sym = tree.identifier(node.lhs);
+            node.lhs = try self.getOrPutIdent(.token, sym, node.src_offset);
             if (node.rhs != 0) {
-                node.rhs = try self.getOrPutIdent(.decl, tree.identifier(node.rhs), node.src_offset);
+                const alias = tree.identifier(node.rhs);
+                node.rhs = try self.getOrPutIdent(.token, alias, node.src_offset);
+
+                const scope_index = self.scopes.items.len - 1;
+                var scope: *Scope = &self.scopes.items[scope_index];
+                const existing = scope.get(sym).?;
+                try scope.put(alias, existing);
             }
         },
         .type_alias => {
@@ -430,7 +489,60 @@ fn visit(self: *Self, tree: Ast, index: Node.Index) (Error || Allocator.Error)!N
             node.lhs = try self.visit(tree, node.lhs);
             node.rhs = try self.typedIdent(.token, tree, node.rhs, node.src_offset);
         },
-        .index_access, .const_assert, .increment, .decrement, .phony_assign, .paren, .logical_not, .bitwise_complement, .negative, .deref, .@"return", .break_if, .continuing, .ref, .loop, .@"if", .else_if, .@"else", .@"switch", .switch_body, .case_clause, .case_selector, .@"while", .call, .@"=", .@"+=", .@"-=", .@"*=", .@"/=", .@"%=", .@"&=", .@"|=", .@"^=", .@"<<=", .@">>=", .lshift, .rshift, .lt, .gt, .lte, .gte, .eq, .neq, .mul, .div, .mod, .add, .sub, .logical_and, .logical_or, .bitwise_and, .bitwise_or, .bitwise_xor => {
+        .index_access,
+        .const_assert,
+        .increment,
+        .decrement,
+        .phony_assign,
+        .paren,
+        .logical_not,
+        .bitwise_complement,
+        .negative,
+        .deref,
+        .@"return",
+        .break_if,
+        .continuing,
+        .ref,
+        .loop,
+        .@"if",
+        .else_if,
+        .@"else",
+        .@"switch",
+        .switch_body,
+        .case_clause,
+        .case_selector,
+        .@"while",
+        .call,
+        .@"=",
+        .@"+=",
+        .@"-=",
+        .@"*=",
+        .@"/=",
+        .@"%=",
+        .@"&=",
+        .@"|=",
+        .@"^=",
+        .@"<<=",
+        .@">>=",
+        .lshift,
+        .rshift,
+        .lt,
+        .gt,
+        .lte,
+        .gte,
+        .eq,
+        .neq,
+        .mul,
+        .div,
+        .mod,
+        .add,
+        .sub,
+        .logical_and,
+        .logical_or,
+        .bitwise_and,
+        .bitwise_or,
+        .bitwise_xor,
+        => {
             node.lhs = try self.visit(tree, node.lhs);
             node.rhs = try self.visit(tree, node.rhs);
         },
