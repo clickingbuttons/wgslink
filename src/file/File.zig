@@ -40,13 +40,14 @@ const Self = @This();
 
 allocator: Allocator,
 path: []const u8,
+language: ?Language = null,
 source_file: ?std.fs.File = null,
 stat: ?Stat = null,
 source: ?[:0]const u8 = null,
 tree: ?Ast = null,
 
 pub fn load(self: *Self) !void {
-    const language = Language.fromPath(self.path) orelse return error.UnsupportedLanguage;
+    self.language = Language.fromPath(self.path) orelse return error.UnsupportedLanguage;
 
     if (self.source_file == null) self.source_file = try std.fs.cwd().openFile(self.path, .{});
 
@@ -60,7 +61,7 @@ pub fn load(self: *Self) !void {
     if (amt != size) return error.UnexpectedEndOfFile;
     self.source = source;
 
-    self.tree = switch (language) {
+    self.tree = switch (self.language.?) {
         .wgsl => try Parser.parse(self.allocator, self.path, self.source.?),
     };
 }
@@ -99,7 +100,7 @@ pub fn makeErrorAdvanced(
     token: anytype,
     data: Error.Data,
 ) Error {
-    const loc = self.tree.?.getErrorLoc(self.source.?, src_offset, token);
+    const loc = self.tree.?.getErrorLoc(self.language.?, self.source.?, src_offset, token);
     return .{
         .path = self.path,
         .source = self.source.?,

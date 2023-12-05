@@ -24,8 +24,6 @@ identifiers: Identifiers.Slice,
 extra: []Node.Index,
 /// Offsets of newlines for error messages
 newlines: []Loc.Index,
-/// For locating language dependent errors
-from_lang: Language,
 /// No one's perfect...
 errors: []File.Error,
 
@@ -67,13 +65,14 @@ pub fn spanToList(self: Self, index: ?Node.Index) []const Node.Index {
 
 pub fn getErrorLoc(
     self: Self,
+    lang: Language,
     source: [:0]const u8,
     src_offset: Loc.Index,
     token: anytype,
 ) FileError.ErrorLoc {
     var tok_start: Loc.Index = 0;
     var tok_end: Loc.Index = 0;
-    switch (self.from_lang) {
+    switch (lang) {
         .wgsl => {
             var tokenizer = WgslTokenizer.init(source[src_offset..]);
             while (true) {

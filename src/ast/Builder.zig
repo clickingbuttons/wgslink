@@ -76,12 +76,11 @@ pub fn addExtra(self: *Self, allocator: Allocator, extra: anytype) !Node.Index {
     return result;
 }
 
-pub fn toOwnedAst(self: *Self, allocator: Allocator, lang: Language) !Ast {
+pub fn toOwnedAst(self: *Self, allocator: Allocator) !Ast {
     return Ast{
         .nodes = self.nodes.toOwnedSlice(),
         .identifiers = self.identifiers.entries.toOwnedSlice(),
         .extra = try self.extra.toOwnedSlice(allocator),
-        .from_lang = lang,
         .newlines = try self.newlines.toOwnedSlice(allocator),
         .errors = try self.errors.toOwnedSlice(allocator),
     };
@@ -97,6 +96,24 @@ pub fn getOrPutIdent(
         gop.key_ptr.* = try allocator.dupe(u8, ident);
     }
     return @intCast(gop.index + 1);
+}
+
+pub fn getOrPutIdentUnique(
+    self: *Self,
+    allocator: Allocator,
+    ident: []const u8,
+) !Node.IdentIndex {
+    if (self.identifiers.get(ident) == null) return try self.getOrPutIdent(allocator, ident);
+    var count: usize = 2;
+    var new_ident = try std.fmt.allocPrint(allocator, "{s}{d}", .{ ident, count });
+    defer allocator.free(new_ident);
+    while (self.identifiers.get(new_ident)) |_| {
+        count += 1;
+        allocator.free(new_ident);
+        new_ident = try std.fmt.allocPrint(allocator, "{s}{d}", .{ ident, count });
+    }
+
+    return try self.getOrPutIdent(allocator, new_ident);
 }
 
 pub fn finishRootSpan(self: *Self, span_len: usize) void {

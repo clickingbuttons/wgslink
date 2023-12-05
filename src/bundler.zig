@@ -1,7 +1,7 @@
 const std = @import("std");
 const Module = @import("module.zig");
 const Renderer = @import("./WgslRenderer.zig").Renderer;
-const TreeShakeOptions = @import("./ast/TreeShaker.zig").Options;
+const TreeShaker = @import("./ast/TreeShaker.zig");
 const Ast = @import("./ast/Ast.zig");
 const Aliaser = @import("./ast/Aliaser.zig");
 const FileError = @import("./file/Error.zig");
@@ -12,11 +12,10 @@ const Allocator = std.mem.Allocator;
 const ThreadPool = std.Thread.Pool;
 const Mutex = std.Thread.Mutex;
 const WaitGroup = std.Thread.WaitGroup;
-const Modules = std.StringArrayHashMap(Module);
+pub const Modules = std.StringArrayHashMap(Module);
 const Writer = @TypeOf(std.ArrayList(u8).writer());
-const Visited = std.StringHashMap(void);
 pub const Options = struct {
-    tree_shake: ?TreeShakeOptions,
+    tree_shake: ?TreeShaker.Options,
     minify: bool,
 };
 
@@ -41,22 +40,6 @@ pub fn deinit(self: *Self) void {
     self.modules.deinit();
 }
 
-pub fn alias(
-    self: Self,
-    errwriter: anytype,
-    errconfig: std.io.tty.Config,
-    aliaser: *Aliaser,
-    visited: *Visited,
-    module: *const Module,
-) !void {
-    if ((try visited.getOrPut(module.path)).found_existing) return;
-    for (module.import_table.keys()) |k| {
-        const m = self.modules.getPtr(k).?;
-        try self.alias(errwriter, errconfig, aliaser, visited, m);
-    }
-    try aliaser.append(module);
-}
-
 pub fn bundle(
     self: *Self,
     writer: anytype,
@@ -78,7 +61,6 @@ pub fn bundle(
         errconfig,
         &wait_group,
         mod,
-        self.opts.tree_shake,
     });
     wait_group.wait();
     var has_unparsed = false;
@@ -87,18 +69,20 @@ pub fn bundle(
     }
     if (has_unparsed) return error.UnparsedModule;
 
-    var visited = Visited.init(self.allocator);
-    defer visited.deinit();
-    var aliaser = try Aliaser.init(self.allocator, self.opts.minify);
+    var aliaser = try Aliaser.init(self.allocator, &self.modules, self.opts.minify);
     defer aliaser.deinit();
-    try self.alias(errwriter, errconfig, &aliaser, &visited, mod);
-    var tree = try aliaser.toOwnedAst(.wgsl);
+    var tree = try aliaser.aliasAll(mod.path);
     defer tree.deinit(self.allocator);
     if (tree.errors.len > 0) {
-        for (tree.errors) |e| try e.write(errwriter, errconfig);
-        return error.Aliasing;
+        var fatal = false;
+        for (tree.errors) |e| {
+            if (e.severity == .@"error") fatal = true;
+            try e.write(errwriter, errconfig);
+        }
+        if (fatal) return error.Aliasing;
     }
 
+    if (self.opts.tree_shake) |opts| try TreeShaker.treeShake(self.allocator, &tree, opts);
     var renderer = Renderer(@TypeOf(writer)).init(writer, self.opts.minify, false);
     try renderer.writeTranslationUnit(tree);
 }
@@ -110,11 +94,10 @@ fn workerAst(
     errconfig: std.io.tty.Config,
     wait_group: *WaitGroup,
     mod: *Module,
-    tree_shake: ?TreeShakeOptions,
 ) void {
     defer wait_group.finish();
 
-    mod.load(tree_shake) catch |err| {
+    mod.load() catch |err| {
         self.stderr_mutex.lock();
         defer self.stderr_mutex.unlock();
         switch (err) {
@@ -130,22 +113,16 @@ fn workerAst(
     var iter = mod.import_table.iterator();
     while (iter.next()) |kv| {
         const mod_name = kv.key_ptr.*;
-        const mod_symbols = kv.value_ptr.*.keys();
         const gop = self.modules.getOrPut(mod_name) catch return;
         if (!gop.found_existing) {
             gop.value_ptr.* = Module.init(self.allocator, mod_name, mod.path);
             wait_group.start();
-            const next_tree_shake = if (mod_symbols.len == 0) null else TreeShakeOptions{
-                .symbols = mod_symbols,
-                .find_symbols = false,
-            };
             self.thread_pool.spawn(workerAst, .{
                 self,
                 errwriter,
                 errconfig,
                 wait_group,
                 gop.value_ptr,
-                next_tree_shake,
             }) catch {
                 wait_group.finish();
                 continue;
@@ -178,7 +155,7 @@ fn writeFileOpenError(
             const err = file.makeErrorAdvanced(
                 node.src_offset,
                 .string_literal,
-               .{ .unresolved_module = .{ .errname = errname, .mod_path = mod.path } },
+                .{ .unresolved_module = .{ .errname = errname, .mod_path = mod.path } },
             );
             try err.write(errwriter, errconfig);
         }
@@ -205,7 +182,7 @@ fn testBundle(comptime entry: []const u8, comptime expected: [:0]const u8) !void
     defer thread_pool.deinit();
 
     const opts = Options{
-        .tree_shake = TreeShakeOptions{},
+        .tree_shake = TreeShaker.Options{},
         .minify = false,
     };
     var bundler = try Self.init(allocator, &thread_pool, opts);

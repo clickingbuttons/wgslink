@@ -55,16 +55,12 @@ pub const Data = union(enum) {
     },
 };
 
-fn writeHeader(
-    writer: anytype,
-    term: Config,
-    path: ?[]const u8,
-    line_num: Loc.Index,
-    col_num: Loc.Index,
-) !void {
+fn writeHeader(self: Self, writer: anytype, term: Config) !void {
+    const line_num = self.loc.line_num;
+    const col_num = self.loc.tok_start - self.loc.line_start;
     // 'file:line:column error: MSG'
     try term.setColor(writer, .bold);
-    if (path) |f| try writer.print("{s}:", .{f});
+    if (self.path) |f| try writer.print("{s}:", .{f});
     try writer.print("{d}:{d}\n", .{ line_num, col_num + 1 });
     try term.setColor(writer, .reset);
     try term.setColor(writer, .dim);
@@ -72,15 +68,12 @@ fn writeHeader(
     try term.setColor(writer, .reset);
 }
 
-fn writeSource(
-    writer: anytype,
-    term: std.io.tty.Config,
-    source: []const u8,
-    line_start: Loc.Index,
-    tok_start: Loc.Index,
-    tok_end: Loc.Index,
-) !void {
-    try writer.writeAll(source[line_start..tok_start]);
+fn writeSource(self: Self, writer: anytype, term: Config) !void {
+    const source = self.source;
+    const tok_start = self.loc.tok_start;
+    const tok_end = self.loc.tok_end;
+
+    try writer.writeAll(source[self.loc.line_start..tok_start]);
     try term.setColor(writer, .green);
     try writer.writeAll(source[tok_start..tok_end]);
     try term.setColor(writer, .reset);
@@ -89,15 +82,16 @@ fn writeSource(
     try writer.writeByte('\n');
 }
 
-fn writePointer(
-    writer: anytype,
-    term: std.io.tty.Config,
-    col_num: Loc.Index,
-    sev: Severity,
-) !void {
-    try writer.writeByteNTimes(' ', col_num);
+fn writePointer(self: Self, writer: anytype, term: Config) !void {
+    // See renderHeader
+    const line_number_len = std.math.log10(self.loc.line_num) + 4;
+    try writer.writeByteNTimes(' ', line_number_len);
+    for (self.source[self.loc.line_start..self.loc.tok_start]) |c| switch (c) {
+        '\t' => try writer.writeByte(c),
+        else => try writer.writeByte(' '),
+    };
     try term.setColor(writer, .bold);
-    const color: std.io.tty.Color = switch (sev) {
+    const color: std.io.tty.Color = switch (self.severity) {
         .@"error" => .red,
         .warning => .yellow,
         .note => .blue,
@@ -105,21 +99,14 @@ fn writePointer(
     try term.setColor(writer, color);
     try writer.writeByte('^');
     try writer.writeByte(' ');
-    try writer.writeAll(@tagName(sev));
+    try writer.writeAll(@tagName(self.severity));
     try writer.writeAll(": ");
 }
 
 pub fn write(self: Self, writer: anytype, term: std.io.tty.Config) !void {
-    const loc = self.loc;
-    const path = self.path;
-    const source = self.source;
-    const col_num = loc.tok_start - loc.line_start;
-    try writeHeader(writer, term, path, loc.line_num, col_num);
-    try writeSource(writer, term, source, loc.line_start, loc.tok_start, loc.tok_end);
-
-    // See renderHeader
-    const line_number_len = std.math.log10(loc.line_num) + 4;
-    try writePointer(writer, term, col_num + line_number_len, self.severity);
+    try self.writeHeader(writer, term);
+    try self.writeSource(writer, term);
+    try self.writePointer(writer, term);
 
     switch (self.data) {
         .wgsl => |e| {
@@ -138,6 +125,9 @@ pub fn write(self: Self, writer: anytype, term: std.io.tty.Config) !void {
             },
             .no_matching_export => {
                 try writer.writeAll("no matching export");
+            },
+            .unresolved_ref => {
+                try writer.writeAll("unresolved reference");
             },
         },
     }

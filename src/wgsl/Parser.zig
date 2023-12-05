@@ -65,7 +65,7 @@ pub fn parse(allocator: Allocator, path: ?[]const u8, source: [:0]const u8) Allo
     defer parser.deinit();
     try parser.parseTranslationUnit();
 
-    return parser.builder.toOwnedAst(allocator, .wgsl);
+    return parser.builder.toOwnedAst(allocator);
 }
 
 fn listToSpan(
