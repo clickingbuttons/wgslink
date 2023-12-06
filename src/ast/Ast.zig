@@ -38,6 +38,7 @@ pub fn deinit(self: *Self, allocator: Allocator) void {
 }
 
 pub fn identifier(self: Self, index: Node.IdentIndex) []const u8 {
+    if (index == 0) return "";
     return self.identifiers.get(index - 1).key;
 }
 
@@ -89,28 +90,33 @@ pub fn getErrorLoc(
     return FileError.ErrorLoc.init(self.newlines, src_offset + tok_start, src_offset + tok_end);
 }
 
-pub fn globalName(self: Self, index: Node.Index) []const u8 {
+pub fn globalIdent(self: Self, index: Node.Index) Node.IdentIndex {
     const n = self.node(index);
     switch (n.tag) {
         .global_var => {
             const global_var = self.extraData(Node.GlobalVar, n.lhs);
-            return self.identifier(global_var.name);
+            return global_var.name;
         },
         .override => {
             const override = self.extraData(Node.Override, n.lhs);
-            return self.identifier(override.name);
+            return override.name;
         },
         .@"fn" => {
             const header = self.extraData(Node.FnHeader, n.lhs);
-            return self.identifier(header.name);
+            return header.name;
         },
         .@"const" => {
             const typed_ident = self.extraData(Node.TypedIdent, n.lhs);
-            return self.identifier(typed_ident.name);
+            return typed_ident.name;
         },
-        .type_alias, .@"struct" => return self.identifier(n.lhs),
-        else => return "",
+        .type_alias, .@"struct" => return n.lhs,
+        else => return 0,
     }
+}
+
+pub fn globalName(self: Self, index: Node.Index) []const u8 {
+    const ident = self.globalIdent(index);
+    return self.identifier(ident);
 }
 
 pub fn removeFromSpan(self: *Self, span_index: Node.Index, item_index: usize) void {

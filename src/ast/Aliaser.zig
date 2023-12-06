@@ -11,12 +11,12 @@ const builtins = @import("../wgsl/Token.zig").builtins;
 
 const Self = @This();
 const Allocator = std.mem.Allocator;
-const Scope = std.StringArrayHashMap(SymbolData);
+/// Keys are indexes into builder.identifiers
+const Scope = std.AutoHashMap(Node.IdentIndex, SymbolData);
 const Symbols = std.ArrayHashMap(Symbol, SymbolData, Symbol.StringContext, true);
-/// Scope keys where index != 0 are owned.
 const Scopes = std.ArrayList(Scope);
 const Visited = std.StringArrayHashMap(void);
-const ModuleScopes = std.StringArrayHashMap(Scope);
+const ModuleScopes = std.StringHashMap(Scope);
 
 allocator: Allocator,
 /// Outermost is module scope.
@@ -118,9 +118,10 @@ pub fn init(allocator: Allocator, modules: *const Modules, minify: bool) !Self {
 pub fn deinit(self: *Self) void {
     for (self.scopes.items) |*s| s.deinit();
     self.scopes.deinit();
-    self.symbols.deinit();
-    for (self.module_scopes.values()) |*s| s.deinit();
+    var iter = self.module_scopes.valueIterator();
+    while (iter.next()) |s| s.deinit();
     self.module_scopes.deinit();
+    self.symbols.deinit();
     self.directives.deinit();
     self.builder.deinit(self.allocator);
     self.scratch.deinit(self.allocator);
@@ -139,7 +140,7 @@ fn putModuleSymbol(
     const key = Symbol{ .module = module, .symbol = symbol };
     var symbol_gop = try self.symbols.getOrPut(key);
     if (!symbol_gop.found_existing) {
-        const ident = try uniqueSymbol(&self.builder, symbol_names, symbol);
+        const ident = try uniqueIdent(&self.builder, symbol_names, symbol);
         try symbol_names.putNoClobber(ident, {});
         symbol_gop.value_ptr.* = SymbolData{
             .ident = ident,
@@ -148,15 +149,14 @@ fn putModuleSymbol(
         std.debug.print("putSymbol {s} {s} = {d} ({s})\n", .{ module, symbol, ident, self.builder.identifiers.keys()[ident - 1] });
     }
 
-    const scope_name = alias orelse symbol;
-    var scope_gop = try scope.getOrPut(scope_name);
+    const scope_ident = try self.builder.getOrPutIdent(self.allocator, alias orelse symbol);
+    var scope_gop = try scope.getOrPut(scope_ident);
     if (scope_gop.found_existing) {
         const file = self.modules.get(module).?.file;
         try symbolAlreadyDecl(&self.builder, file, src_offset, scope_gop.value_ptr.*.src_offset);
-        return Error.Aliasing;
     } else {
         scope_gop.value_ptr.* = symbol_gop.value_ptr.*;
-        std.debug.print("putScope {s}: {d}\n", .{ scope_name, symbol_gop.value_ptr.*.ident });
+        std.debug.print("putScope {s}: {d}\n", .{ self.builder.identifiers.keys()[scope_ident - 1], symbol_gop.value_ptr.*.ident });
     }
 }
 
@@ -221,7 +221,7 @@ fn aliasAllInner(self: *Self, visited: *Visited, module: Module) !void {
     for (tree.spanToList(0)) |n| {
         const module_scope = self.module_scopes.get(module.path).?;
         try self.scopes.append(module_scope);
-        defer _ = self.scopes.pop();
+        defer self.scopes.clearRetainingCapacity();
 
         const index = self.visit(module, n) catch |err| switch (err) {
             Error.Aliasing => continue,
@@ -276,7 +276,6 @@ fn pushScope(self: *Self) !void {
 
 fn popScope(self: *Self) void {
     var s = self.scopes.pop();
-    for (s.keys()) |k| self.allocator.free(k);
     s.deinit();
 }
 
@@ -289,30 +288,25 @@ const IdentType = enum {
     token,
 };
 
-fn uniqueSymbol(
+fn uniqueIdent(
     builder: *AstBuilder,
     symbol_names: *SymbolNames,
     symbol: []const u8,
 ) !Node.IdentIndex {
     const allocator = symbol_names.allocator;
     var ident = try builder.getOrPutIdent(allocator, symbol);
-    if (symbol_names.get(ident) == null) return ident;
-
-    var count: usize = 2;
-    var alias = try std.fmt.allocPrint(allocator, "{s}{d}", .{ symbol, count });
-    defer allocator.free(alias);
-    ident = try builder.getOrPutIdent(allocator, alias);
+    var count: usize = 1;
     while (symbol_names.get(ident)) |_| {
         count += 1;
-        allocator.free(alias);
-        alias = try std.fmt.allocPrint(allocator, "{s}{d}", .{ symbol, count });
+        var alias = try std.fmt.allocPrint(allocator, "{s}{d}", .{ symbol, count });
+        defer allocator.free(alias);
         ident = try builder.getOrPutIdent(allocator, alias);
     }
 
     return ident;
 }
 
-fn isUniqueIdent(self: *Self, ident: []const u8) bool {
+fn isUniqueIdent(self: *Self, ident: Node.IdentIndex) bool {
     for (self.scopes.items) |s| {
         if (s.get(ident) != null) return false;
     }
@@ -320,65 +314,69 @@ fn isUniqueIdent(self: *Self, ident: []const u8) bool {
     return true;
 }
 
-/// Caller owns returned slice
-fn makeUniqueIdent(self: *Self, ident: []const u8) ![]const u8 {
-    var count: usize = 2;
-    var new_ident = try std.fmt.allocPrint(self.allocator, "{s}{d}", .{ ident, count });
-    while (!self.isUniqueIdent(new_ident)) {
+fn uniqueScopedIdent(self: *Self, symbol: []const u8) !Node.IdentIndex {
+    const allocator = self.allocator;
+    var ident = try self.builder.getOrPutIdent(allocator, symbol);
+    var count: usize = 1;
+    while (!self.isUniqueIdent(ident)) {
         count += 1;
-        self.allocator.free(new_ident);
-        new_ident = try std.fmt.allocPrint(self.allocator, "{s}{d}", .{ ident, count });
+        var alias = try std.fmt.allocPrint(allocator, "{s}{d}", .{ symbol, count });
+        defer allocator.free(alias);
+        ident = try self.builder.getOrPutIdent(allocator, alias);
     }
 
-    return new_ident;
+    return ident;
 }
 
-fn getOrPutToken(self: *Self, ident: []const u8) !Node.IdentIndex {
-    return try self.builder.getOrPutIdent(self.allocator, ident);
+fn getOrPutToken(self: *Self, symbol: []const u8) !Node.IdentIndex {
+    return try self.builder.getOrPutIdent(self.allocator, symbol);
 }
 
-fn getOrPutRef(self: *Self, file: File, ident: []const u8, src_offset: Loc.Index) !Node.IdentIndex {
+fn getOrPutRef(
+    self: *Self,
+    file: File,
+    symbol: []const u8,
+    src_offset: Loc.Index,
+) !Node.IdentIndex {
+    const ident = try self.builder.getOrPutIdent(self.allocator, symbol);
     for (0..self.scopes.items.len) |i| {
-        const s = self.scopes.items[self.scopes.items.len - i - 1];
-        if (s.get(ident)) |sym| {
-            std.debug.print("ref {s} index {d}\n", .{ ident, sym.ident });
+        const scope = self.scopes.items[self.scopes.items.len - i - 1];
+        if (scope.get(ident)) |sym| {
+            std.debug.print("ref {s} index {d}\n", .{ symbol, sym.ident });
             return sym.ident;
         }
     }
-    if (!builtins.has(ident)) {
-        const len: Loc.Index = @intCast(ident.len);
+    if (!builtins.has(symbol)) {
+        const len: Loc.Index = @intCast(symbol.len);
         const err_data = .{ .aliasing = .{ .tag = .unresolved_ref } };
         var err = file.makeError(src_offset, src_offset + len, err_data);
         err.severity = .warning;
         try self.builder.errors.append(self.allocator, err);
     }
 
-    return try self.builder.getOrPutIdent(self.allocator, ident);
+    return ident;
 }
 
 fn getOrPutDecl(
     self: *Self,
     file: File,
-    ident: []const u8,
+    symbol: []const u8,
     src_offset: Loc.Index,
 ) !Node.IdentIndex {
     const scope_index = self.scopes.items.len - 1;
-    if (scope_index == 0) return try self.getOrPutRef(file, ident, src_offset);
+    // Module scope has already been initialized to properly handle import aliases.
+    if (scope_index == 0) return try self.getOrPutRef(file, symbol, src_offset);
 
     var scope: *Scope = &self.scopes.items[scope_index];
-
+    var ident = try self.builder.getOrPutIdent(self.allocator, symbol);
     if (scope.get(ident)) |already_decl| {
         try symbolAlreadyDecl(&self.builder, file, src_offset, already_decl.src_offset);
         return Error.Aliasing;
     }
-    const alias = try self.makeUniqueIdent(ident);
-    const symbol = SymbolData{
-        .ident = try self.builder.getOrPutIdent(self.allocator, alias),
-        .src_offset = src_offset,
-    };
-    try scope.put(alias, symbol);
+    ident = try self.uniqueScopedIdent(symbol);
+    try scope.put(ident, SymbolData{ .ident = ident, .src_offset = src_offset });
 
-    return symbol.ident;
+    return ident;
 }
 
 inline fn identList(self: *Self, idents: [][]const u8) !Node.Index {
@@ -447,11 +445,7 @@ fn importAliases(
     for (tree.spanToList(index)) |i| {
         var node = tree.node(i);
         const identifier = tree.identifier(node.lhs);
-        const symbol = Symbol{
-            .module = imp_mod.path,
-            .symbol = identifier,
-        };
-        if (self.symbols.get(symbol) == null) {
+        if (self.symbols.get(.{ .module = imp_mod.path, .symbol = identifier }) == null) {
             const err = mod.file.makeErrorAdvanced(
                 node.src_offset,
                 .ident,
@@ -470,6 +464,40 @@ fn importAliases(
     }
 
     return try self.listToSpan(self.scratch.items[scratch_top..]);
+}
+
+fn visitScopedDecl(self: *Self, mod: Module, index: Node.Index) !void {
+    const file = mod.file;
+    const tree = file.tree.?;
+    if (index == 0) return;
+    var node = tree.node(index);
+
+    switch (node.tag) {
+        .@"const", .let => {
+            var typed_ident = tree.extraData(Node.TypedIdent, node.lhs);
+            const symbol = tree.identifier(typed_ident.name);
+            _ = try self.getOrPutDecl(file, symbol, node.src_offset);
+        },
+        else => {},
+    }
+}
+
+fn visitScopedDecls(self: *Self, mod: Module, index: Node.Index) !void {
+    for (mod.file.tree.?.spanToList(index)) |i| try self.visitScopedDecl(mod, i);
+}
+
+fn visitCompound(self: *Self, mod: Module, index: Node.Index, comptime add_scope: bool) !Node.Index {
+    const file = mod.file;
+    const tree = file.tree.?;
+    if (index == 0) return 0;
+    var node = tree.node(index);
+
+    if (add_scope) try self.pushScope();
+    defer if (add_scope) self.popScope();
+    node.lhs = try self.visit(mod, node.lhs);
+    try self.visitScopedDecls(mod, node.rhs);
+    node.rhs = try self.visit(mod, node.rhs);
+    return try self.addNode(node);
 }
 
 fn visit(self: *Self, mod: Module, index: Node.Index) (Error || Allocator.Error)!Node.Index {
@@ -526,11 +554,13 @@ fn visit(self: *Self, mod: Module, index: Node.Index) (Error || Allocator.Error)
             var header = tree.extraData(Node.FnHeader, node.lhs);
             header.name = try self.getOrPutDecl(file, tree.identifier(header.name), node.src_offset);
             header.attrs = try self.visit(mod, header.attrs);
+            try self.pushScope();
+            defer self.popScope();
             header.params = try self.visit(mod, header.params);
             header.return_attrs = try self.visit(mod, header.return_attrs);
             header.return_type = try self.visit(mod, header.return_type);
             node.lhs = try self.addExtra(header);
-            node.rhs = try self.visit(mod, node.rhs);
+            node.rhs = try self.visitCompound(mod, node.rhs, false);
         },
         .fn_param => {
             var param = tree.extraData(Node.FnParam, node.rhs);
@@ -550,15 +580,18 @@ fn visit(self: *Self, mod: Module, index: Node.Index) (Error || Allocator.Error)
         .@"for" => {
             var header = tree.extraData(Node.ForHeader, node.lhs);
             header.attrs = try self.visit(mod, header.attrs);
-            header.cond = try self.visit(mod, header.cond);
+            try self.pushScope();
+            defer self.popScope();
             header.init = try self.visit(mod, header.init);
+            header.cond = try self.visit(mod, header.cond);
             header.update = try self.visit(mod, header.update);
             node.lhs = try self.addExtra(header);
-            node.rhs = try self.visit(mod, node.rhs);
+            node.rhs = try self.visitCompound(mod, node.rhs, false);
         },
         .@"const", .let => {
             var typed_ident = tree.extraData(Node.TypedIdent, node.lhs);
-            typed_ident.name = try self.getOrPutDecl(file, tree.identifier(typed_ident.name), node.src_offset);
+            // these have already been visited by `visitScopedDecls`
+            typed_ident.name = try self.getOrPutRef(file, tree.identifier(typed_ident.name), node.src_offset);
             typed_ident.type = try self.visit(mod, typed_ident.type);
             node.lhs = try self.addExtra(typed_ident);
             node.rhs = try self.visit(mod, node.rhs);
@@ -625,10 +658,7 @@ fn visit(self: *Self, mod: Module, index: Node.Index) (Error || Allocator.Error)
             }
         },
         .compound => {
-            node.lhs = try self.visit(mod, node.lhs);
-            try self.pushScope();
-            node.rhs = try self.visit(mod, node.rhs);
-            self.popScope();
+            return try self.visitCompound(mod, index, true);
         },
         .struct_member => {
             node.lhs = try self.visit(mod, node.lhs);

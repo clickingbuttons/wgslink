@@ -2,11 +2,15 @@
 const a = 1.0 + b;
 
 @vertex fn main() -> @location(0) vec4f {
-	const res = vec4f(b + a);
-	const b = 3.0;
+	var res = vec4f(out_of_order + a);
+	for (var i = 0u; i < 4u; i++) {
+		res += f32(i);
+	}
+	const out_of_order = 3.0;
 	return res;
 }
 
+// module symbols
 // ./b.wgsl b = 1
 // ./a.wgsl a = 2
 // ./a.wgsl main = 3
@@ -16,16 +20,7 @@ const a = 1.0 + b;
 // a: 2
 // main: 3
 
-// ref b: 1 (since scope == 0)
-// ref a: 2 (since scope == 0)
-// ref b: 1
-// ref main: 3 (since scope == 0)
-
 // scope 1
-// res: 4
-// b: 5
+// res: 6
+// out_of_order: 7
 
-// ref res: 4
-// ref b: 5
-// ref b: 5
-// ref res: 4

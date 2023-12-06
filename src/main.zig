@@ -12,8 +12,9 @@ const stderr = std.io.getStdErr().writer();
 pub fn main() !void {
     const params = comptime clap.parseParamsComptime(
         \\-h, --help             Display this help and exit.
-        \\-m, --minify           Rename variables to be shorter and remove whitespace
-        \\<str>...               Entry WGSL files
+        \\-m, --minify           Rename variables to be shorter and remove whitespace.
+        \\-e, --entry <str>...   Symbols in entry files' global scope to NOT tree shake. If not specified entry file will default to functions with @vertex, @fragment, or @compute attributes.
+        \\<str>...               Entry files
         \\
     );
     var diag = clap.Diagnostic{};
@@ -34,7 +35,10 @@ pub fn main() !void {
     defer thread_pool.deinit();
 
     const opts = Bundler.Options{
-        .tree_shake = .{},
+        .tree_shake = .{
+            .symbols = res.args.entry,
+            .find_symbols = res.args.entry.len == 0,
+        },
         .minify = res.args.minify != 0,
     };
     var bundler = try Bundler.init(allocator, &thread_pool, opts);

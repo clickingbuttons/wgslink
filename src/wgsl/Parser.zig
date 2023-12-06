@@ -1342,7 +1342,7 @@ fn unaryExpr(p: *Self) Error!?Node.Index {
                 .@"&" => .ref,
                 else => unreachable,
             };
-            break :brk try p.addNode(tok, tag, 0, expr);
+            break :brk try p.addNode(tok, tag, expr, 0);
         },
         else => p.singularExpr(),
     };

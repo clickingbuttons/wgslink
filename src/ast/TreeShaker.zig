@@ -3,9 +3,10 @@ const Ast = @import("./Ast.zig");
 const Node = @import("./Node.zig");
 
 const Allocator = std.mem.Allocator;
-const Used = std.StringHashMap(void);
+pub const Symbols = std.AutoArrayHashMap(Node.IdentIndex, void);
 
-fn findSymbols(used: *Used, tree: *Ast) !void {
+pub fn findSymbols(allocator: Allocator, tree: Ast) !Symbols {
+    var res = Symbols.init(allocator);
     for (tree.spanToList(0)) |i| {
         const node = tree.node(i);
         switch (node.tag) {
@@ -17,7 +18,7 @@ fn findSymbols(used: *Used, tree: *Ast) !void {
                     const attr: Node.Attribute = @enumFromInt(attr_node.lhs);
                     switch (attr) {
                         .vertex, .fragment, .compute => {
-                            try used.put(tree.globalName(i), {});
+                            try res.put(header.name, {});
                             break;
                         },
                         else => {},
@@ -27,27 +28,28 @@ fn findSymbols(used: *Used, tree: *Ast) !void {
             else => {},
         }
     }
+    return res;
 }
 
-fn addUsedSymbol(tree: *Ast, used: *Used, ident: Node.IdentIndex) Allocator.Error!void {
-    const symbol = tree.identifier(ident);
-    if (symbol.len == 0 or used.get(symbol) != null) return;
-    try used.put(symbol, {});
+fn addUsedSymbol(tree: *Ast, used: *Symbols, ident: Node.IdentIndex) Allocator.Error!void {
+    if (ident == 0 or used.get(ident) != null) return;
+    try used.put(ident, {});
+    // Cascade
     for (tree.spanToList(0)) |i| {
         switch (tree.node(i).tag) {
             .global_var, .override, .@"const", .@"struct", .@"fn", .type_alias => {
-                if (std.mem.eql(u8, tree.globalName(i), symbol)) try visit(tree, used, i);
+                if (tree.globalIdent(i) == ident) try visit(tree, used, i);
             },
             else => {},
         }
     }
 }
 
-fn visitAll(tree: *Ast, used: *Used, nodes: []const Node.Index) Allocator.Error!void {
+fn visitAll(tree: *Ast, used: *Symbols, nodes: []const Node.Index) Allocator.Error!void {
     for (nodes) |n| try visit(tree, used, n);
 }
 
-fn visit(tree: *Ast, used: *Used, index: Node.Index) Allocator.Error!void {
+fn visit(tree: *Ast, used: *Symbols, index: Node.Index) Allocator.Error!void {
     if (index == 0) return;
     const node = tree.node(index);
     switch (node.tag) {
@@ -205,19 +207,33 @@ fn visit(tree: *Ast, used: *Used, index: Node.Index) Allocator.Error!void {
 }
 
 pub const Options = struct {
-    symbols: [][]const u8 = &.{},
+    symbols: []const []const u8 = &.{},
     find_symbols: bool = true,
 };
 
 /// Tree shakes globals by removing unused nodes (including imports) from the root span.
 /// Tree shakes imports by removing unused alises from their import span.
-pub fn treeShake(allocator: Allocator, tree: *Ast, opts: Options) Allocator.Error!void {
-    var used = Used.init(allocator);
+pub fn treeShake(allocator: Allocator, tree: *Ast, roots: []const []const u8) Allocator.Error!void {
+    var used = Symbols.init(allocator);
     defer used.deinit();
-    for (opts.symbols) |s| try used.put(s, {});
-    if (opts.find_symbols) try findSymbols(&used, tree);
+    for (roots) |r| {
+        var found = false;
+        for (tree.spanToList(0)) |i| {
+            const ident = tree.globalIdent(i);
+            const name = tree.identifier(ident);
+            if (std.mem.eql(u8, r, name)) {
+                std.debug.print("found entry symbol {s}\n", .{r});
+                try used.put(ident, {});
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            std.debug.print("could not find entry symbol {s}\n", .{r});
+        }
+    }
 
-    // Make a copy of roots because we may modify them.
+    // Make a copy of root nodes because we may modify them.
     const og_roots = try allocator.dupe(Node.Index, tree.spanToList(0));
     defer allocator.free(og_roots);
 
@@ -225,7 +241,7 @@ pub fn treeShake(allocator: Allocator, tree: *Ast, opts: Options) Allocator.Erro
     for (og_roots) |r| {
         switch (tree.node(r).tag) {
             .global_var, .override, .@"const", .@"struct", .@"fn", .type_alias => {
-                if (used.get(tree.globalName(r))) |_| try visit(tree, &used, r);
+                if (used.get(tree.globalIdent(r))) |_| try visit(tree, &used, r);
             },
             else => {},
         }
@@ -239,7 +255,7 @@ pub fn treeShake(allocator: Allocator, tree: *Ast, opts: Options) Allocator.Erro
         switch (node.tag) {
             // Set unused root span nodes to empty.
             .global_var, .override, .@"const", .@"struct", .@"fn", .type_alias => {
-                if (used.get(tree.globalName(r)) == null) tree.removeFromSpan(0, i);
+                if (used.get(tree.globalIdent(r)) == null) tree.removeFromSpan(0, i);
             },
             // Set unused import nodes to empty.
             .import => {
@@ -247,7 +263,7 @@ pub fn treeShake(allocator: Allocator, tree: *Ast, opts: Options) Allocator.Erro
                 var import_used = aliases.len == 0;
                 for (aliases, 0..) |a, j| {
                     const alias = tree.node(a);
-                    if (used.get(tree.identifier(alias.lhs))) |_| {
+                    if (used.get(alias.lhs)) |_| {
                         import_used = true;
                     } else {
                         tree.removeFromSpan(node.lhs, j);

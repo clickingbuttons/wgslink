@@ -40,6 +40,25 @@ pub fn deinit(self: *Self) void {
     self.modules.deinit();
 }
 
+fn treeShake(self: *Self, root_tree: Ast, tree: *Ast) !void {
+    var opts = self.opts.tree_shake orelse return;
+    if (opts.find_symbols) {
+        var found = try TreeShaker.findSymbols(self.allocator, root_tree);
+        defer found.deinit();
+
+        var all_symbols = std.ArrayList([]const u8).init(self.allocator);
+        defer all_symbols.deinit();
+        for (opts.symbols) |s| try all_symbols.append(s);
+        for (found.keys()) |k| try all_symbols.append(root_tree.identifier(k));
+        const owned = try all_symbols.toOwnedSlice();
+        defer self.allocator.free(owned);
+
+        try TreeShaker.treeShake(self.allocator, tree, owned);
+    } else {
+        try TreeShaker.treeShake(self.allocator, tree, opts.symbols);
+    }
+}
+
 pub fn bundle(
     self: *Self,
     writer: anytype,
@@ -82,7 +101,7 @@ pub fn bundle(
         if (fatal) return error.Aliasing;
     }
 
-    if (self.opts.tree_shake) |opts| try TreeShaker.treeShake(self.allocator, &tree, opts);
+    try self.treeShake(mod.file.tree.?, &tree);
     var renderer = Renderer(@TypeOf(writer)).init(writer, self.opts.minify, false);
     try renderer.writeTranslationUnit(tree);
 }
@@ -262,12 +281,12 @@ test "directive bundle" {
 test "ident clash bundle" {
     try testBundle("./test/bundle-ident-clash/a.wgsl",
         \\// test/bundle-ident-clash/b.wgsl
-        \\var a = 2.0;
-        \\var b = a + 3.0;
+        \\var a2 = 2.0;
+        \\var b = a2 + 3.0;
         \\// test/bundle-ident-clash/a.wgsl
-        \\var a2 = 1.0 + b;
+        \\var a = 1.0 + b;
         \\@vertex fn main() -> @location(0) vec4f {
-        \\  return vec4f(a2);
+        \\  return vec4f(a);
         \\}
     );
 }

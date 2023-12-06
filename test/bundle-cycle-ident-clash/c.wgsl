@@ -1,6 +1,7 @@
 // import { a } from './a.wgsl';
 const c = 3.0 + a;
 
+// module symbols
 // ./a.wgsl a = 2
 // ./c.wgsl c = 4
 
@@ -8,6 +9,3 @@ const c = 3.0 + a;
 // a: 2
 // c: 4
 
-// ref a:  (since scope == 0)
-// ref c:  (since scope == 0)
-// ref a:
