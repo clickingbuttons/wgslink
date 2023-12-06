@@ -98,24 +98,6 @@ pub fn getOrPutIdent(
     return @intCast(gop.index + 1);
 }
 
-pub fn getOrPutIdentUnique(
-    self: *Self,
-    allocator: Allocator,
-    ident: []const u8,
-) !Node.IdentIndex {
-    if (self.identifiers.get(ident) == null) return try self.getOrPutIdent(allocator, ident);
-    var count: usize = 2;
-    var new_ident = try std.fmt.allocPrint(allocator, "{s}{d}", .{ ident, count });
-    defer allocator.free(new_ident);
-    while (self.identifiers.get(new_ident)) |_| {
-        count += 1;
-        allocator.free(new_ident);
-        new_ident = try std.fmt.allocPrint(allocator, "{s}{d}", .{ ident, count });
-    }
-
-    return try self.getOrPutIdent(allocator, new_ident);
-}
-
 pub fn finishRootSpan(self: *Self, span_len: usize) void {
     self.nodes.items(.lhs)[0] = @intCast(self.extra.items.len - span_len);
     self.nodes.items(.rhs)[0] = @intCast(self.extra.items.len);
