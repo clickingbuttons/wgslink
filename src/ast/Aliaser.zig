@@ -542,7 +542,6 @@ fn visit(self: *Self, mod: Module, index: Node.Index) (Error || Allocator.Error)
             var global_var = tree.extraData(Node.GlobalVar, node.lhs);
             global_var.name = try self.getOrPutDecl(file, tree.identifier(global_var.name), node.src_offset);
             global_var.attrs = try self.visit(mod, global_var.attrs);
-            global_var.template_list = try self.visit(mod, global_var.template_list);
             global_var.type = try self.visit(mod, global_var.type);
             node.lhs = try self.addExtra(global_var);
             node.rhs = try self.visit(mod, node.rhs);
@@ -577,7 +576,6 @@ fn visit(self: *Self, mod: Module, index: Node.Index) (Error || Allocator.Error)
         .@"var" => {
             var extra = tree.extraData(Node.Var, node.lhs);
             extra.name = try self.getOrPutDecl(file, tree.identifier(extra.name), node.src_offset);
-            extra.template_list = try self.visit(mod, extra.template_list);
             extra.type = try self.visit(mod, extra.type);
             node.lhs = try self.addExtra(extra);
             node.rhs = try self.visit(mod, node.rhs);
@@ -632,20 +630,21 @@ fn visit(self: *Self, mod: Module, index: Node.Index) (Error || Allocator.Error)
         .attribute => {
             const attr: Node.Attribute = @enumFromInt(node.lhs);
             switch (attr) {
-                .@"const", .compute, .fragment, .invariant, .must_use, .vertex => {},
+                .@"const",
+                .compute,
+                .fragment,
+                .invariant,
+                .must_use,
+                .vertex,
+                .builtin,
+                .interpolate,
+                => {},
                 .diagnostic => {
                     const diagnostic = try self.diagnosticControl(tree, node.rhs);
                     node.rhs = try self.addExtra(diagnostic);
                 },
-                .interpolate => {
-                    var interpolate = tree.extraData(Node.Interpolation, node.rhs);
-                    interpolate.type = try self.visit(mod, interpolate.type);
-                    interpolate.sampling_expr = try self.visit(mod, interpolate.sampling_expr);
-                    node.rhs = try self.addExtra(interpolate);
-                },
                 .@"align",
                 .binding,
-                .builtin,
                 .group,
                 .id,
                 .location,

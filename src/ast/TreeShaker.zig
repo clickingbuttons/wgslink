@@ -56,12 +56,7 @@ fn visit(tree: *Ast, used: *Symbols, index: Node.Index) Allocator.Error!void {
         .span => for (tree.spanToList(index)) |i| try visit(tree, used, i),
         .global_var => {
             const global_var = tree.extraData(Node.GlobalVar, node.lhs);
-            try visitAll(tree, used, &.{
-                global_var.attrs,
-                global_var.template_list,
-                global_var.type,
-                node.rhs,
-            });
+            try visitAll(tree, used, &.{ global_var.attrs, global_var.type, node.rhs });
         },
         .override => {
             const override = tree.extraData(Node.Override, node.lhs);
@@ -138,7 +133,7 @@ fn visit(tree: *Ast, used: *Symbols, index: Node.Index) Allocator.Error!void {
         },
         .@"var" => {
             const extra = tree.extraData(Node.Var, node.lhs);
-            try visitAll(tree, used, &.{ extra.template_list, extra.name, extra.type, node.rhs });
+            try visitAll(tree, used, &.{ extra.name, extra.type, node.rhs });
         },
         .break_if,
         .const_assert,

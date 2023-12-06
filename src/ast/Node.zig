@@ -114,13 +114,6 @@ pub const Tag = enum(u8) {
 
 const Self = @This();
 
-// pub fn orderedRemove(self: *@This(), arr: []Node.Index, i: usize) void {
-//     for (self.from + i..self.to - 1) |j| {
-//         arr[j] = arr[j + 1];
-//     }
-//     self.to -= 1;
-// }
-
 // For parsing
 pub const Attribute = enum(Loc.Index) {
     compute,
@@ -144,12 +137,14 @@ pub const Attribute = enum(Loc.Index) {
 pub const GlobalVar = struct {
     attrs: Index = 0,
     name: IdentIndex,
-    template_list: Index = 0,
+    address_space: Index = 0,
+    access_mode: Index = 0,
     type: Index = 0,
 };
 pub const Var = struct {
     name: IdentIndex,
-    template_list: Index = 0,
+    address_space: Index = 0,
+    access_mode: Index = 0,
     type: Index = 0,
 };
 pub const TypedIdent = struct {
@@ -187,6 +182,38 @@ pub const Interpolation = struct {
     type: Index,
     sampling_expr: Index = 0,
 };
+
+/// https://www.w3.org/TR/WGSL/#address-space
+pub const AddressSpace = enum(Loc.Index) {
+    function = 1,
+    private,
+    workgroup,
+    uniform,
+    storage,
+    handle,
+};
+pub const AccessMode = enum(Loc.Index) { read = 1, write, read_write };
+
+/// https://www.w3.org/TR/WGSL/#builtin-inputs-outputs
+pub const Builtin = enum(Loc.Index) {
+    vertex_index,
+    instance_index,
+    position,
+    fragment,
+    front_facing,
+    frag_depth,
+    sample_index,
+    sample_mask,
+    local_invocation_id,
+    local_invocation_index,
+    global_invocation_id,
+    workgroup_id,
+    num_workgroups,
+};
+
+/// https://www.w3.org/TR/WGSL/#interpolation
+pub const InterpolationType = enum(Loc.Index) { perspective, linear, flat };
+pub const InterpolationSampling = enum(Loc.Index) { center, centroid, sample };
 
 pub const Severity = enum(Loc.Index) {
     @"error",

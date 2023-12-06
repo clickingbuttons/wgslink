@@ -237,8 +237,8 @@ pub fn Renderer(comptime UnderlyingWriter: type) type {
                     const global_var = tree.extraData(Node.GlobalVar, node.lhs);
                     try self.writeAttributes(tree, global_var.attrs);
                     try self.writeToken(.k_var);
-                    try self.writeTemplateList(tree, global_var.template_list);
-                    if (global_var.template_list != 0) try self.writeSpace() else try self.writeByte(' ');
+                    try self.writeVarTemplate(global_var.address_space, global_var.access_mode);
+                    if (global_var.address_space != 0) try self.writeSpace() else try self.writeByte(' ');
                     try self.writeOptionallyTypedIdent(tree, global_var.name, global_var.type, node.rhs);
                 },
                 .override => {
@@ -347,12 +347,15 @@ pub fn Renderer(comptime UnderlyingWriter: type) type {
                         .diagnostic => try self.writeDiagnostic(tree, node.rhs),
                         .interpolate => {
                             const interpolation = tree.extraData(Node.Interpolation, node.rhs);
-                            try self.writeIndices(
-                                false,
-                                tree,
-                                &.{ interpolation.type, interpolation.sampling_expr },
-                                .{ .start = "(", .sep = ",", .end = ")" },
-                            );
+                            try self.writeByte('(');
+                            const ty: Node.InterpolationType = @enumFromInt(interpolation.type);
+                            try self.writeAll(@tagName(ty));
+                            if (interpolation.sampling_expr != 0) {
+                                try self.writeByte(',');
+                                const sampling: Node.InterpolationSampling = @enumFromInt(interpolation.sampling_expr);
+                                try self.writeAll(@tagName(sampling));
+                            }
+                            try self.writeByte(')');
                         },
                         .workgroup_size => {
                             const workgroup_size = tree.extraData(Node.WorkgroupSize, node.rhs);
@@ -478,7 +481,7 @@ pub fn Renderer(comptime UnderlyingWriter: type) type {
                 .@"var" => {
                     const extra = tree.extraData(Node.Var, node.lhs);
                     try self.writeToken(.k_var);
-                    try self.writeTemplateList(tree, extra.template_list);
+                    try self.writeVarTemplate(extra.address_space, extra.access_mode);
                     try self.writeByte(' ');
                     try self.writeOptionallyTypedIdent(tree, extra.name, extra.type, node.rhs);
                 },
@@ -702,6 +705,20 @@ pub fn Renderer(comptime UnderlyingWriter: type) type {
             if (initializer != 0) {
                 try self.writeTokenSpaced(.@"=");
                 try self.writeIndex(tree, initializer);
+            }
+        }
+
+        fn writeVarTemplate(self: *Self, address_space: Node.Index, access_mode: Node.Index) RetType {
+            if (address_space != 0) {
+                try self.writeToken(.@"<");
+                const space: Node.AddressSpace = @enumFromInt(address_space);
+                try self.writeAll(@tagName(space));
+                if (access_mode != 0) {
+                    try self.writeToken(.@",");
+                    const mode: Node.AccessMode = @enumFromInt(access_mode);
+                    try self.writeAll(@tagName(mode));
+                }
+                try self.writeToken(.@">");
             }
         }
     };

@@ -28,6 +28,11 @@ pub const Tag = enum(u8) {
     invalid_element_count,
     invalid_initializer,
     invalid_severity,
+    invalid_address_space,
+    invalid_access_mode,
+    invalid_builtin,
+    invalid_interpolation_type,
+    invalid_interpolation_sampling,
     type_needs_ext,
 
     pub fn render(
@@ -65,6 +70,26 @@ pub const Tag = enum(u8) {
             .invalid_severity => {
                 try writer.writeAll("invalid severity");
                 try renderList(writer, Node.Severity);
+            },
+            .invalid_address_space => {
+                try writer.writeAll("invalid address space");
+                try renderList(writer, Node.AddressSpace);
+            },
+            .invalid_access_mode => {
+                try writer.writeAll("invalid access mode");
+                try renderList(writer, Node.AccessMode);
+            },
+            .invalid_builtin => {
+                try writer.writeAll("invalid builtin");
+                try renderList(writer, Node.Builtin);
+            },
+            .invalid_interpolation_type => {
+                try writer.writeAll("invalid interpolation type");
+                try renderList(writer, Node.InterpolationType);
+            },
+            .invalid_interpolation_sampling => {
+                try writer.writeAll("invalid interpolation sampling");
+                try renderList(writer, Node.InterpolationSampling);
             },
             .type_needs_ext => writer.writeAll("type requires an extension directive at the top of the program"),
         };
