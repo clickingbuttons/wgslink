@@ -15,7 +15,7 @@ const WaitGroup = std.Thread.WaitGroup;
 pub const Modules = std.StringArrayHashMap(Module);
 const Writer = @TypeOf(std.ArrayList(u8).writer());
 pub const Options = struct {
-    tree_shake: ?TreeShaker.Options,
+    entrypoints: ?[]const []const u8,
     minify: bool,
 };
 
@@ -41,21 +41,20 @@ pub fn deinit(self: *Self) void {
 }
 
 fn treeShake(self: *Self, root_tree: Ast, tree: *Ast) !void {
-    var opts = self.opts.tree_shake orelse return;
-    if (opts.find_symbols) {
-        var found = try TreeShaker.findSymbols(self.allocator, root_tree);
+    var entrypoints = self.opts.entrypoints orelse return;
+    if (entrypoints.len == 0) {
+        var found = try TreeShaker.entrypoints(self.allocator, root_tree);
         defer found.deinit();
 
         var all_symbols = std.ArrayList([]const u8).init(self.allocator);
         defer all_symbols.deinit();
-        for (opts.symbols) |s| try all_symbols.append(s);
         for (found.keys()) |k| try all_symbols.append(root_tree.identifier(k));
         const owned = try all_symbols.toOwnedSlice();
         defer self.allocator.free(owned);
 
         try TreeShaker.treeShake(self.allocator, tree, owned);
     } else {
-        try TreeShaker.treeShake(self.allocator, tree, opts.symbols);
+        try TreeShaker.treeShake(self.allocator, tree, entrypoints);
     }
 }
 

@@ -27,7 +27,7 @@ symbols: Symbols,
 module_scopes: ModuleScopes,
 /// Used to crawl modules
 modules: *const Modules,
-/// Will shorten aliases.
+/// Won't append comments showing which module code came from.
 minify: bool,
 
 /// Accumulator since MUST be at top of WGSL file
@@ -140,13 +140,13 @@ fn putModuleSymbol(
     const key = Symbol{ .module = module, .symbol = symbol };
     var symbol_gop = try self.symbols.getOrPut(key);
     if (!symbol_gop.found_existing) {
-        const ident = try uniqueIdent(&self.builder, symbol_names, symbol);
+        const ident = try self.uniqueIdent(symbol_names, symbol);
         try symbol_names.putNoClobber(ident, {});
         symbol_gop.value_ptr.* = SymbolData{
             .ident = ident,
             .src_offset = src_offset,
         };
-        std.debug.print("putSymbol {s} {s} = {d} ({s})\n", .{ module, symbol, ident, self.builder.identifiers.keys()[ident - 1] });
+        // std.debug.print("putSymbol {s} {s} = {d} ({s})\n", .{ module, symbol, ident, self.builder.identifiers.keys()[ident - 1] });
     }
 
     const scope_ident = try self.builder.getOrPutIdent(self.allocator, alias orelse symbol);
@@ -156,7 +156,7 @@ fn putModuleSymbol(
         try symbolAlreadyDecl(&self.builder, file, src_offset, scope_gop.value_ptr.*.src_offset);
     } else {
         scope_gop.value_ptr.* = symbol_gop.value_ptr.*;
-        std.debug.print("putScope {s}: {d}\n", .{ self.builder.identifiers.keys()[scope_ident - 1], symbol_gop.value_ptr.*.ident });
+        // std.debug.print("putScope {s}: {d}\n", .{ self.builder.identifiers.keys()[scope_ident - 1], symbol_gop.value_ptr.*.ident });
     }
 }
 
@@ -288,44 +288,49 @@ const IdentType = enum {
     token,
 };
 
+/// Caller owns returned slice
+fn makeIdent(self: *Self, symbol: []const u8, count: usize) ![]const u8 {
+    if (count == 1) return try self.allocator.dupe(u8, symbol);
+    return try std.fmt.allocPrint(self.allocator, "{s}{d}", .{ symbol, count });
+}
+
 fn uniqueIdent(
-    builder: *AstBuilder,
+    self: *Self,
     symbol_names: *SymbolNames,
     symbol: []const u8,
 ) !Node.IdentIndex {
-    const allocator = symbol_names.allocator;
-    var ident = try builder.getOrPutIdent(allocator, symbol);
+    const allocator = self.allocator;
+    var res: Node.IdentIndex = 0;
     var count: usize = 1;
-    while (symbol_names.get(ident)) |_| {
-        count += 1;
-        var alias = try std.fmt.allocPrint(allocator, "{s}{d}", .{ symbol, count });
+    while (true) : (count += 1) {
+        var alias = try self.makeIdent(symbol, count);
         defer allocator.free(alias);
-        ident = try builder.getOrPutIdent(allocator, alias);
+        res = try self.builder.getOrPutIdent(allocator, alias);
+        if (symbol_names.get(res) == null) break;
     }
 
-    return ident;
+    return res;
 }
 
 fn isUniqueIdent(self: *Self, ident: Node.IdentIndex) bool {
     for (self.scopes.items) |s| {
         if (s.get(ident) != null) return false;
     }
-
     return true;
 }
 
 fn uniqueScopedIdent(self: *Self, symbol: []const u8) !Node.IdentIndex {
     const allocator = self.allocator;
-    var ident = try self.builder.getOrPutIdent(allocator, symbol);
+    var res: Node.IdentIndex = 0;
     var count: usize = 1;
-    while (!self.isUniqueIdent(ident)) {
-        count += 1;
-        var alias = try std.fmt.allocPrint(allocator, "{s}{d}", .{ symbol, count });
+    while (true) : (count += 1) {
+        var alias = try self.makeIdent(symbol, count);
         defer allocator.free(alias);
-        ident = try self.builder.getOrPutIdent(allocator, alias);
+        res = try self.builder.getOrPutIdent(allocator, alias);
+        if (self.isUniqueIdent(res)) break;
     }
 
-    return ident;
+    return res;
 }
 
 fn getOrPutToken(self: *Self, symbol: []const u8) !Node.IdentIndex {
@@ -342,7 +347,7 @@ fn getOrPutRef(
     for (0..self.scopes.items.len) |i| {
         const scope = self.scopes.items[self.scopes.items.len - i - 1];
         if (scope.get(ident)) |sym| {
-            std.debug.print("ref {s} index {d}\n", .{ symbol, sym.ident });
+            // std.debug.print("ref {s} index {d}\n", .{ symbol, sym.ident });
             return sym.ident;
         }
     }

@@ -12,8 +12,12 @@ const stderr = std.io.getStdErr().writer();
 pub fn main() !void {
     const params = comptime clap.parseParamsComptime(
         \\-h, --help             Display this help and exit.
-        \\-m, --minify           Rename variables to be shorter and remove whitespace.
-        \\-e, --entry <str>...   Symbols in entry files' global scope to NOT tree shake. If not specified entry file will default to functions with @vertex, @fragment, or @compute attributes.
+        \\-m, --minify           Remove whitespace.
+        \\-e, --entry <str>...   Symbols in entry files' global scope to NOT tree shake.
+        \\
+        \\	If not specified will default to functions with @vertex, @fragment, or @compute attributes.
+        \\
+        \\	If any entry is "*" no tree shaking will occur.
         \\<str>...               Entry files
         \\
     );
@@ -34,11 +38,12 @@ pub fn main() !void {
     try thread_pool.init(.{ .allocator = allocator });
     defer thread_pool.deinit();
 
+    var tree_shake = true;
+    for (res.args.entry) |e| {
+        if (e.len == 1 and e[0] == '*') tree_shake = false;
+    }
     const opts = Bundler.Options{
-        .tree_shake = .{
-            .symbols = res.args.entry,
-            .find_symbols = res.args.entry.len == 0,
-        },
+        .entrypoints = if (tree_shake) res.args.entry else null,
         .minify = res.args.minify != 0,
     };
     var bundler = try Bundler.init(allocator, &thread_pool, opts);

@@ -5,7 +5,7 @@ const Node = @import("./Node.zig");
 const Allocator = std.mem.Allocator;
 pub const Symbols = std.AutoArrayHashMap(Node.IdentIndex, void);
 
-pub fn findSymbols(allocator: Allocator, tree: Ast) !Symbols {
+pub fn entrypoints(allocator: Allocator, tree: Ast) !Symbols {
     var res = Symbols.init(allocator);
     for (tree.spanToList(0)) |i| {
         const node = tree.node(i);
@@ -206,11 +206,6 @@ fn visit(tree: *Ast, used: *Symbols, index: Node.Index) Allocator.Error!void {
     }
 }
 
-pub const Options = struct {
-    symbols: []const []const u8 = &.{},
-    find_symbols: bool = true,
-};
-
 /// Tree shakes globals by removing unused nodes (including imports) from the root span.
 /// Tree shakes imports by removing unused alises from their import span.
 pub fn treeShake(allocator: Allocator, tree: *Ast, roots: []const []const u8) Allocator.Error!void {
@@ -222,14 +217,13 @@ pub fn treeShake(allocator: Allocator, tree: *Ast, roots: []const []const u8) Al
             const ident = tree.globalIdent(i);
             const name = tree.identifier(ident);
             if (std.mem.eql(u8, r, name)) {
-                std.debug.print("found entry symbol {s}\n", .{r});
                 try used.put(ident, {});
                 found = true;
                 break;
             }
         }
         if (!found) {
-            std.debug.print("could not find entry symbol {s}\n", .{r});
+            std.debug.print("warning: could not find entry symbol {s}\n", .{r});
         }
     }
 

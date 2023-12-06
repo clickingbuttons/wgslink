@@ -3,9 +3,6 @@ const a = 1.0 + b;
 
 @vertex fn main() -> @location(0) vec4f {
 	var res = vec4f(out_of_order + a);
-	for (var i = 0u; i < 4u; i++) {
-		res += f32(i);
-	}
 	const out_of_order = 3.0;
 	return res;
 }
