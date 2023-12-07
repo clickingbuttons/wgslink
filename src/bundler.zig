@@ -1,11 +1,11 @@
 const std = @import("std");
 const Module = @import("module.zig");
-const Renderer = @import("./WgslRenderer.zig").Renderer;
 const TreeShaker = @import("./ast/TreeShaker.zig");
 const Ast = @import("./ast/Ast.zig");
 const Aliaser = @import("./ast/Aliaser.zig");
 const FileError = @import("./file/Error.zig");
-const node_mod = @import("./ast/Node.zig");
+const renderer = @import("./WgslRenderer.zig").renderer;
+const fail = @import("./main.zig").fail;
 
 const Self = @This();
 const Allocator = std.mem.Allocator;
@@ -14,9 +14,12 @@ const Mutex = std.Thread.Mutex;
 const WaitGroup = std.Thread.WaitGroup;
 pub const Modules = std.StringArrayHashMap(Module);
 pub const Options = struct {
-    entrypoints: ?[]const []const u8,
-    minify: bool,
+    tree_shake: bool = true,
+    /// If len = 0 will try to find entrypoints
+    entrypoints: []const []const u8 = &.{},
+    minify: bool = false,
 };
+const ErrConfig = std.io.tty.Config;
 
 allocator: Allocator,
 thread_pool: *ThreadPool,
@@ -40,31 +43,25 @@ pub fn deinit(self: *Self) void {
 }
 
 fn treeShake(self: *Self, root_tree: Ast, tree: *Ast) !void {
-    var entrypoints = self.opts.entrypoints orelse return;
-    if (entrypoints.len == 0) {
+    if (self.opts.tree_shake == false) return;
+    const entrypoints = self.opts.entrypoints;
+    const roots = if (entrypoints.len > 0) entrypoints else brk: {
         var found = try TreeShaker.entrypoints(self.allocator, root_tree);
         defer found.deinit();
 
         var all_symbols = std.ArrayList([]const u8).init(self.allocator);
         defer all_symbols.deinit();
         for (found.keys()) |k| try all_symbols.append(root_tree.identifier(k));
-        const owned = try all_symbols.toOwnedSlice();
-        defer self.allocator.free(owned);
+        break :brk try all_symbols.toOwnedSlice();
+    };
+    defer if (entrypoints.len == 0) self.allocator.free(roots);
 
-        try TreeShaker.treeShake(self.allocator, tree, owned);
-    } else {
-        try TreeShaker.treeShake(self.allocator, tree, entrypoints);
-    }
+    try TreeShaker.treeShake(self.allocator, tree, roots);
 }
 
-pub fn bundle(
-    self: *Self,
-    writer: anytype,
-    errwriter: anytype,
-    errconfig: std.io.tty.Config,
-    file: []const u8,
-) !void {
-    const resolved = try Module.resolveFrom(self.allocator, "./a", file);
+/// Caller owns returned tree allocated with self.allocator.
+pub fn bundle(self: *Self, errwriter: anytype, errconfig: ErrConfig, fname: []const u8) !Ast {
+    const resolved = try Module.resolveFrom(self.allocator, "./a", fname);
     defer self.allocator.free(resolved);
     const root_mod = Module.init(self.allocator, resolved, "bundle api");
     try self.modules.put(resolved, root_mod);
@@ -89,7 +86,6 @@ pub fn bundle(
     var aliaser = try Aliaser.init(self.allocator, &self.modules, self.opts.minify);
     defer aliaser.deinit();
     var tree = try aliaser.aliasAll(mod.path);
-    defer tree.deinit(self.allocator);
     if (tree.errors.len > 0) {
         var fatal = false;
         for (tree.errors) |e| {
@@ -100,15 +96,14 @@ pub fn bundle(
     }
 
     try self.treeShake(mod.file.tree.?, &tree);
-    var renderer = Renderer(@TypeOf(writer)).init(writer, self.opts.minify, false);
-    try renderer.writeTranslationUnit(tree);
+    return tree;
 }
 
 /// tokenize, parse and scan files for imports
 fn workerAst(
     self: *Self,
     errwriter: anytype,
-    errconfig: std.io.tty.Config,
+    errconfig: ErrConfig,
     wait_group: *WaitGroup,
     mod: *Module,
 ) void {
@@ -151,7 +146,7 @@ fn workerAst(
 fn writeFileOpenError(
     self: Self,
     errwriter: anytype,
-    errconfig: std.io.tty.Config,
+    errconfig: ErrConfig,
     mod: *Module,
     errname: []const u8,
 ) !void {
@@ -183,7 +178,7 @@ fn writeModuleAliasError(
     self: Self,
     aliaser: Aliaser,
     errwriter: anytype,
-    errconfig: std.io.tty.Config,
+    errconfig: ErrConfig,
     mod: *const Module,
 ) !void {
     const source = try mod.source();
@@ -198,11 +193,7 @@ fn testBundle(comptime entry: []const u8, comptime expected: [:0]const u8) !void
     try thread_pool.init(.{ .allocator = allocator });
     defer thread_pool.deinit();
 
-    const opts = Options{
-        .tree_shake = TreeShaker.Options{},
-        .minify = false,
-    };
-    var bundler = try Self.init(allocator, &thread_pool, opts);
+    var bundler = try Self.init(allocator, &thread_pool, .{});
     defer bundler.deinit();
 
     var buffer = std.ArrayList(u8).init(allocator);
@@ -211,7 +202,11 @@ fn testBundle(comptime entry: []const u8, comptime expected: [:0]const u8) !void
     var errbuf = std.ArrayList(u8).init(allocator);
     defer errbuf.deinit();
 
-    try bundler.bundle(buffer.writer(), errbuf.writer(), .no_color, entry);
+    var tree = try bundler.bundle(errbuf.writer(), .no_color, entry);
+    defer tree.deinit(allocator);
+
+    var wgsl = renderer(buffer.writer(), .{});
+    try wgsl.writeTranslationUnit(tree);
 
     try std.testing.expectEqualStrings(expected, buffer.items);
 }

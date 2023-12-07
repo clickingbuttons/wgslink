@@ -6,6 +6,10 @@ const Visitor = @import("./ast/Visitor.zig").Visitor;
 const Token = @import("./wgsl/Token.zig").Tag;
 
 const Allocator = std.mem.Allocator;
+pub const Options = struct {
+    minify: bool = false,
+    render_imports: bool = false,
+};
 
 /// Renders bundles of modules back into WGSL.
 pub fn Renderer(comptime UnderlyingWriter: type) type {
@@ -24,8 +28,7 @@ pub fn Renderer(comptime UnderlyingWriter: type) type {
         const VisitorType = Visitor(RetType);
 
         underlying_writer: UnderlyingWriter,
-        minify: bool,
-        imports: bool,
+        opts: Options,
 
         disabled_offset: ?usize = null,
         indent_count: usize = 0,
@@ -38,11 +41,10 @@ pub fn Renderer(comptime UnderlyingWriter: type) type {
         /// not used until the next line
         indent_next_line: usize = 0,
 
-        pub fn init(underlying_writer: UnderlyingWriter, minify: bool, imports: bool) Self {
+        pub fn init(underlying_writer: UnderlyingWriter, opts: Options) Self {
             return Self{
                 .underlying_writer = underlying_writer,
-                .minify = minify,
-                .imports = imports,
+                .opts = opts,
             };
         }
 
@@ -93,7 +95,7 @@ pub fn Renderer(comptime UnderlyingWriter: type) type {
         }
 
         pub fn newline(self: *Self) RetType {
-            if (!self.minify) _ = try self.writeNoIndent("\n");
+            if (!self.opts.minify) _ = try self.writeNoIndent("\n");
         }
 
         fn resetLine(self: *Self) void {
@@ -144,7 +146,7 @@ pub fn Renderer(comptime UnderlyingWriter: type) type {
 
         /// Writes ' ' bytes if the current line is empty
         fn applyIndent(self: *Self) RetType {
-            if (self.minify) return;
+            if (self.opts.minify) return;
             const current_indent = self.currentIndent();
             if (self.current_line_empty and current_indent > 0) {
                 if (self.disabled_offset == null) {
@@ -174,7 +176,7 @@ pub fn Renderer(comptime UnderlyingWriter: type) type {
         }
 
         fn writeSpace(self: *Self) !void {
-            if (!self.minify) try self.writeByte(' ');
+            if (!self.opts.minify) try self.writeByte(' ');
         }
 
         fn writeSpaced(self: *Self, token: []const u8) !void {
@@ -187,13 +189,10 @@ pub fn Renderer(comptime UnderlyingWriter: type) type {
             const indices = tree.spanToList(0);
             for (indices, 0..) |index, i| {
                 std.debug.assert(index != 0);
-                // std.debug.print("{d} / {d} = {d} {any}\n", .{ i, indices.len, index, tree.node(index) });
-                try self.writeIndex(tree, index);
                 const tag = tree.node(index).tag;
-                switch (tag) {
-                    .import => if (!self.imports) continue,
-                    else => {},
-                }
+                if (!self.opts.render_imports and tag == .import) continue;
+
+                try self.writeIndex(tree, index);
                 switch (tag) {
                     .diagnostic_directive,
                     .enable_directive,
@@ -217,7 +216,7 @@ pub fn Renderer(comptime UnderlyingWriter: type) type {
                     std.debug.panic("unexpected node of type {s}", .{@tagName(t)});
                 },
                 .comment => {
-                    if (self.minify) return;
+                    if (self.opts.minify) return;
                     try self.writeAll("// ");
                     try self.writeIdentifier(tree, node.lhs);
                 },
@@ -281,7 +280,6 @@ pub fn Renderer(comptime UnderlyingWriter: type) type {
                     try self.writeIndex(tree, node.rhs);
                 },
                 .import => {
-                    if (!self.imports) return;
                     try self.writeTokenSpace(.k_import);
                     if (node.lhs != 0) {
                         try self.writeList(tree, node.lhs, .{ .start = "{ ", .sep = "\n", .end = " }" });
@@ -730,12 +728,15 @@ pub fn Renderer(comptime UnderlyingWriter: type) type {
     };
 }
 
+pub fn renderer(writer: anytype, opts: Options) Renderer(@TypeOf(writer)) {
+    return Renderer(@TypeOf(writer)).init(writer, opts);
+}
+
 fn testWrite(
     allocator: std.mem.Allocator,
     writer: anytype,
     source: [:0]const u8,
-    minify: bool,
-    imports: bool,
+    opts: Options,
 ) !void {
     var tree = try Parser.parse(allocator, null, source);
     defer tree.deinit(allocator);
@@ -746,27 +747,26 @@ fn testWrite(
         try stderr.writer().writeByte('\n');
         for (tree.errors) |e| try e.write(stderr.writer(), term);
     } else {
-        var renderer = Renderer(@TypeOf(writer)).init(writer, minify, imports);
-        try renderer.writeTranslationUnit(tree);
+        var wgsl = renderer(writer, opts);
+        try wgsl.writeTranslationUnit(tree);
     }
 }
 
 fn testRender(
     comptime source: [:0]const u8,
     comptime expected: [:0]const u8,
-    minify: bool,
-    imports: bool,
+    opts: Options,
 ) !void {
     const allocator = std.testing.allocator;
     var arr = try std.ArrayList(u8).initCapacity(allocator, source.len);
     defer arr.deinit();
 
-    try testWrite(allocator, arr.writer(), source, minify, imports);
+    try testWrite(allocator, arr.writer(), source, opts);
     try std.testing.expectEqualStrings(expected, arr.items);
 }
 
 fn testCanonical(comptime source: [:0]const u8) !void {
-    try testRender(source, source, false, false);
+    try testRender(source, source, .{});
 }
 
 test "var" {
@@ -796,7 +796,7 @@ test "comments" {
         \\const a: u32 = 0u;
         \\const b: u32 = 1u;
         \\const c: u32 = 2u;
-    , false, false);
+    , .{});
 }
 
 test "diagnostic" {
@@ -872,7 +872,7 @@ test "struct" {
     ;
     try testCanonical(foo);
 
-    try testRender(foo ++ ";", foo, false, false);
+    try testRender(foo ++ ";", foo, .{});
 
     try testCanonical(
         \\struct Foo {
@@ -998,7 +998,7 @@ test "while" {
 
 test "import" {
     const source = "// import { Foo } from \"./foo.wgsl\";";
-    try testRender(source, source, false, true);
+    try testRender(source, source, .{ .render_imports = true });
 }
 
 test "scope" {
@@ -1012,8 +1012,8 @@ test "scope" {
 }
 
 test "minify" {
-    try testRender("var a: u32 = 0u;", "var a:u32=0u;", true, false);
-    try testRender("var<uniform> a: u32 = 0u;", "var<uniform>a:u32=0u;", true, false);
+    try testRender("var a: u32 = 0u;", "var a:u32=0u;", .{ .minify = true });
+    try testRender("var<uniform> a: u32 = 0u;", "var<uniform>a:u32=0u;", .{ .minify = true });
     try testRender(
         \\fn test() {
         \\  while false {
@@ -1022,5 +1022,5 @@ test "minify" {
         \\}
     ,
         \\fn test(){while false{if (true){return;}}}
-    , true, false);
+    , .{ .minify = true });
 }

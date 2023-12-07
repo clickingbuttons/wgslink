@@ -3,25 +3,85 @@ const clap = @import("clap");
 const Ast = @import("./ast/Ast.zig");
 const Module = @import("./module.zig");
 const Bundler = @import("./bundler.zig");
+const renderer = @import("./WgslRenderer.zig").renderer;
+const BindGroupLayouts = @import("./ast/BindGroupLayouts.zig");
 
+const Allocator = std.mem.Allocator;
 const ThreadPool = std.Thread.Pool;
 const max_source = 1 << 30;
 const stdout = std.io.getStdOut();
 const stderr = std.io.getStdErr();
 var failed = false;
 
-pub fn fail(comptime fmt: []const u8, args: anytype, errconfig: std.io.tty.Config) void {
+fn fail(comptime fmt: []const u8, args: anytype) void {
+    const errconfig = std.io.tty.detectConfig(stderr);
     errconfig.setColor(stderr, .red) catch {};
     std.debug.print(fmt, args);
     errconfig.setColor(stderr, .reset) catch {};
     failed = true;
 }
 
+fn createFile(allocator: Allocator, dir: []const u8, path: []const u8, ext: []const u8) !std.fs.File {
+    const basename = try std.fmt.allocPrint(allocator, "{s}{s}", .{
+        std.fs.path.basename(path),
+        ext,
+    });
+    defer allocator.free(basename);
+    const fname = try std.fs.path.join(allocator, &.{ dir, basename });
+    defer allocator.free(fname);
+    return std.fs.cwd().createFile(fname, .{}) catch |err| {
+        fail("{} when creating {s}\n", .{ err, fname });
+        return err;
+    };
+}
+
+fn bundleAndWrite(args: anytype, bundler: *Bundler, fname: []const u8) !void {
+    const allocator = bundler.allocator;
+    const errconfig = std.io.tty.detectConfig(stderr);
+
+    var tree = bundler.bundle(stderr.writer(), errconfig, fname) catch |err| switch (err) {
+        error.UnparsedModule => return,
+        else => {
+            fail("{} when bundling {s}\n", .{ err, fname });
+            return err;
+        },
+    };
+    defer tree.deinit(allocator);
+
+    const outfile = if (args.outdir) |o| try createFile(allocator, o, fname, "") else stdout;
+    defer if (args.outdir) |_| outfile.close();
+
+    var wgsl = renderer(outfile.writer(), .{
+        .minify = bundler.opts.minify,
+        .render_imports = false,
+    });
+    try wgsl.writeTranslationUnit(tree);
+    // be nice to ttys
+    if (args.outdir == null) try outfile.writer().writeByte('\n');
+
+    if (args.layout != 0) {
+        const attribfile = if (args.outdir) |o| try createFile(allocator, o, fname, ".json") else stderr;
+        defer if (args.outdir) |_| attribfile.close();
+        var bind_group_layouts = try BindGroupLayouts.extractLayouts(allocator, tree);
+        defer bind_group_layouts.deinit();
+
+        const options = std.json.StringifyOptions{
+            .emit_null_optional_fields = false,
+            .whitespace = .indent_tab,
+        };
+        try std.json.stringify(bind_group_layouts, options, attribfile.writer());
+
+        // be nice to ttys
+        if (args.outdir == null) try attribfile.writer().writeByte('\n');
+    }
+}
+
 pub fn main() !void {
     const params = comptime clap.parseParamsComptime(
         \\-h, --help             Display this help and exit.
         \\-m, --minify           Remove whitespace.
-        \\-o, --outdir <str>     Output directory (otherwise will print to stdout)
+        \\-l, --layout           Extract bind group layout to JSON file or stderr.
+        \\-o, --outdir <str>     Output directory (otherwise will print to stdout).
         \\-e, --entry <str>...   Symbols in entry files' global scope to NOT tree shake.
         \\
         \\	If not specified will default to functions with @vertex, @fragment, or @compute attributes.
@@ -31,7 +91,12 @@ pub fn main() !void {
         \\
     );
     var diag = clap.Diagnostic{};
-    var parsed = clap.parse(clap.Help, &params, clap.parsers.default, .{ .diagnostic = &diag }) catch |err| {
+    var parsed = clap.parse(
+        clap.Help,
+        &params,
+        clap.parsers.default,
+        .{ .diagnostic = &diag },
+    ) catch |err| {
         diag.report(stderr.writer(), err) catch {};
         return err;
     };
@@ -47,44 +112,26 @@ pub fn main() !void {
     var thread_pool: ThreadPool = undefined;
     try thread_pool.init(.{ .allocator = allocator });
     defer thread_pool.deinit();
-
     var tree_shake = true;
     for (args.entry) |e| {
         if (e.len == 1 and e[0] == '*') tree_shake = false;
     }
     const opts = Bundler.Options{
-        .entrypoints = if (tree_shake) args.entry else null,
+        .tree_shake = tree_shake,
+        .entrypoints = args.entry,
         .minify = args.minify != 0,
     };
     var bundler = try Bundler.init(allocator, &thread_pool, opts);
     defer bundler.deinit();
 
-    const errconfig = std.io.tty.detectConfig(stderr);
     if (args.outdir) |o| std.fs.cwd().makePath(o) catch |err| {
-        fail("{} when makePath {s}\n", .{ err, o }, errconfig);
+        fail("{} when makePath {s}\n", .{ err, o });
         return err;
     };
 
-    for (parsed.positionals) |fname| {
-        const outfile = if (args.outdir) |o| brk: {
-            const basename = std.fs.path.basename(fname);
-            const path = try std.fs.path.join(allocator, &.{ o, basename });
-            defer allocator.free(path);
-            var file = std.fs.cwd().createFile(path, .{}) catch |err| {
-                fail("{} when creating {s}\n", .{ err, path }, errconfig);
-                continue;
-            };
-            break :brk file;
-        } else std.io.getStdOut();
-        defer if (args.outdir) |_| outfile.close();
+    for (parsed.positionals) |fname| bundleAndWrite(args, &bundler, fname) catch {};
 
-        bundler.bundle(outfile.writer(), stderr.writer(), errconfig, fname) catch |err| switch (err) {
-            error.UnparsedModule => {},
-            else => fail("{} when bundling {s}\n", .{ err, fname }, errconfig),
-        };
-    }
-
-    if (failed) std.os.exit(1);
+    std.os.exit(@intFromBool(failed));
 }
 
 test "bundler" {

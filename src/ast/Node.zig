@@ -144,7 +144,7 @@ pub const GlobalVar = struct {
 pub const Var = struct {
     name: IdentIndex,
     address_space: Index = 0,
-    access_mode: Index = 0,
+    access_mode: Index = @intFromEnum(AccessMode.read),
     type: Index = 0,
 };
 pub const TypedIdent = struct {
@@ -192,7 +192,7 @@ pub const AddressSpace = enum(Loc.Index) {
     storage,
     handle,
 };
-pub const AccessMode = enum(Loc.Index) { read = 1, write, read_write };
+pub const AccessMode = enum(Loc.Index) { read, write, read_write };
 
 /// https://www.w3.org/TR/WGSL/#builtin-inputs-outputs
 pub const Builtin = enum(Loc.Index) {
@@ -213,7 +213,7 @@ pub const Builtin = enum(Loc.Index) {
 
 /// https://www.w3.org/TR/WGSL/#interpolation
 pub const InterpolationType = enum(Loc.Index) { perspective, linear, flat };
-pub const InterpolationSampling = enum(Loc.Index) { center, centroid, sample };
+pub const InterpolationSampling = enum(Loc.Index) { center = 1, centroid, sample };
 
 pub const Severity = enum(Loc.Index) {
     @"error",
