@@ -351,7 +351,7 @@ fn getOrPutRef(
             return sym.ident;
         }
     }
-    if (!builtins.has(symbol)) {
+    if (self.minify and !builtins.has(symbol)) {
         const len: Loc.Index = @intCast(symbol.len);
         const err_data = .{ .aliasing = .{ .tag = .unresolved_ref } };
         var err = file.makeError(src_offset, src_offset + len, err_data);

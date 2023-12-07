@@ -13,7 +13,6 @@ const ThreadPool = std.Thread.Pool;
 const Mutex = std.Thread.Mutex;
 const WaitGroup = std.Thread.WaitGroup;
 pub const Modules = std.StringArrayHashMap(Module);
-const Writer = @TypeOf(std.ArrayList(u8).writer());
 pub const Options = struct {
     entrypoints: ?[]const []const u8,
     minify: bool,

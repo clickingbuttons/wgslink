@@ -6,13 +6,22 @@ const Bundler = @import("./bundler.zig");
 
 const ThreadPool = std.Thread.Pool;
 const max_source = 1 << 30;
-const stdout = std.io.getStdOut().writer();
-const stderr = std.io.getStdErr().writer();
+const stdout = std.io.getStdOut();
+const stderr = std.io.getStdErr();
+var failed = false;
+
+pub fn fail(comptime fmt: []const u8, args: anytype, errconfig: std.io.tty.Config) void {
+    errconfig.setColor(stderr, .red) catch {};
+    std.debug.print(fmt, args);
+    errconfig.setColor(stderr, .reset) catch {};
+    failed = true;
+}
 
 pub fn main() !void {
     const params = comptime clap.parseParamsComptime(
         \\-h, --help             Display this help and exit.
         \\-m, --minify           Remove whitespace.
+        \\-o, --outdir <str>     Output directory (otherwise will print to stdout)
         \\-e, --entry <str>...   Symbols in entry files' global scope to NOT tree shake.
         \\
         \\	If not specified will default to functions with @vertex, @fragment, or @compute attributes.
@@ -22,14 +31,15 @@ pub fn main() !void {
         \\
     );
     var diag = clap.Diagnostic{};
-    var res = clap.parse(clap.Help, &params, clap.parsers.default, .{ .diagnostic = &diag }) catch |err| {
-        diag.report(stderr, err) catch {};
+    var parsed = clap.parse(clap.Help, &params, clap.parsers.default, .{ .diagnostic = &diag }) catch |err| {
+        diag.report(stderr.writer(), err) catch {};
         return err;
     };
-    defer res.deinit();
+    defer parsed.deinit();
 
-    if (res.args.help != 0 or res.positionals.len == 0)
-        return clap.help(stderr, clap.Help, &params, .{});
+    const args = parsed.args;
+    if (args.help != 0 or parsed.positionals.len == 0)
+        return clap.help(stderr.writer(), clap.Help, &params, .{});
 
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     const allocator = gpa.allocator();
@@ -39,31 +49,38 @@ pub fn main() !void {
     defer thread_pool.deinit();
 
     var tree_shake = true;
-    for (res.args.entry) |e| {
+    for (args.entry) |e| {
         if (e.len == 1 and e[0] == '*') tree_shake = false;
     }
     const opts = Bundler.Options{
-        .entrypoints = if (tree_shake) res.args.entry else null,
-        .minify = res.args.minify != 0,
+        .entrypoints = if (tree_shake) args.entry else null,
+        .minify = args.minify != 0,
     };
     var bundler = try Bundler.init(allocator, &thread_pool, opts);
     defer bundler.deinit();
 
-    var errconfig = std.io.tty.detectConfig(std.io.getStdErr());
+    const errconfig = std.io.tty.detectConfig(stderr);
+    if (args.outdir) |o| std.fs.cwd().makePath(o) catch |err| {
+        fail("{} when makePath {s}\n", .{ err, o }, errconfig);
+        return err;
+    };
 
-    var failed = false;
-    for (res.positionals) |pos| {
-        bundler.bundle(stdout, stderr, errconfig, pos) catch |err| {
-            errconfig.setColor(stderr, .red) catch {};
-            switch (err) {
-                error.UnparsedModule => {},
-                else => {
-                    stderr.print("error: {s} when bundling {s}\n", .{ @errorName(err), pos }) catch {};
-                },
-            }
-            errconfig.setColor(stderr, .reset) catch {};
-            failed = true;
-            continue;
+    for (parsed.positionals) |fname| {
+        const outfile = if (args.outdir) |o| brk: {
+            const basename = std.fs.path.basename(fname);
+            const path = try std.fs.path.join(allocator, &.{ o, basename });
+            defer allocator.free(path);
+            var file = std.fs.cwd().createFile(path, .{}) catch |err| {
+                fail("{} when creating {s}\n", .{ err, path }, errconfig);
+                continue;
+            };
+            break :brk file;
+        } else std.io.getStdOut();
+        defer if (args.outdir) |_| outfile.close();
+
+        bundler.bundle(outfile.writer(), stderr.writer(), errconfig, fname) catch |err| switch (err) {
+            error.UnparsedModule => {},
+            else => fail("{} when bundling {s}\n", .{ err, fname }, errconfig),
         };
     }
 

@@ -138,7 +138,7 @@ pub const GlobalVar = struct {
     attrs: Index = 0,
     name: IdentIndex,
     address_space: Index = 0,
-    access_mode: Index = 0,
+    access_mode: Index = @intFromEnum(AccessMode.read),
     type: Index = 0,
 };
 pub const Var = struct {
