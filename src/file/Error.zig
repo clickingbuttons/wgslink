@@ -127,7 +127,7 @@ pub fn write(self: Self, writer: anytype, term: std.io.tty.Config) !void {
                 try writer.writeAll("no matching export");
             },
             .unresolved_ref => {
-                try writer.writeAll("unresolved reference may not get tree shaked properly");
+                try writer.writeAll("unresolved reference will not be minified");
             },
         },
     }

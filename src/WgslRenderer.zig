@@ -339,9 +339,15 @@ pub fn Renderer(comptime UnderlyingWriter: type) type {
                     try self.writeAll(@tagName(attr));
                     switch (attr) {
                         .compute, .@"const", .fragment, .invariant, .must_use, .vertex => {},
-                        .@"align", .binding, .builtin, .group, .id, .location, .size => {
+                        .@"align", .binding, .group, .id, .location, .size => {
                             try self.writeToken(.@"(");
                             try self.writeIndex(tree, node.rhs);
+                            try self.writeToken(.@")");
+                        },
+                        .builtin => {
+                            try self.writeToken(.@"(");
+                            const builtin: Node.Builtin = @enumFromInt(node.rhs);
+                            try self.writeAll(@tagName(builtin));
                             try self.writeToken(.@")");
                         },
                         .diagnostic => try self.writeDiagnostic(tree, node.rhs),
@@ -351,8 +357,8 @@ pub fn Renderer(comptime UnderlyingWriter: type) type {
                             const ty: Node.InterpolationType = @enumFromInt(interpolation.type);
                             try self.writeAll(@tagName(ty));
                             if (interpolation.sampling_expr != 0) {
-                                try self.writeByte(',');
                                 const sampling: Node.InterpolationSampling = @enumFromInt(interpolation.sampling_expr);
+                                try self.writeByte(',');
                                 try self.writeAll(@tagName(sampling));
                             }
                             try self.writeByte(')');
@@ -524,7 +530,7 @@ pub fn Renderer(comptime UnderlyingWriter: type) type {
                         else => unreachable,
                     };
                     try self.writeToken(token);
-                    try self.writeIndex(tree, node.rhs);
+                    try self.writeIndex(tree, node.lhs);
                 },
                 .lshift,
                 .rshift,
