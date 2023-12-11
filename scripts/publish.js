@@ -88,6 +88,8 @@ function buildRoot() {
 		engines: { node: '>=12' },
 		scripts: {}, // Keeps `npm publish` from crying
 		bin: { "wgslink": "bin/wgslink" },
+		main: "lib.js",
+		types: "lib.d.ts",
 		optionalDependencies: zigTargets.reduce((acc, cur) => {
 			acc[packageName(cur)] = version;
 			return acc;

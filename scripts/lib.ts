@@ -1,29 +1,30 @@
 #!/usr/bin/env node
 
-import { execFileSync } from 'node:child_process';
-// const os = require('os');
-// const packageName = `@wgslink/wgslink-${nodeToZigCPU[os.arch()]}-${nodeToZigOS[os.platform()]}`;
-//
-// const binPath = `${packageName}/bin/usfm${os.platform() == 'win32' ? '.exe' : ''}`;
-// const absBinPath = require.resolve(binPath);
-const absBinPath = './zig-out/bin/wgslink';
+import { spawnSync } from 'node:child_process';
+import { arch, platform } from 'node:os';
+const name = 'wgslink';
+const packageName = `@${name}/${arch()}-${platform()}`;
+const binPath = `${packageName}/bin/${name}${platform() == 'win32' ? '.exe' : ''}`;
+const absBinPath = require.resolve(binPath);
+// const absBinPath = './zig-out/bin/wgslink';
 
-export interface Options {
-	entries: string[],
-	outdir: string,
+export interface Bundle {
+	text: string;
+	layout: any;
 };
-export function bundle(opts: Options) {
-	opts.entries.forEach(e => {
-		try {
-			execFileSync(absBinPath, ['--layout', '--outdir', opts.outdir, e], {
-				stdio: 'inherit',
-				windowsHide: true,
-			});
-		} catch {}
-	});
+
+export function bundle(entry: string): Bundle {
+	const child = spawnSync(absBinPath, ['--layout', entry], { encoding: 'utf8' });
+	if (child.error) {
+		throw new Error(child.stderr);
+	} else {
+		return {
+			text: child.stdout,
+			layout: child.stderr,
+		};
+	}
 }
 
-// bundle({
-// 	entries: ['./test/boids-sprite-update.wgsl'],
-// 	outdir: 'out',
-// });
+console.log(
+bundle('./test/boids-sprite-update.wgsl')
+)
