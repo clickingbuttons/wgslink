@@ -252,7 +252,7 @@ pub fn Renderer(comptime UnderlyingWriter: type) type {
                     try self.writeTokenSpace(.k_fn);
                     try self.writeIdentifier(tree, header.name);
                     try self.writeToken(.@"(");
-                    try self.writeList(tree, header.params, .{ .sep_space = true });
+                    try self.writeList(tree, header.params, .{ .sep = ",", .sep_space = true  });
                     try self.writeToken(.@")");
                     if (header.return_type != 0) {
                         try self.writeTokenSpaced(.@"->");
