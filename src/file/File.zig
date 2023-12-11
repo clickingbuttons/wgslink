@@ -55,7 +55,7 @@ pub fn load(self: *Self) !void {
     if (self.stat != null and self.stat.?.eql(new_stat)) return;
     self.stat = new_stat;
 
-    const size = self.stat.?.size;
+    const size: usize = @intCast(self.stat.?.size);
     var source = try self.allocator.allocSentinel(u8, size, 0);
     const amt = try self.source_file.?.readAll(source);
     if (amt != size) return error.UnexpectedEndOfFile;

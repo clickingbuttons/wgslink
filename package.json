@@ -1,0 +1,23 @@
+{
+  "name": "wgslink",
+  "version": "0.0.1",
+  "description": "Shader bundler.",
+  "directories": {
+    "test": "test"
+  },
+  "scripts": {
+    "test": "zig build test"
+  },
+  "author": "clickingbuttons",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/clickingbuttons/wgslink/issues"
+  },
+  "homepage": "https://github.com/clickingbuttons/wgslink/issues",
+  "dependencies": {
+    "typescript": "^5.3.3"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.4"
+  }
+}

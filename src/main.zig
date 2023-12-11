@@ -9,11 +9,10 @@ const BindGroupLayouts = @import("./ast/BindGroupLayouts.zig");
 const Allocator = std.mem.Allocator;
 const ThreadPool = std.Thread.Pool;
 const max_source = 1 << 30;
-const stdout = std.io.getStdOut();
-const stderr = std.io.getStdErr();
 var failed = false;
 
 fn fail(comptime fmt: []const u8, args: anytype) void {
+    const stderr = std.io.getStdErr();
     const errconfig = std.io.tty.detectConfig(stderr);
     errconfig.setColor(stderr, .red) catch {};
     std.debug.print(fmt, args);
@@ -37,6 +36,7 @@ fn createFile(allocator: Allocator, dir: []const u8, path: []const u8, ext: []co
 
 fn bundleAndWrite(args: anytype, bundler: *Bundler, fname: []const u8) !void {
     const allocator = bundler.allocator;
+    const stderr = std.io.getStdErr();
     const errconfig = std.io.tty.detectConfig(stderr);
 
     var tree = bundler.bundle(stderr.writer(), errconfig, fname) catch |err| switch (err) {
@@ -48,7 +48,7 @@ fn bundleAndWrite(args: anytype, bundler: *Bundler, fname: []const u8) !void {
     };
     defer tree.deinit(allocator);
 
-    const outfile = if (args.outdir) |o| try createFile(allocator, o, fname, "") else stdout;
+    const outfile = if (args.outdir) |o| try createFile(allocator, o, fname, "") else std.io.getStdOut();
     defer if (args.outdir) |_| outfile.close();
 
     var wgsl = renderer(outfile.writer(), .{
@@ -77,6 +77,7 @@ fn bundleAndWrite(args: anytype, bundler: *Bundler, fname: []const u8) !void {
 }
 
 pub fn main() !void {
+    const stderr = std.io.getStdErr();
     const params = comptime clap.parseParamsComptime(
         \\-h, --help             Display this help and exit.
         \\-m, --minify           Remove whitespace.
