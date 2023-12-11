@@ -24,7 +24,3 @@ export function bundle(entry: string): Bundle {
 		};
 	}
 }
-
-console.log(
-bundle('./test/boids-sprite-update.wgsl')
-)
