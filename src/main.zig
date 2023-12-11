@@ -39,12 +39,15 @@ fn bundleAndWrite(args: anytype, bundler: *Bundler, fname: []const u8) !void {
     const stderr = std.io.getStdErr();
     const errconfig = std.io.tty.detectConfig(stderr);
 
-    var tree = bundler.bundle(stderr.writer(), errconfig, fname) catch |err| switch (err) {
-        error.UnparsedModule => return,
-        else => {
-            fail("{} when bundling {s}\n", .{ err, fname });
-            return err;
-        },
+    var tree = bundler.bundle(stderr.writer(), errconfig, fname) catch |err| {
+        failed = true;
+        switch (err) {
+            error.UnparsedModule => return,
+            else => {
+                fail("{} when bundling {s}\n", .{ err, fname });
+                return err;
+            },
+        }
     };
     defer tree.deinit(allocator);
 

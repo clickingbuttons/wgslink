@@ -1,6 +1,6 @@
 .{
 	.name = "wgslink",
-	.version = "0.0.8",
+	.version = "0.0.9",
 	.paths = .{
 		"src"
 	},

@@ -7,6 +7,7 @@ const packageName = `@${name}/${arch()}-${platform()}`;
 const binPath = `${packageName}/bin/${name}${platform() == 'win32' ? '.exe' : ''}`;
 const absBinPath = require.resolve(binPath);
 // const absBinPath = './zig-out/bin/wgslink';
+// bundle('./test/boids-sprite-update.wgsl');
 
 export interface Bundle {
 	text: string;
@@ -16,11 +17,14 @@ export interface Bundle {
 export function bundle(entry: string): Bundle {
 	const child = spawnSync(absBinPath, ['--layout', entry], { encoding: 'utf8' });
 	if (child.error) {
+		throw child.error;
+	} else if (child.status) {
 		throw new Error(child.stderr);
 	} else {
 		return {
 			text: child.stdout,
-			layout: child.stderr,
+			layout: JSON.parse(child.stderr),
 		};
 	}
 }
+
