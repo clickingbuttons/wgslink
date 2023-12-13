@@ -15,7 +15,7 @@ pub const Options = struct {
 pub fn Renderer(comptime UnderlyingWriter: type) type {
     return struct {
         const Self = @This();
-        pub const WriteError = UnderlyingWriter.Error || error{OutOfMemory};
+        pub const WriteError = UnderlyingWriter.Error || error{ OutOfMemory, Overflow };
         pub const Writer = std.io.Writer(*Self, WriteError, write);
         const SpanOpts = struct {
             start: []const u8 = "",
@@ -125,7 +125,7 @@ pub fn Renderer(comptime UnderlyingWriter: type) type {
         /// Turns all one-shot indents into regular indents
         /// Returns number of indents that must now be manually popped
         pub fn lockOneShotIndent(self: *Self) usize {
-            var locked_count = self.indent_one_shot_count;
+            const locked_count = self.indent_one_shot_count;
             self.indent_one_shot_count = 0;
             return locked_count;
         }
@@ -210,7 +210,7 @@ pub fn Renderer(comptime UnderlyingWriter: type) type {
             }
         }
 
-        fn writeNode(self: *Self, tree: Ast, node: Node) RetType {
+        pub fn writeNode(self: *Self, tree: Ast, node: Node) RetType {
             switch (node.tag) {
                 inline .span => |t| {
                     std.debug.panic("unexpected node of type {s}", .{@tagName(t)});
@@ -252,7 +252,7 @@ pub fn Renderer(comptime UnderlyingWriter: type) type {
                     try self.writeTokenSpace(.k_fn);
                     try self.writeIdentifier(tree, header.name);
                     try self.writeToken(.@"(");
-                    try self.writeList(tree, header.params, .{ .sep = ",", .sep_space = true  });
+                    try self.writeList(tree, header.params, .{ .sep = ",", .sep_space = true });
                     try self.writeToken(.@")");
                     if (header.return_type != 0) {
                         try self.writeTokenSpaced(.@"->");
@@ -330,7 +330,40 @@ pub fn Renderer(comptime UnderlyingWriter: type) type {
                     try self.writeIndex(tree, node.lhs);
                     try self.writeToken(.@")");
                 },
-                .number => try self.writeIdentifier(tree, node.lhs),
+                .abstract_int => {
+                    const int: i64 = @as(i64, node.lhs) | (@as(i64, node.rhs) << 32);
+                    try self.writer().print("{d}", .{int});
+                },
+                .i32 => {
+                    const int: i32 = @bitCast(node.lhs);
+                    try self.writer().print("{d}i", .{int});
+                },
+                .u32 => {
+                    const int: u32 = @bitCast(node.lhs);
+                    try self.writer().print("{d}u", .{int});
+                },
+                .abstract_float => {
+                    const int_bits: u64 = @as(u64, node.lhs) | (@as(u64, node.rhs) << 32);
+                    const float: f64 = @bitCast(int_bits);
+
+                    var buffer = std.BoundedArray(u8, 64){};
+                    try buffer.writer().print("{d}", .{float});
+
+                    try self.writer().writeAll(buffer.slice());
+                    if (std.mem.indexOf(u8, buffer.slice(), ".") == null) {
+                        try self.writer().writeByte('.');
+                        if (!self.opts.minify) try self.writer().writeByte('0');
+                    }
+                },
+                .f32 => {
+                    const float: f32 = @bitCast(node.lhs);
+                    try self.writer().print("{d}f", .{float});
+                },
+                .f16 => {
+                    const trunc: u16 = @truncate(node.lhs);
+                    const float: f16 = @bitCast(trunc);
+                    try self.writer().print("{d}h", .{float});
+                },
                 .attribute => {
                     try self.writeToken(.@"@");
                     const attr: Node.Attribute = @enumFromInt(node.lhs);

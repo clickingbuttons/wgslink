@@ -138,7 +138,7 @@ fn putModuleSymbol(
     alias: ?[]const u8,
 ) !void {
     const key = Symbol{ .module = module, .symbol = symbol };
-    var symbol_gop = try self.symbols.getOrPut(key);
+    const symbol_gop = try self.symbols.getOrPut(key);
     if (!symbol_gop.found_existing) {
         const ident = try self.uniqueIdent(symbol_names, symbol);
         try symbol_names.putNoClobber(ident, {});
@@ -150,7 +150,7 @@ fn putModuleSymbol(
     }
 
     const scope_ident = try self.builder.getOrPutIdent(self.allocator, alias orelse symbol);
-    var scope_gop = try scope.getOrPut(scope_ident);
+    const scope_gop = try scope.getOrPut(scope_ident);
     if (scope_gop.found_existing) {
         const file = self.modules.get(module).?.file;
         try symbolAlreadyDecl(&self.builder, file, src_offset, scope_gop.value_ptr.*.src_offset);
@@ -210,7 +210,7 @@ fn symbolAlreadyDecl(builder: *AstBuilder, file: File, dup: Loc.Index, prev: Loc
 }
 
 fn aliasAllInner(self: *Self, visited: *Visited, module: Module) !void {
-    var gop = try visited.getOrPut(module.path);
+    const gop = try visited.getOrPut(module.path);
     if (gop.found_existing) return;
     for (module.import_table.keys()) |k| {
         const m = self.modules.get(k).?;
@@ -303,7 +303,7 @@ fn uniqueIdent(
     var res: Node.IdentIndex = 0;
     var count: usize = 1;
     while (true) : (count += 1) {
-        var alias = try self.makeIdent(symbol, count);
+        const alias = try self.makeIdent(symbol, count);
         defer allocator.free(alias);
         res = try self.builder.getOrPutIdent(allocator, alias);
         if (symbol_names.get(res) == null) break;
@@ -324,7 +324,7 @@ fn uniqueScopedIdent(self: *Self, symbol: []const u8) !Node.IdentIndex {
     var res: Node.IdentIndex = 0;
     var count: usize = 1;
     while (true) : (count += 1) {
-        var alias = try self.makeIdent(symbol, count);
+        const alias = try self.makeIdent(symbol, count);
         defer allocator.free(alias);
         res = try self.builder.getOrPutIdent(allocator, alias);
         if (self.isUniqueIdent(res)) break;
@@ -475,11 +475,11 @@ fn visitScopedDecl(self: *Self, mod: Module, index: Node.Index) !void {
     const file = mod.file;
     const tree = file.tree.?;
     if (index == 0) return;
-    var node = tree.node(index);
+    const node = tree.node(index);
 
     switch (node.tag) {
         .@"const", .let => {
-            var typed_ident = tree.extraData(Node.TypedIdent, node.lhs);
+            const typed_ident = tree.extraData(Node.TypedIdent, node.lhs);
             const symbol = tree.identifier(typed_ident.name);
             _ = try self.getOrPutDecl(file, symbol, node.src_offset);
         },
@@ -624,9 +624,6 @@ fn visit(self: *Self, mod: Module, index: Node.Index) (Error || Allocator.Error)
             node.lhs = try self.visit(mod, node.lhs);
             node.rhs = try self.getOrPutToken(tree.identifier(node.rhs));
         },
-        .number => {
-            node.lhs = try self.getOrPutToken(tree.identifier(node.lhs));
-        },
         .attribute => {
             const attr: Node.Attribute = @enumFromInt(node.lhs);
             switch (attr) {
@@ -728,7 +725,15 @@ fn visit(self: *Self, mod: Module, index: Node.Index) (Error || Allocator.Error)
             node.lhs = try self.visit(mod, node.lhs);
             node.rhs = try self.visit(mod, node.rhs);
         },
-        .true, .false, .@"break", .@"continue", .discard => {},
+        .@"break", .@"continue", .discard => {},
+        .true, .false => {},
+        .abstract_int,
+        .i32,
+        .u32,
+        .abstract_float,
+        .f32,
+        .f16,
+        => {},
     }
 
     return try self.addNode(node);

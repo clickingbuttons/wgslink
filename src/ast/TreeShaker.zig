@@ -197,7 +197,8 @@ fn visit(tree: *Ast, used: *Symbols, index: Node.Index) Allocator.Error!void {
         => try visitAll(tree, used, &.{ node.lhs, node.rhs }),
         .field_access => try visit(tree, used, node.lhs),
         .diagnostic_directive, .enable_directive, .requires_directive, .import_alias => {},
-        .import, .number, .true, .false, .@"break", .@"continue", .discard, .comment => {},
+        .import, .true, .false, .@"break", .@"continue", .discard, .comment => {},
+        .abstract_int, .i32, .u32, .abstract_float, .f32, .f16 => {},
     }
 }
 

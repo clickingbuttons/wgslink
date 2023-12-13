@@ -70,7 +70,7 @@ pub fn peek(self: *Self) Token {
     res.loc.start = index;
 
     while (true) : (index += 1) {
-        var c = self.buffer[index];
+        const c = self.buffer[index];
         switch (self.state) {
             .start => switch (c) {
                 0 => {
@@ -396,7 +396,7 @@ pub fn peek(self: *Self) Token {
             },
             .@"'" => switch (c) {
                 '\'' => {
-                    res.tag = .string_literal;
+                    res.tag = .string;
                     index += 1;
                     break;
                 },
@@ -404,7 +404,7 @@ pub fn peek(self: *Self) Token {
             },
             .@"\"" => switch (c) {
                 '"' => {
-                    res.tag = .string_literal;
+                    res.tag = .string;
                     index += 1;
                     break;
                 },
@@ -524,7 +524,7 @@ test "import" {
         .ident,
         .@"}",
         .k_from,
-        .string_literal,
+        .string,
         .@";",
         .@"\n",
     });
@@ -579,7 +579,7 @@ test "attribute spacing" {
 test "variable lookbehind" {
     try testTokenize("x+1;", &.{ .ident, .@"+", .number, .@";" });
     try testTokenize("0-1;", &.{ .number, .@"-", .number, .@";" });
-    // try testTokenize("0+-1;", &.{ .number, .@"+", .@"-", .number, .@";" });
+    try testTokenize("0+-1;", &.{ .number, .@"+", .@"-", .number, .@";" });
 }
 
 test "decimal integer literals" {
@@ -587,11 +587,12 @@ test "decimal integer literals" {
     try testTokenize("1u;", &.{ .number, .@";" });
     try testTokenize("123;", &.{ .number, .@";" });
     try testTokenize("0i;", &.{ .number, .@";" });
-    // try testTokenize("00;", &.{ .invalid, .@";" });
-    // try testTokenize("00x;", &.{ .invalid, .@";" });
+    try testTokenize("00;", &.{ .number, .@";" });
+    try testTokenize("00x;", &.{ .number, .@";" });
 }
 
 test "hexadecimal integer literals" {
+    try testTokenize("0x123;", &.{ .number, .@";" });
     try testTokenize("0x12f;", &.{ .number, .@";" });
     try testTokenize("0X12fu;", &.{ .number, .@";" });
 }
@@ -613,6 +614,7 @@ test "decimal hex literals" {
     try testTokenize("0x3p+2h;", &.{ .number, .@";" });
     try testTokenize("0X1.fp-4;", &.{ .number, .@";" });
     try testTokenize("0x3.2p+2h;", &.{ .number, .@";" });
+    try testTokenize("0x3.2p+2h1;", &.{ .number, .number, .@";" });
 }
 
 test "newline indices" {

@@ -11,7 +11,7 @@ pub const Tag = enum(u8) {
     number,
     template_args_start,
     template_args_end,
-    string_literal,
+    string,
     @"(",
     @")",
     @"{",
@@ -100,7 +100,7 @@ pub const Tag = enum(u8) {
             .invalid => "invalid bytes",
             .ident => "an identifier",
             .number => "a number literal",
-            .string_literal => "a string literal",
+            .string => "a string literal",
             .template_args_start => "<",
             .template_args_end => ">",
 
@@ -378,8 +378,6 @@ pub const builtins = blk: {
         .{"mat4x2u"},
         .{"mat4x3u"},
         .{"mat4x4u"},
-        // Structures
-        .{"u32"},
         .{"vec2"},
         .{"vec3"},
         .{"vec4"},

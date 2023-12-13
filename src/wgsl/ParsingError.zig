@@ -35,10 +35,23 @@ pub const Tag = enum(u8) {
     invalid_interpolation_sampling,
     type_needs_ext,
 
+    // See number.Error
+    leading_zero,
+    expected_digit_after_base,
+    invalid_digit,
+    duplicate_period,
+    duplicate_exponent,
+    trailing_special,
+    invalid_character,
+    invalid_exponent_sign,
+    overflow,
+    invalid_suffix,
+    trailing_chars,
+
     pub fn render(
         self: @This(),
         writer: anytype,
-        expected_tag: Token.Tag,
+        extra: Loc.Index,
     ) !void {
         try switch (self) {
             .deep_template => writer.writeAll("template too deep"),
@@ -57,7 +70,10 @@ pub const Tag = enum(u8) {
             .expected_statement => writer.writeAll("expected statement"),
             .expected_struct_member => writer.writeAll("expected struct member"),
             .expected_template_elaborated_ident => writer.writeAll("expected identifier with optional template"),
-            .expected_token => writer.print("expected {s}", .{expected_tag.symbol()}),
+            .expected_token => {
+                const expected_tag: Token.Tag = @enumFromInt(extra);
+                try writer.print("expected {s}", .{expected_tag.symbol()});
+            },
             .expected_type_specifier => writer.writeAll("expected type specifier"),
             .expected_unary_expr => writer.writeAll("expected unary expression"),
             .invalid_assignment_op => writer.writeAll("invalid assignment op"),
@@ -92,6 +108,17 @@ pub const Tag = enum(u8) {
                 try renderList(writer, Node.InterpolationSampling);
             },
             .type_needs_ext => writer.writeAll("type requires an extension directive at the top of the program"),
+            .leading_zero => writer.writeAll("unexpected leading 0"),
+            .expected_digit_after_base => writer.writeAll("expected digit after base specifier"),
+            .invalid_digit => writer.print("invalid digit for base {d}", .{extra}),
+            .duplicate_period => writer.writeAll("duplicate decimal point"),
+            .duplicate_exponent => writer.writeAll("duplicate exponent"),
+            .trailing_special => writer.writeAll("unexpected trailing character after float literal"),
+            .invalid_character => writer.writeAll("invalid character"),
+            .invalid_exponent_sign => writer.writeAll("[+-] must be immediately after [pPeE]"),
+            .overflow => writer.writeAll("cannot be exactly represented as a float literal"),
+            .invalid_suffix => writer.writeAll("unexpected suffix after float literal"),
+            .trailing_chars => writer.writeAll("unexpected characters after float literal suffix"),
         };
     }
 };

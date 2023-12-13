@@ -1,0 +1,9 @@
+type system
+===========
+[x] number parsing
+builtin parsing + eval
+type eval ( vec3<f32> == vec3f )
+
+nice to have
+============
+source map

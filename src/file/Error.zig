@@ -44,7 +44,7 @@ pub const Severity = enum {
 pub const Data = union(enum) {
     wgsl: struct {
         tag: WgslParsingError.Tag,
-        expected_token: WgslToken.Tag = .invalid,
+        extra: Loc.Index = 0,
     },
     unresolved_module: struct {
         errname: []const u8,
@@ -110,7 +110,7 @@ pub fn write(self: Self, writer: anytype, term: std.io.tty.Config) !void {
 
     switch (self.data) {
         .wgsl => |e| {
-            try e.tag.render(writer, e.expected_token);
+            try e.tag.render(writer, e.extra);
         },
         .unresolved_module => |e| {
             try writer.print("{s} when opening file {s}", .{ e.errname, e.mod_path });

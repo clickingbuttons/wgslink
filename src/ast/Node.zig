@@ -109,12 +109,16 @@ pub const Tag = enum(u8) {
     // Literals
     true,
     false,
-    number,
+    abstract_int,
+    i32,
+    u32,
+    abstract_float,
+    f32,
+    f16,
 };
 
 const Self = @This();
 
-// For parsing
 pub const Attribute = enum(Loc.Index) {
     compute,
     @"const",
@@ -132,6 +136,77 @@ pub const Attribute = enum(Loc.Index) {
     diagnostic,
     interpolate,
     workgroup_size,
+};
+
+/// Copy-paste of std.builtin.type + Matrix
+pub const Type = union(enum) {
+    Bool: void,
+    Int: Int,
+    Float: Float,
+    Array: Array,
+    Struct: Struct,
+    Vector: Vector,
+    Matrix: Matrix,
+
+    pub const Signedness = enum {
+        signed,
+        unsigned,
+    };
+
+    pub const Int = struct {
+        signedness: Signedness,
+        bits: u16,
+    };
+
+    pub const Float = struct {
+        bits: u16,
+    };
+
+    pub const Pointer = struct {
+        size: Size,
+        address_space: AddressSpace,
+        child: type,
+
+        pub const Size = enum(u2) {
+            One,
+            Many,
+            Slice,
+            C,
+        };
+    };
+
+    pub const Array = struct {
+        len: comptime_int,
+        child: type,
+
+        /// The type of the sentinel is the element type of the array, which is
+        /// the value of the `child` field in this struct. However there is no way
+        /// to refer to that type here, so we use pointer to `anyopaque`.
+        sentinel: ?*const anyopaque,
+    };
+
+    pub const StructField = struct {
+        name: []const u8,
+        type: type,
+        default_value: ?*const anyopaque,
+        is_comptime: bool,
+        alignment: comptime_int,
+    };
+
+    pub const Struct = struct {
+        fields: []const StructField,
+    };
+
+    pub const Vector = struct {
+        len: comptime_int,
+        child: type,
+    };
+
+    pub const Matrix = struct {
+        width: comptime_int,
+        height: comptime_int,
+        child: type,
+    };
 };
 
 pub const GlobalVar = struct {

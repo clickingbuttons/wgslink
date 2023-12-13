@@ -166,7 +166,7 @@ fn writeFileOpenError(
         if (std.mem.eql(u8, resolved, mod.path)) {
             const err = file.makeErrorAdvanced(
                 node.src_offset,
-                .string_literal,
+                .string,
                 .{ .unresolved_module = .{ .errname = errname, .mod_path = mod.path } },
             );
             try err.write(errwriter, errconfig);

@@ -33,7 +33,7 @@ pub fn init(allocator: Allocator, path: []const u8, imported_by: []const u8) Sel
 pub fn load(self: *Self) !void {
     try self.file.load();
 
-    var tree: *Ast = &self.file.tree.?;
+    const tree: *Ast = &self.file.tree.?;
     // Get imports eagerly, even with errors
     self.import_table = try importTable(self.allocator, self.file.path, tree.*);
     if (tree.errors.len > 0) return error.Parsing;

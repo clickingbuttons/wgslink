@@ -55,8 +55,8 @@ const GroupBinding = struct {
 fn render(tree: Ast, index: Node.Index) ![]const u8 {
     const node = tree.node(index);
     return switch (node.tag) {
-        .number, .type, .ident => tree.identifier(node.lhs),
-        else => error.GroupExpression,
+        .type, .ident => tree.identifier(node.lhs),
+        else => error.GroupOrBindingExpression,
     };
 }
 
@@ -82,16 +82,16 @@ fn getGroupBinding(tree: Ast, index: Node.Index) !GroupBinding {
 }
 
 fn visit(self: *Self, tree: Ast, index: Node.Index) !void {
-    var node = tree.node(index);
+    const node = tree.node(index);
 
     switch (node.tag) {
         .global_var => {
-            var global_var = tree.extraData(Node.GlobalVar, node.lhs);
+            const global_var = tree.extraData(Node.GlobalVar, node.lhs);
             const group_binding = try getGroupBinding(tree, global_var.attrs);
             if (global_var.address_space == 0) return;
             if (group_binding.group == null or group_binding.binding == null) return;
 
-            var gop = try self.layouts.getOrPut(self.allocator, group_binding.group.?);
+            const gop = try self.layouts.getOrPut(self.allocator, group_binding.group.?);
             if (!gop.found_existing) gop.value_ptr.* = VarLayouts{};
 
             var var_layout = BindGroupLayout{ .binding = group_binding.binding.? };
@@ -112,17 +112,6 @@ fn visit(self: *Self, tree: Ast, index: Node.Index) !void {
             }
             try gop.value_ptr.*.put(self.allocator, name, var_layout);
         },
-        // .@"struct" => {
-        //     node.lhs = try self.getOrPutDecl(file, tree.identifier(node.lhs), node.src_offset);
-        //     node.rhs = try self.visit(mod, node.rhs);
-        // },
-        // .struct_member => {
-        //     node.lhs = try self.visit(mod, node.lhs);
-        //     var typed_ident = tree.extraData(Node.TypedIdent, node.rhs);
-        //     typed_ident.name = try self.getOrPutToken(tree.identifier(typed_ident.name));
-        //     typed_ident.type = try self.visit(mod, typed_ident.type);
-        //     node.rhs = try self.addExtra(typed_ident);
-        // },
         else => {},
     }
 }

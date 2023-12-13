@@ -4,7 +4,7 @@ const Ast = @import("./ast/Ast.zig");
 const Module = @import("./module.zig");
 const Bundler = @import("./bundler.zig");
 const renderer = @import("./WgslRenderer.zig").renderer;
-const BindGroupLayouts = @import("./ast/BindGroupLayouts.zig");
+const Layouts = @import("./layouts.zig");
 
 const Allocator = std.mem.Allocator;
 const ThreadPool = std.Thread.Pool;
@@ -65,14 +65,18 @@ fn bundleAndWrite(args: anytype, bundler: *Bundler, fname: []const u8) !void {
     if (args.layout != 0) {
         const attribfile = if (args.outdir) |o| try createFile(allocator, o, fname, ".json") else stderr;
         defer if (args.outdir) |_| attribfile.close();
-        var bind_group_layouts = try BindGroupLayouts.extractLayouts(allocator, tree);
-        defer bind_group_layouts.deinit();
+
+        var layouts = Layouts.init(allocator, tree) catch |err| {
+            fail("{} when getting layout for {s}\n", .{ err, fname });
+            return;
+        };
+        defer layouts.deinit();
 
         const options = std.json.StringifyOptions{
             .emit_null_optional_fields = false,
             .whitespace = .indent_tab,
         };
-        try std.json.stringify(bind_group_layouts, options, attribfile.writer());
+        try std.json.stringify(layouts, options, attribfile.writer());
 
         // be nice to ttys
         if (args.outdir == null) try attribfile.writer().writeByte('\n');
@@ -84,7 +88,7 @@ pub fn main() !void {
     const params = comptime clap.parseParamsComptime(
         \\-h, --help             Display this help and exit.
         \\-m, --minify           Remove whitespace.
-        \\-l, --layout           Extract bind group layout to JSON file or stderr.
+        \\-l, --layout           Extract bind group and struct layouts to JSON file or stderr.
         \\-o, --outdir <str>     Output directory (otherwise will print to stdout).
         \\-e, --entry <str>...   Symbols in entry files' global scope to NOT tree shake.
         \\

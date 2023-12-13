@@ -6,6 +6,7 @@ const AstBuilder = @import("../ast/Builder.zig");
 const ParsingError = @import("./ParsingError.zig");
 const Tokenizer = @import("./Tokenizer.zig");
 const File = @import("../file/File.zig");
+const parseNumber = @import("./number.zig").parse;
 
 const Loc = File.Loc;
 const Self = @This();
@@ -224,25 +225,26 @@ fn addErrorAdvanced(
     p: *Self,
     tag: ParsingError.Tag,
     token: ?TokenIndex,
-    expected_token: Token.Tag,
+    loc_offset: Loc.Index,
+    extra: Loc.Index,
 ) !void {
     const tok = token orelse p.tok_i;
     const tok_loc = p.tokens.items(.loc)[tok];
-    const loc = File.Error.ErrorLoc.init(p.builder.newlines.items, tok_loc.start, tok_loc.end);
+    const loc = File.Error.ErrorLoc.init(p.builder.newlines.items, tok_loc.start + loc_offset, tok_loc.end);
     const err = File.Error{
         .loc = loc,
         .path = p.path,
         .source = p.source,
         .data = .{ .wgsl = .{
             .tag = tag,
-            .expected_token = expected_token,
+            .extra = extra,
         } },
     };
     try p.builder.errors.append(p.allocator, err);
 }
 
 fn addError(p: *Self, tag: ParsingError.Tag, token: ?TokenIndex) !void {
-    try p.addErrorAdvanced(tag, token, .invalid);
+    try p.addErrorAdvanced(tag, token, 0, 0);
 }
 
 fn peekToken(
@@ -276,7 +278,7 @@ fn expectToken(p: *Self, tag: Token.Tag) Error!TokenIndex {
     const token = p.advanceToken();
     if (p.tokens.items(.tag)[token] == tag) return token;
 
-    try p.addErrorAdvanced(.expected_token, token, tag);
+    try p.addErrorAdvanced(.expected_token, token, 0, @intFromEnum(tag));
     return Error.Parsing;
 }
 
@@ -733,7 +735,7 @@ fn importDirective(p: *Self) Error!?Node.Index {
     const tok = p.eatToken(.k_import) orelse return null;
     const importAliases = try p.importAliasList();
     _ = try p.expectToken(.k_from);
-    const mod_token = try p.expectToken(.string_literal);
+    const mod_token = try p.expectToken(.string);
     _ = p.eatToken(.@";");
     const module = try p.getOrPutIdentAdvanced(true, mod_token);
     return try p.addNode(tok, .import, importAliases, module);
@@ -1346,8 +1348,52 @@ fn literal(p: *Self) Error!?Node.Index {
     if (p.eatToken(.k_true)) |t| return try p.addNode(t, .true, 0, 0);
     if (p.eatToken(.k_false)) |t| return try p.addNode(t, .false, 0, 0);
     if (p.eatToken(.number)) |t| {
-        const value = try p.getOrPutIdent(t);
-        return try p.addNode(t, .number, value, 0);
+        const num = parseNumber(p.tokenSource(t)) catch |err| switch (err) {
+            error.InvalidCharacter => {
+                try p.addError(.invalid_character, null);
+                return Error.Parsing;
+            },
+        };
+        switch (num) {
+            .abstract_int => |i| {
+                const int_bits: u64 = @bitCast(i);
+                return try p.addNode(t, .abstract_int, @truncate(int_bits), @truncate(int_bits >> 32));
+            },
+            .i32 => |i| {
+                return try p.addNode(t, .i32, @bitCast(i), 0);
+            },
+            .u32 => |i| {
+                return try p.addNode(t, .u32, i, 0);
+            },
+            .abstract_float => |f| {
+                const int_bits: u64 = @bitCast(f);
+                return try p.addNode(t, .abstract_float, @truncate(int_bits), @truncate(int_bits >> 32));
+            },
+            .f32 => |f| {
+                return try p.addNode(t, .f32, @bitCast(f), 0);
+            },
+            .f16 => |f| {
+                const int_bits: u16 = @bitCast(f);
+                return try p.addNode(t, .f16, int_bits, 0);
+            },
+            inline .failure => |e| {
+                const tag = std.meta.stringToEnum(ParsingError.Tag, @tagName(e)) orelse {
+                    std.debug.print("tag {s} not in ParsingError.Tag\n", .{@tagName(e)});
+                    unreachable;
+                };
+                var offset: Loc.Index = 0;
+                var extra: Loc.Index = 0;
+                switch (e) {
+                    .invalid_digit => |d| {
+                        offset = d.i;
+                        extra = @intFromEnum(d.base);
+                    },
+                    .duplicate_exponent, .trailing_special, .invalid_character, .invalid_exponent_sign, .trailing_chars => |o| offset = o,
+                    else => {},
+                }
+                try p.addErrorAdvanced(tag, t, offset, extra);
+            },
+        }
     }
     return null;
 }
