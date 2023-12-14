@@ -415,7 +415,7 @@ fn toOwnedAst(self: *Self) !Ast {
         try self.scratch.append(self.allocator, node);
     }
 
-    const indices_list = [_][]Node.Index{self.scratch.items, self.roots.items};
+    const indices_list = [_][]Node.Index{ self.scratch.items, self.roots.items };
     try self.builder.finishRootSpan(self.allocator, &indices_list);
     return try self.builder.toOwnedAst(self.allocator);
 }
@@ -535,10 +535,10 @@ fn visit(self: *Self, mod: Module, index: Node.Index) (Error || Allocator.Error)
             try self.directives.diagnostics.put(diagnostic, {});
             return 0;
         },
-        .@"var" => {
+        .global_var, .@"var" => {
             var v = tree.extraData(Node.Var, node.lhs);
-            v.name = try self.getOrPutDecl(file, tree.identifier(v.name), node.src_offset);
             v.attrs = try self.visit(mod, v.attrs);
+            v.name = try self.getOrPutDecl(file, tree.identifier(v.name), node.src_offset);
             v.type = try self.visit(mod, v.type);
             node.lhs = try self.addExtra(v);
             node.rhs = try self.visit(mod, node.rhs);

@@ -54,7 +54,7 @@ fn visit(tree: *Ast, used: *Symbols, index: Node.Index) Allocator.Error!void {
     const node = tree.node(index);
     switch (node.tag) {
         .span => for (tree.spanToList(index)) |i| try visit(tree, used, i),
-        .@"var" => {
+        .global_var, .@"var" => {
             const v = tree.extraData(Node.Var, node.lhs);
             try visitAll(tree, used, &.{ v.attrs, v.type, node.rhs });
         },

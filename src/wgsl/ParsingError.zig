@@ -85,7 +85,7 @@ pub const Tag = enum(u8) {
             .invalid_initializer => writer.writeAll("variable requires a type or initializer"),
             .invalid_severity => {
                 try writer.writeAll("invalid severity");
-                try renderList(writer, Node.Severity);
+                try renderList(writer, Node.DiagnosticControl.Severity);
             },
             .invalid_address_space => {
                 try writer.writeAll("invalid address space");
@@ -101,11 +101,11 @@ pub const Tag = enum(u8) {
             },
             .invalid_interpolation_type => {
                 try writer.writeAll("invalid interpolation type");
-                try renderList(writer, Node.InterpolationType);
+                try renderList(writer, Node.Interpolation.Type);
             },
             .invalid_interpolation_sampling => {
                 try writer.writeAll("invalid interpolation sampling");
-                try renderList(writer, Node.InterpolationSampling);
+                try renderList(writer, Node.Interpolation.Sampling);
             },
             .type_needs_ext => writer.writeAll("type requires an extension directive at the top of the program"),
             .leading_zero => writer.writeAll("unexpected leading 0"),

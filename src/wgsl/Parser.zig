@@ -310,13 +310,12 @@ fn expectAttribEnd(p: *Self) Error!void {
     _ = try p.expectToken(.@")");
 }
 
-fn expectEnum(p: *Self, comptime T: type, err_tag: ParsingError.Tag) !Node.Index {
+fn expectEnum(p: *Self, comptime T: type, err_tag: ParsingError.Tag) !T {
     const tok = try p.expectToken(.ident);
-    const enum_val = std.meta.stringToEnum(T, p.tokenSource(tok)) orelse {
+    return std.meta.stringToEnum(T, p.tokenSource(tok)) orelse {
         try p.addError(err_tag, tok);
         return Error.Parsing;
     };
-    return @intFromEnum(enum_val);
 }
 
 /// '(' severity_control_name ',' diagnostic_rule_name attrib_end
@@ -325,7 +324,7 @@ fn expectEnum(p: *Self, comptime T: type, err_tag: ParsingError.Tag) !Node.Index
 ///   | diagnostic_name_token '.' diagnostic_name_token
 fn expectDiagnosticControl(p: *Self) Error!Node.Index {
     _ = try p.expectToken(.@"(");
-    const sev = try p.expectEnum(Node.Severity, .invalid_severity);
+    const sev = try p.expectEnum(Node.DiagnosticControl.Severity, .invalid_severity);
     _ = try p.expectToken(.@",");
 
     var control = Node.DiagnosticControl{
@@ -504,7 +503,7 @@ fn attribute(p: *Self) Error!?Node.Index {
     const str = p.tokenSource(ident_token);
     const tag = std.meta.stringToEnum(Node.Attribute, str) orelse {
         try p.addError(.invalid_attribute, ident_token);
-        return Error.Parsing;
+        return error.Parsing;
     };
 
     const attr: Node.Index = switch (tag) {
@@ -519,16 +518,16 @@ fn attribute(p: *Self) Error!?Node.Index {
             _ = try p.expectToken(.@"(");
             const e = try p.expectEnum(Node.Builtin, .invalid_builtin);
             try p.expectAttribEnd();
-            break :brk e;
+            break :brk @intFromEnum(e);
         },
         .diagnostic => try p.expectDiagnosticControl(),
         .interpolate => brk: {
             _ = try p.expectToken(.@"(");
             var interpolation = Node.Interpolation{
-                .type = try p.expectEnum(Node.InterpolationType, .invalid_interpolation_type),
+                .type = try p.expectEnum(Node.Interpolation.Type, .invalid_interpolation_type),
             };
             if (p.eatToken(.@",") != null and p.peekToken(.tag, 0) != .@")") {
-                interpolation.sampling_expr = try p.expectEnum(Node.InterpolationSampling, .invalid_interpolation_sampling);
+                interpolation.sampling = try p.expectEnum(Node.Interpolation.Sampling, .invalid_interpolation_sampling);
             }
             try p.expectAttribEnd();
             break :brk try p.addExtra(interpolation);
@@ -592,7 +591,7 @@ fn expectOptionallyTypedIdentWithInitializer(p: *Self) Error!Ident {
 
 /// attribute* 'var' template_list? optionally_typed_ident ( '=' expression )?
 fn globalVariableDecl(p: *Self, attrs: Node.Index) Error!?Node.Index {
-    return try p.variableDecl(attrs);
+    return try p.variableDecl(true, attrs);
 }
 
 /// attribute * 'override' optionally_typed_ident ( '=' expression ) ?
@@ -810,7 +809,7 @@ fn statement(p: *Self) Error!?Node.Index {
 /// | 'let' optionally_typed_ident '=' expression
 /// | 'const' optionally_typed_ident '=' expression
 fn variableOrValueStatement(p: *Self) Error!?Node.Index {
-    return try p.variableDecl(0) orelse try p.letDecl() orelse try p.constDecl();
+    return try p.variableDecl(false, 0) orelse try p.letDecl() orelse try p.constDecl();
 }
 
 /// 'return' expression ?
@@ -1049,35 +1048,29 @@ fn switchStatement(p: *Self) Error!?Node.Index {
     return try p.addNode(tok, .@"switch", expr, switch_body);
 }
 
-const VarTemplate = struct { address_space: Node.Index = 0, access_mode: Node.Index = 0 };
-fn varTemplate(p: *Self) Error!VarTemplate {
-    var res = VarTemplate{};
+// | 'var' template_list? optionally_typed_ident
+// | 'var' template_list? optionally_typed_ident '=' expression
+fn variableDecl(p: *Self, comptime is_global: bool, attrs: Node.Index) Error!?Node.Index {
+    const tok = p.eatToken(.k_var) orelse return null;
+    var address_space: Node.AddressSpace = if (is_global) .private else .function;
+    var access_mode: Node.AccessMode = .read;
     if (p.eatToken(.template_args_start)) |_| {
-        res.address_space = try p.expectEnum(Node.AddressSpace, .invalid_address_space);
+        address_space = try p.expectEnum(Node.AddressSpace, .invalid_address_space);
         if (p.eatToken(.@",") != null and p.peekToken(.tag, 0) != .template_args_end) {
-            res.access_mode = try p.expectEnum(Node.AccessMode, .invalid_access_mode);
+            access_mode = try p.expectEnum(Node.AccessMode, .invalid_access_mode);
         }
         _ = p.eatToken(.@",");
         _ = try p.expectToken(.template_args_end);
     }
-
-    return res;
-}
-
-// | 'var' template_list? optionally_typed_ident
-// | 'var' template_list? optionally_typed_ident '=' expression
-fn variableDecl(p: *Self, attrs: Node.Index) Error!?Node.Index {
-    const tok = p.eatToken(.k_var) orelse return null;
-    const template = try p.varTemplate();
     const ident = try p.expectOptionallyTypedIdentWithInitializer();
     const extra = try p.addExtra(Node.Var{
         .attrs = attrs,
         .name = ident.name,
-        .address_space = template.address_space,
-        .access_mode = template.access_mode,
+        .address_space = address_space,
+        .access_mode = access_mode,
         .type = ident.type,
     });
-    return try p.addNode(tok, .@"var", extra, ident.initializer);
+    return try p.addNode(tok, if (is_global) .global_var else .@"var", extra, ident.initializer);
 }
 
 /// 'let' optionally_typed_ident '=' expression

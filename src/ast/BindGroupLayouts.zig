@@ -86,25 +86,26 @@ fn visit(self: *Self, tree: Ast, index: Node.Index) !void {
 
     switch (node.tag) {
         .@"var" => {
-            const global_var = tree.extraData(Node.Var, node.lhs);
-            const group_binding = try getGroupBinding(tree, global_var.attrs);
-            if (global_var.address_space == 0) return;
+            const v = tree.extraData(Node.Var, node.lhs);
+            const group_binding = try getGroupBinding(tree, v.attrs);
+            switch (v.address_space) {
+                .uniform, .storage => {},
+                else => return,
+            }
             if (group_binding.group == null or group_binding.binding == null) return;
 
             const gop = try self.layouts.getOrPut(self.allocator, group_binding.group.?);
             if (!gop.found_existing) gop.value_ptr.* = VarLayouts{};
 
             var var_layout = BindGroupLayout{ .binding = group_binding.binding.? };
-            const address_space: Node.AddressSpace = @enumFromInt(global_var.address_space);
-            const name = tree.identifier(global_var.name);
-            switch (address_space) {
+            const name = tree.identifier(v.name);
+            switch (v.address_space) {
                 .uniform => {
                     var_layout.buffer = .{ .type = .uniform };
                 },
                 .storage => {
-                    const access_mode: Node.AccessMode = @enumFromInt(global_var.access_mode);
                     var_layout.buffer = .{
-                        .type = if (access_mode == .read) .@"read-only-storage" else .storage,
+                        .type = if (v.access_mode == .read) .@"read-only-storage" else .storage,
                     };
                 },
                 else => {},

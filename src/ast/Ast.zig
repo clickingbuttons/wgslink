@@ -104,7 +104,7 @@ pub fn getErrorLoc(
 pub fn globalIdent(self: Self, index: Node.Index) Node.IdentIndex {
     const n = self.node(index);
     switch (n.tag) {
-        .@"var" => {
+        .global_var => {
             const v = self.extraData(Node.Var, n.lhs);
             return v.name;
         },
@@ -132,7 +132,7 @@ pub fn globalName(self: Self, index: Node.Index) []const u8 {
 
 pub fn removeFromSpan(self: *Self, span_index: Node.Index, item_index: usize) void {
     const n = self.node(span_index);
-    const bytes = self.extra[n.lhs + item_index * @sizeOf(Node.Index)..n.rhs];
+    const bytes = self.extra[n.lhs + item_index * @sizeOf(Node.Index) .. n.rhs];
     var indices = std.mem.bytesAsSlice(Node.Index, bytes);
     for (0..indices.len - 1) |i| indices[i] = indices[i + 1];
     self.nodes.items(.rhs)[span_index] -= @sizeOf(Node.Index);

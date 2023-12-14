@@ -197,7 +197,7 @@ pub fn Renderer(comptime UnderlyingWriter: type) type {
                     .diagnostic_directive,
                     .enable_directive,
                     .requires_directive,
-                    .@"var",
+                    .global_var,
                     .override,
                     .@"const",
                     .type_alias,
@@ -232,12 +232,12 @@ pub fn Renderer(comptime UnderlyingWriter: type) type {
                     try self.writeTokenSpace(.k_requires);
                     try self.writeIdentList(tree, node.lhs, .{ .sep = "," });
                 },
-                .@"var" => {
+                inline .@"var", .global_var => |t| {
                     const v = tree.extraData(Node.Var, node.lhs);
                     try self.writeAttributes(tree, v.attrs);
                     try self.writeToken(.k_var);
-                    try self.writeVarTemplate(v.address_space, v.access_mode);
-                    if (v.address_space != 0) try self.writeSpace() else try self.writeByte(' ');
+                    const has_templ = try self.writeVarTemplate(t == .global_var, v.address_space, v.access_mode);
+                    if (has_templ) try self.writeSpace() else try self.writeByte(' ');
                     try self.writeOptionallyTypedIdent(tree, v.name, v.type, node.rhs);
                 },
                 .override => {
@@ -385,12 +385,10 @@ pub fn Renderer(comptime UnderlyingWriter: type) type {
                         .interpolate => {
                             const interpolation = tree.extraData(Node.Interpolation, node.rhs);
                             try self.writeByte('(');
-                            const ty: Node.InterpolationType = @enumFromInt(interpolation.type);
-                            try self.writeAll(@tagName(ty));
-                            if (interpolation.sampling_expr != 0) {
-                                const sampling: Node.InterpolationSampling = @enumFromInt(interpolation.sampling_expr);
+                            try self.writeAll(@tagName(interpolation.type));
+                            if (interpolation.sampling != .center) {
                                 try self.writeByte(',');
-                                try self.writeAll(@tagName(sampling));
+                                try self.writeAll(@tagName(interpolation.sampling));
                             }
                             try self.writeByte(')');
                         },
@@ -712,8 +710,7 @@ pub fn Renderer(comptime UnderlyingWriter: type) type {
         fn writeDiagnostic(self: *Self, tree: Ast, node: Node.ExtraIndex) RetType {
             try self.writeToken(.@"(");
             const diagnostic = tree.extraData(Node.DiagnosticControl, node);
-            const sev: Node.Severity = @enumFromInt(diagnostic.severity);
-            try self.writeAll(@tagName(sev));
+            try self.writeAll(@tagName(diagnostic.severity));
             try self.writeToken(.@",");
             try self.writeIdentifier(tree, diagnostic.name);
             if (diagnostic.field != 0) {
@@ -738,18 +735,23 @@ pub fn Renderer(comptime UnderlyingWriter: type) type {
             }
         }
 
-        fn writeVarTemplate(self: *Self, address_space: Node.Index, access_mode: Node.Index) RetType {
-            if (address_space != 0) {
+        fn writeVarTemplate(
+            self: *Self,
+            comptime is_global: bool,
+            address_space: Node.AddressSpace,
+            access_mode: Node.AccessMode,
+        ) !bool {
+            if (is_global and address_space != .private or !is_global and address_space != .function) {
                 try self.writeToken(.@"<");
-                const space: Node.AddressSpace = @enumFromInt(address_space);
-                try self.writeAll(@tagName(space));
-                if (access_mode != 0) {
+                try self.writeAll(@tagName(address_space));
+                if (access_mode != .read) {
                     try self.writeToken(.@",");
-                    const mode: Node.AccessMode = @enumFromInt(access_mode);
-                    try self.writeAll(@tagName(mode));
+                    try self.writeAll(@tagName(access_mode));
                 }
                 try self.writeToken(.@">");
+                return true;
             }
+            return false;
         }
     };
 }
@@ -880,7 +882,7 @@ test "if" {
 
 test "attributes" {
     try testCanonical("@location(0) var a: u32;");
-    try testCanonical("@interpolate(perspective,center) var a: u32;");
+    try testCanonical("@interpolate(perspective,centroid) var a: u32;");
     try testCanonical("@workgroup_size(1) var a: u32;");
     try testCanonical("@workgroup_size(1,2,3) var a: u32;");
 }

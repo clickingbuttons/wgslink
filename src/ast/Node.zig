@@ -25,6 +25,7 @@ pub const Tag = enum(u8) {
     span,
     comment,
     // Global declarations
+    global_var,
     override,
     @"fn",
     fn_param,
@@ -211,8 +212,8 @@ pub const Var = struct {
     /// Only global variables can have this.
     attrs: Index = 0,
     name: IdentIndex,
-    address_space: Index = 0,
-    access_mode: Index = @intFromEnum(AccessMode.read),
+    address_space: AddressSpace,
+    access_mode: AccessMode = .read,
     type: Index = 0,
 };
 pub const TypedIdent = struct {
@@ -246,24 +247,28 @@ pub const ForHeader = struct {
     cond: Index = 0,
     update: Index = 0,
 };
+/// https://www.w3.org/TR/WGSL/#interpolation
 pub const Interpolation = struct {
-    type: Index,
-    sampling_expr: Index = 0,
+    pub const Type = enum { perspective, linear, flat };
+    pub const Sampling = enum { center, centroid, sample };
+
+    type: Interpolation.Type = .perspective,
+    sampling: Sampling = .center,
 };
 
 /// https://www.w3.org/TR/WGSL/#address-space
-pub const AddressSpace = enum(Loc.Index) {
-    function = 1,
+pub const AddressSpace = enum {
+    function,
     private,
     workgroup,
     uniform,
     storage,
     handle,
 };
-pub const AccessMode = enum(Loc.Index) { read, write, read_write };
+pub const AccessMode = enum { read, write, read_write };
 
 /// https://www.w3.org/TR/WGSL/#builtin-inputs-outputs
-pub const Builtin = enum(Loc.Index) {
+pub const Builtin = enum {
     vertex_index,
     instance_index,
     position,
@@ -279,18 +284,9 @@ pub const Builtin = enum(Loc.Index) {
     num_workgroups,
 };
 
-/// https://www.w3.org/TR/WGSL/#interpolation
-pub const InterpolationType = enum(Loc.Index) { perspective, linear, flat };
-pub const InterpolationSampling = enum(Loc.Index) { center = 1, centroid, sample };
-
-pub const Severity = enum(Loc.Index) {
-    @"error",
-    warning,
-    info,
-    off,
-};
 pub const DiagnosticControl = struct {
-    severity: Index,
+    pub const Severity = enum { @"error", warning, info, off };
+    severity: Severity,
     name: IdentIndex,
     field: IdentIndex = 0,
 };

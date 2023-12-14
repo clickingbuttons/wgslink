@@ -133,7 +133,7 @@ test "spans" {
         .c = @as(u8, 2),
     });
 
-    const indices = [_]Node.Index{2,4,6,8};
+    const indices = [_]Node.Index{ 2, 4, 6, 8 };
     try builder.finishRootSpan(allocator, &[_][]const Node.Index{&indices});
 
     var ast = try builder.toOwnedAst(allocator);

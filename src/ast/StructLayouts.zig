@@ -94,7 +94,7 @@ fn getLayout(self: *Self, tree: Ast, index: Node.Index) !StructLayout {
     const members = tree.spanToList(index);
     var res = StructLayout{};
     try res.ensureTotalCapacity(self.allocator, members.len);
-    var offset: usize = 0;
+    const offset: usize = 0;
     for (members) |i| {
         const node = tree.node(i);
 
