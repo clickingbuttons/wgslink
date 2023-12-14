@@ -208,7 +208,7 @@ pub const Type = union(enum) {
 };
 
 pub const Var = struct {
-    /// Only global variables have this.
+    /// Only global variables can have this.
     attrs: Index = 0,
     name: IdentIndex,
     address_space: Index = 0,

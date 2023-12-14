@@ -1,5 +1,6 @@
 /// Immutable abstract syntax tree.
 const std = @import("std");
+const builtin = @import("builtin");
 const Node = @import("./Node.zig");
 const WgslParsingError = @import("../wgsl/ParsingError.zig");
 const WgslTokenizer = @import("../wgsl/Tokenizer.zig");
@@ -21,7 +22,7 @@ nodes: NodeList.Slice,
 /// Owns the strings so that `source` may be freed after parsing is finished.
 identifiers: Identifiers.Slice,
 /// For nodes with more data than @sizeOf(Node)
-extra: []Node.Index,
+extra: []align(@alignOf(Node.Index)) u8,
 /// Offsets of newlines for error messages
 newlines: []Loc.Index,
 /// No one's perfect...
@@ -42,24 +43,34 @@ pub fn identifier(self: Self, index: Node.IdentIndex) []const u8 {
     return self.identifiers.get(index - 1).key;
 }
 
-pub fn extraData(self: Self, comptime T: type, index: Node.Index) T {
-    const fields: []const std.builtin.Type.StructField = std.meta.fields(T);
-    var result: T = undefined;
-    inline for (fields, 0..) |field, i| {
-        @field(result, field.name) = self.extra[index + i];
-    }
-    return result;
+pub fn extraData(self: Self, comptime T: type, index: Node.ExtraIndex) T {
+    // std.debug.print("read {d} size={d} {}\n", .{ index, @sizeOf(T), T });
+    const bytes = self.extra[index..][0..@sizeOf(T)];
+    return std.mem.bytesAsValue(T, bytes).*;
 }
 
 pub fn node(self: Self, index: Node.Index) Node {
     return self.nodes.get(index);
 }
 
+pub fn checkSpan(lhs: Node.Index, rhs: Node.Index) void {
+    if (builtin.mode == .Debug) {
+        const aligned = (rhs - lhs) % @sizeOf(Node.Index);
+        if (aligned != 0) {
+            std.debug.panic("bad span lhs={d} rhs={d}\n", .{ lhs, rhs });
+        }
+    }
+}
+
 pub fn spanToList(self: Self, index: ?Node.Index) []const Node.Index {
     if (index) |i| {
-        std.debug.assert(self.node(i).tag == .span);
         const span = self.node(i);
-        return self.extra[span.lhs..span.rhs];
+        std.debug.assert(span.tag == .span);
+        checkSpan(span.lhs, span.rhs);
+        const bytes = self.extra[span.lhs..span.rhs];
+        const unaligned = std.mem.bytesAsSlice(Node.Index, bytes);
+        // Is properly aligned in `listToSpan`.
+        return @alignCast(unaligned);
     }
     return &.{};
 }
@@ -94,8 +105,8 @@ pub fn globalIdent(self: Self, index: Node.Index) Node.IdentIndex {
     const n = self.node(index);
     switch (n.tag) {
         .@"var" => {
-            const global_var = self.extraData(Node.Var, n.lhs);
-            return global_var.name;
+            const v = self.extraData(Node.Var, n.lhs);
+            return v.name;
         },
         .override => {
             const override = self.extraData(Node.Override, n.lhs);
@@ -121,11 +132,10 @@ pub fn globalName(self: Self, index: Node.Index) []const u8 {
 
 pub fn removeFromSpan(self: *Self, span_index: Node.Index, item_index: usize) void {
     const n = self.node(span_index);
-    std.debug.assert(n.tag == .span);
-    for (n.lhs + item_index..n.rhs - 1) |j| {
-        self.extra[j] = self.extra[j + 1];
-    }
-    self.nodes.items(.rhs)[span_index] -= 1;
+    const bytes = self.extra[n.lhs + item_index * @sizeOf(Node.Index)..n.rhs];
+    var indices = std.mem.bytesAsSlice(Node.Index, bytes);
+    for (0..indices.len - 1) |i| indices[i] = indices[i + 1];
+    self.nodes.items(.rhs)[span_index] -= @sizeOf(Node.Index);
 }
 
 pub fn modName(self: Self, imp: Node.Index) []const u8 {

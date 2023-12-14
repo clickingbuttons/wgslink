@@ -85,8 +85,8 @@ fn visit(self: *Self, tree: Ast, index: Node.Index) !void {
     const node = tree.node(index);
 
     switch (node.tag) {
-        .global_var => {
-            const global_var = tree.extraData(Node.GlobalVar, node.lhs);
+        .@"var" => {
+            const global_var = tree.extraData(Node.Var, node.lhs);
             const group_binding = try getGroupBinding(tree, global_var.attrs);
             if (global_var.address_space == 0) return;
             if (group_binding.group == null or group_binding.binding == null) return;

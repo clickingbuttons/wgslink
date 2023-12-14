@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const Ast = @import("./Ast.zig");
 const Node = @import("./Node.zig");
 const Language = @import("../file/File.zig").Language;
@@ -16,7 +17,7 @@ nodes: Ast.NodeList,
 /// Owns the strings so that `source` may be freed after parsing is finished.
 identifiers: Identifiers = .{},
 /// For nodes with more data than @sizeOf(Node)
-extra: std.ArrayListUnmanaged(Node.Index) = .{},
+extra: std.ArrayListAlignedUnmanaged(u8, @alignOf(Node.Index)) = .{},
 /// Offsets of newlines for error messages
 newlines: std.ArrayListUnmanaged(Loc.Index) = .{},
 /// While most errors can fit in a Node, it's much easier to have a seperate array
@@ -51,12 +52,20 @@ pub fn listToSpan(
     list: []const Node.Index,
 ) !Node.Index {
     if (list.len == 0) return 0;
-    try self.extra.appendSlice(allocator, list);
+    // pad to align to @sizeOf(Node.Index)
+    try self.extra.appendNTimes(allocator, 0, self.extra.items.len % @sizeOf(Node.Index));
+
+    const bytes = std.mem.sliceAsBytes(list);
+    try self.extra.appendSlice(allocator, bytes);
+    const lhs: Node.Index = @intCast(self.extra.items.len - list.len * @sizeOf(Node.Index));
+    const rhs: Node.Index = @intCast(self.extra.items.len);
+    Ast.checkSpan(lhs, rhs);
+
     return try self.addNode(allocator, Node{
         .src_offset = src_offset,
         .tag = .span,
-        .lhs = @intCast(self.extra.items.len - list.len),
-        .rhs = @intCast(self.extra.items.len),
+        .lhs = lhs,
+        .rhs = rhs,
     });
 }
 
@@ -66,14 +75,12 @@ pub fn addNode(self: *Self, allocator: Allocator, node: Node) !Node.Index {
     return i;
 }
 
-pub fn addExtra(self: *Self, allocator: Allocator, extra: anytype) !Node.Index {
-    const fields = std.meta.fields(@TypeOf(extra));
-    try self.extra.ensureUnusedCapacity(allocator, fields.len);
-    const result: Node.Index = @intCast(self.extra.items.len);
-    inline for (fields) |field| {
-        self.extra.appendAssumeCapacity(@field(extra, field.name));
-    }
-    return result;
+pub fn addExtra(self: *Self, allocator: Allocator, extra: anytype) !Node.ExtraIndex {
+    const index: Node.Index = @intCast(self.extra.items.len);
+    const bytes = std.mem.toBytes(extra);
+    // std.debug.print("write {d} size={d} {}\n", .{ index, bytes.len, extra  });
+    try self.extra.appendSlice(allocator, &bytes);
+    return index;
 }
 
 pub fn toOwnedAst(self: *Self, allocator: Allocator) !Ast {
@@ -98,7 +105,39 @@ pub fn getOrPutIdent(
     return @intCast(gop.index + 1);
 }
 
-pub fn finishRootSpan(self: *Self, span_len: usize) void {
-    self.nodes.items(.lhs)[0] = @intCast(self.extra.items.len - span_len);
-    self.nodes.items(.rhs)[0] = @intCast(self.extra.items.len);
+pub fn finishRootSpan(self: *Self, allocator: Allocator, roots: []const []const Node.Index) !void {
+    var total_len: usize = 0;
+
+    for (roots) |l| {
+        const bytes = std.mem.sliceAsBytes(l);
+        try self.extra.appendSlice(allocator, bytes);
+        total_len += bytes.len;
+    }
+
+    const lhs: Node.Index = @intCast(self.extra.items.len - total_len);
+    const rhs: Node.Index = @intCast(self.extra.items.len);
+    Ast.checkSpan(lhs, rhs);
+
+    self.nodes.items(.lhs)[0] = lhs;
+    self.nodes.items(.rhs)[0] = rhs;
+}
+
+test "spans" {
+    const allocator = std.testing.allocator;
+    var builder = try Self.init(allocator);
+    defer builder.deinit(allocator);
+
+    _ = try builder.addExtra(allocator, .{
+        .a = @as(u8, 2),
+        .b = @as(u8, 2),
+        .c = @as(u8, 2),
+    });
+
+    const indices = [_]Node.Index{2,4,6,8};
+    try builder.finishRootSpan(allocator, &[_][]const Node.Index{&indices});
+
+    var ast = try builder.toOwnedAst(allocator);
+    defer ast.deinit(allocator);
+
+    try std.testing.expectEqualSlices(Node.Index, &indices, ast.spanToList(0));
 }

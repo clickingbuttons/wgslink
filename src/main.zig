@@ -144,4 +144,5 @@ pub fn main() !void {
 
 test "bundler" {
     _ = @import("./bundler.zig");
+    _ = @import("./WgslRenderer.zig");
 }

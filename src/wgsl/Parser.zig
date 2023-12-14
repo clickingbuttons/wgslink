@@ -149,8 +149,7 @@ fn parseTranslationUnit(p: *Self) Allocator.Error!void {
         if (decl) |d| try p.scratch.append(p.allocator, d);
     }
 
-    try p.builder.extra.appendSlice(p.allocator, p.scratch.items);
-    p.builder.finishRootSpan(p.scratch.items.len);
+    try p.builder.finishRootSpan(p.allocator, &[_][]Node.Index{p.scratch.items});
 }
 
 /// Disambiguate templates (since WGSL chose < and >)

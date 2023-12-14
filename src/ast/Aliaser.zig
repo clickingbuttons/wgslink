@@ -27,7 +27,7 @@ symbols: Symbols,
 module_scopes: ModuleScopes,
 /// Used to crawl modules
 modules: *const Modules,
-/// Won't append comments showing which module code came from.
+/// Won't append comments with module names.
 minify: bool,
 
 /// Accumulator since MUST be at top of WGSL file
@@ -415,12 +415,9 @@ fn toOwnedAst(self: *Self) !Ast {
         try self.scratch.append(self.allocator, node);
     }
 
-    var extra = &self.builder.extra;
-    try extra.appendSlice(self.allocator, self.scratch.items);
-    try extra.appendSlice(self.allocator, self.roots.items);
-    self.builder.finishRootSpan(self.scratch.items.len + self.roots.items.len);
-
-    return self.builder.toOwnedAst(self.allocator);
+    const indices_list = [_][]Node.Index{self.scratch.items, self.roots.items};
+    try self.builder.finishRootSpan(self.allocator, &indices_list);
+    return try self.builder.toOwnedAst(self.allocator);
 }
 
 fn diagnosticControl(
