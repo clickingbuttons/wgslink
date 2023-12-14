@@ -2,7 +2,11 @@ type system
 ===========
 [x] number parsing
 builtin parsing + eval
-type eval ( vec3<f32> == vec3f )
+	- literals
+	- refs
+	- builtin fns
+	- builtin types (vec, mat)
+	- user types (aliases, structs)
 
 nice to have
 ============

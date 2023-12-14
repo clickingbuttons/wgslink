@@ -15,7 +15,6 @@ lhs: Index = 0,
 rhs: Index = 0,
 
 pub const Tag = enum(u8) {
-    pub const n_directives = 4;
     // Directives
     diagnostic_directive,
     enable_directive,
@@ -26,7 +25,6 @@ pub const Tag = enum(u8) {
     span,
     comment,
     // Global declarations
-    global_var,
     override,
     @"fn",
     fn_param,
@@ -209,14 +207,9 @@ pub const Type = union(enum) {
     };
 };
 
-pub const GlobalVar = struct {
-    attrs: Index = 0,
-    name: IdentIndex,
-    address_space: Index = 0,
-    access_mode: Index = @intFromEnum(AccessMode.read),
-    type: Index = 0,
-};
 pub const Var = struct {
+    /// Only global variables have this.
+    attrs: Index = 0,
     name: IdentIndex,
     address_space: Index = 0,
     access_mode: Index = @intFromEnum(AccessMode.read),

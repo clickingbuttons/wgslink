@@ -197,7 +197,7 @@ pub fn Renderer(comptime UnderlyingWriter: type) type {
                     .diagnostic_directive,
                     .enable_directive,
                     .requires_directive,
-                    .global_var,
+                    .@"var",
                     .override,
                     .@"const",
                     .type_alias,
@@ -232,13 +232,13 @@ pub fn Renderer(comptime UnderlyingWriter: type) type {
                     try self.writeTokenSpace(.k_requires);
                     try self.writeIdentList(tree, node.lhs, .{ .sep = "," });
                 },
-                .global_var => {
-                    const global_var = tree.extraData(Node.GlobalVar, node.lhs);
-                    try self.writeAttributes(tree, global_var.attrs);
+                .@"var" => {
+                    const v = tree.extraData(Node.Var, node.lhs);
+                    try self.writeAttributes(tree, v.attrs);
                     try self.writeToken(.k_var);
-                    try self.writeVarTemplate(global_var.address_space, global_var.access_mode);
-                    if (global_var.address_space != 0) try self.writeSpace() else try self.writeByte(' ');
-                    try self.writeOptionallyTypedIdent(tree, global_var.name, global_var.type, node.rhs);
+                    try self.writeVarTemplate(v.address_space, v.access_mode);
+                    if (v.address_space != 0) try self.writeSpace() else try self.writeByte(' ');
+                    try self.writeOptionallyTypedIdent(tree, v.name, v.type, node.rhs);
                 },
                 .override => {
                     const override = tree.extraData(Node.Override, node.lhs);
@@ -514,13 +514,6 @@ pub fn Renderer(comptime UnderlyingWriter: type) type {
                     try self.writeIndex(tree, node.lhs);
                     const indices = tree.spanToList(if (node.rhs == 0) null else node.rhs);
                     try self.writeIndices(false, tree, indices, .{ .start = "(", .sep = ",", .sep_space = true, .end = ")" });
-                },
-                .@"var" => {
-                    const extra = tree.extraData(Node.Var, node.lhs);
-                    try self.writeToken(.k_var);
-                    try self.writeVarTemplate(extra.address_space, extra.access_mode);
-                    try self.writeByte(' ');
-                    try self.writeOptionallyTypedIdent(tree, extra.name, extra.type, node.rhs);
                 },
                 .increment, .decrement => |t| {
                     try self.writeIndex(tree, node.lhs);

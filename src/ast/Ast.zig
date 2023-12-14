@@ -93,8 +93,8 @@ pub fn getErrorLoc(
 pub fn globalIdent(self: Self, index: Node.Index) Node.IdentIndex {
     const n = self.node(index);
     switch (n.tag) {
-        .global_var => {
-            const global_var = self.extraData(Node.GlobalVar, n.lhs);
+        .@"var" => {
+            const global_var = self.extraData(Node.Var, n.lhs);
             return global_var.name;
         },
         .override => {
@@ -138,3 +138,21 @@ pub fn modAliases(self: Self, imp: Node.Index) []const Node.Index {
     std.debug.assert(n.tag == .import);
     return self.spanToList(if (n.lhs == 0) null else n.lhs);
 }
+
+// pub fn resolveNumber(self: Self, index: Node.Index) ?i64 {
+//     const n = self.node(index);
+//     switch (n.tag) {
+//         .ident => {
+//             node.lhs = try self.getOrPutRef(file, tree.identifier(node.lhs), node.src_offset);
+//             node.rhs = try self.visit(mod, node.rhs);
+//         },
+//         .true, .false => {},
+//         .abstract_int,
+//         .i32,
+//         .u32,
+//         .abstract_float,
+//         .f32,
+//         .f16,
+//         => {},
+//     }
+// }

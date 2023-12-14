@@ -538,12 +538,12 @@ fn visit(self: *Self, mod: Module, index: Node.Index) (Error || Allocator.Error)
             try self.directives.diagnostics.put(diagnostic, {});
             return 0;
         },
-        .global_var => {
-            var global_var = tree.extraData(Node.GlobalVar, node.lhs);
-            global_var.name = try self.getOrPutDecl(file, tree.identifier(global_var.name), node.src_offset);
-            global_var.attrs = try self.visit(mod, global_var.attrs);
-            global_var.type = try self.visit(mod, global_var.type);
-            node.lhs = try self.addExtra(global_var);
+        .@"var" => {
+            var v = tree.extraData(Node.Var, node.lhs);
+            v.name = try self.getOrPutDecl(file, tree.identifier(v.name), node.src_offset);
+            v.attrs = try self.visit(mod, v.attrs);
+            v.type = try self.visit(mod, v.type);
+            node.lhs = try self.addExtra(v);
             node.rhs = try self.visit(mod, node.rhs);
         },
         .override => {
@@ -572,13 +572,6 @@ fn visit(self: *Self, mod: Module, index: Node.Index) (Error || Allocator.Error)
             param.type = try self.visit(mod, param.type);
             node.lhs = try self.visit(mod, node.lhs);
             node.rhs = try self.addExtra(param);
-        },
-        .@"var" => {
-            var extra = tree.extraData(Node.Var, node.lhs);
-            extra.name = try self.getOrPutDecl(file, tree.identifier(extra.name), node.src_offset);
-            extra.type = try self.visit(mod, extra.type);
-            node.lhs = try self.addExtra(extra);
-            node.rhs = try self.visit(mod, node.rhs);
         },
         .@"for" => {
             var header = tree.extraData(Node.ForHeader, node.lhs);

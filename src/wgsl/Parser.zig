@@ -593,17 +593,7 @@ fn expectOptionallyTypedIdentWithInitializer(p: *Self) Error!Ident {
 
 /// attribute* 'var' template_list? optionally_typed_ident ( '=' expression )?
 fn globalVariableDecl(p: *Self, attrs: Node.Index) Error!?Node.Index {
-    const tok = p.eatToken(.k_var) orelse return null;
-    const template = try p.varTemplate();
-    const ident = try p.expectOptionallyTypedIdentWithInitializer();
-    const extra = try p.addExtra(Node.GlobalVar{
-        .attrs = attrs,
-        .name = ident.name,
-        .address_space = template.address_space,
-        .access_mode = template.access_mode,
-        .type = ident.type,
-    });
-    return try p.addNode(tok, .global_var, extra, ident.initializer);
+    return try p.variableDecl(attrs);
 }
 
 /// attribute * 'override' optionally_typed_ident ( '=' expression ) ?
@@ -821,7 +811,7 @@ fn statement(p: *Self) Error!?Node.Index {
 /// | 'let' optionally_typed_ident '=' expression
 /// | 'const' optionally_typed_ident '=' expression
 fn variableOrValueStatement(p: *Self) Error!?Node.Index {
-    return try p.variableDecl() orelse try p.letDecl() orelse try p.constDecl();
+    return try p.variableDecl(0) orelse try p.letDecl() orelse try p.constDecl();
 }
 
 /// 'return' expression ?
@@ -1077,12 +1067,12 @@ fn varTemplate(p: *Self) Error!VarTemplate {
 
 // | 'var' template_list? optionally_typed_ident
 // | 'var' template_list? optionally_typed_ident '=' expression
-fn variableDecl(p: *Self) Error!?Node.Index {
+fn variableDecl(p: *Self, attrs: Node.Index) Error!?Node.Index {
     const tok = p.eatToken(.k_var) orelse return null;
-
     const template = try p.varTemplate();
     const ident = try p.expectOptionallyTypedIdentWithInitializer();
     const extra = try p.addExtra(Node.Var{
+        .attrs = attrs,
         .name = ident.name,
         .address_space = template.address_space,
         .access_mode = template.access_mode,

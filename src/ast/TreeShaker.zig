@@ -37,7 +37,7 @@ fn addUsedSymbol(tree: *Ast, used: *Symbols, ident: Node.IdentIndex) Allocator.E
     // Cascade
     for (tree.spanToList(0)) |i| {
         switch (tree.node(i).tag) {
-            .global_var, .override, .@"const", .@"struct", .@"fn", .type_alias => {
+            .@"var", .override, .@"const", .@"struct", .@"fn", .type_alias => {
                 if (tree.globalIdent(i) == ident) try visit(tree, used, i);
             },
             else => {},
@@ -54,9 +54,9 @@ fn visit(tree: *Ast, used: *Symbols, index: Node.Index) Allocator.Error!void {
     const node = tree.node(index);
     switch (node.tag) {
         .span => for (tree.spanToList(index)) |i| try visit(tree, used, i),
-        .global_var => {
-            const global_var = tree.extraData(Node.GlobalVar, node.lhs);
-            try visitAll(tree, used, &.{ global_var.attrs, global_var.type, node.rhs });
+        .@"var" => {
+            const v = tree.extraData(Node.Var, node.lhs);
+            try visitAll(tree, used, &.{ v.attrs, v.type, node.rhs });
         },
         .override => {
             const override = tree.extraData(Node.Override, node.lhs);
@@ -130,10 +130,6 @@ fn visit(tree: *Ast, used: *Symbols, index: Node.Index) Allocator.Error!void {
                 header.update,
                 node.rhs,
             });
-        },
-        .@"var" => {
-            const extra = tree.extraData(Node.Var, node.lhs);
-            try visitAll(tree, used, &.{ extra.name, extra.type, node.rhs });
         },
         .break_if,
         .const_assert,
@@ -230,7 +226,7 @@ pub fn treeShake(allocator: Allocator, tree: *Ast, roots: []const []const u8) Al
     // Find all used identifiers
     for (og_roots) |r| {
         switch (tree.node(r).tag) {
-            .global_var, .override, .@"const", .@"struct", .@"fn", .type_alias => {
+            .@"var", .override, .@"const", .@"struct", .@"fn", .type_alias => {
                 if (used.get(tree.globalIdent(r))) |_| try visit(tree, &used, r);
             },
             else => {},
@@ -244,7 +240,7 @@ pub fn treeShake(allocator: Allocator, tree: *Ast, roots: []const []const u8) Al
 
         switch (node.tag) {
             // Set unused root span nodes to empty.
-            .global_var, .override, .@"const", .@"struct", .@"fn", .type_alias => {
+            .@"var", .override, .@"const", .@"struct", .@"fn", .type_alias => {
                 if (used.get(tree.globalIdent(r)) == null) tree.removeFromSpan(0, i);
             },
             // Set unused import nodes to empty.
