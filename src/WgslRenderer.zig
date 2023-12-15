@@ -317,7 +317,7 @@ pub fn Renderer(comptime UnderlyingWriter: type) type {
                     try self.writeIdentifier(tree, param.name);
                     try self.writeArgType(tree, param.type);
                 },
-                .type, .ident => {
+                .type, .ident, .var_ref => {
                     try self.writeIdentifier(tree, node.lhs);
                     try self.writeTemplateList(tree, node.rhs);
                 },
@@ -377,7 +377,7 @@ pub fn Renderer(comptime UnderlyingWriter: type) type {
                         },
                         .builtin => {
                             try self.writeToken(.@"(");
-                            const builtin: Node.Builtin = @enumFromInt(node.rhs);
+                            const builtin: Node.Attribute.Builtin = @enumFromInt(node.rhs);
                             try self.writeAll(@tagName(builtin));
                             try self.writeToken(.@")");
                         },

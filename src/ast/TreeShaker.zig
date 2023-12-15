@@ -100,7 +100,7 @@ fn visit(tree: *Ast, used: *Symbols, index: Node.Index) Allocator.Error!void {
                 param.type,
             });
         },
-        .type, .ident => {
+        .type, .ident, .var_ref => {
             try addUsedSymbol(tree, used, node.lhs);
             try visit(tree, used, node.rhs);
         },
@@ -199,7 +199,7 @@ fn visit(tree: *Ast, used: *Symbols, index: Node.Index) Allocator.Error!void {
 }
 
 /// Tree shakes globals by removing unused nodes (including imports) from the root span.
-/// Tree shakes imports by removing unused alises from their import span.
+/// Tree shakes imports by removing unused aliases from their import span.
 pub fn treeShake(allocator: Allocator, tree: *Ast, roots: []const []const u8) Allocator.Error!void {
     var used = Symbols.init(allocator);
     defer used.deinit();

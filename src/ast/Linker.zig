@@ -1,3 +1,8 @@
+// Concatenates ASTs into a big AST with the following differences:
+// - Variable decls are renamed to ensure uniqueness and possibly given minified names
+// - Imports directives are removed
+// - Other directives (enables, requires, diagnostic) are hoisted
+// - If not minifying, each module has its name added as a comment
 const std = @import("std");
 const Ast = @import("./Ast.zig");
 const AstBuilder = @import("./Builder.zig");
@@ -11,26 +16,32 @@ const builtins = @import("../wgsl/Token.zig").builtins;
 
 const Self = @This();
 const Allocator = std.mem.Allocator;
-/// Keys are indexes into builder.identifiers
-const Scope = std.AutoHashMap(Node.IdentIndex, SymbolData);
-const Symbols = std.ArrayHashMap(Symbol, SymbolData, Symbol.StringContext, true);
+/// Keys are owned by module ASTs
+const Scope = std.StringArrayHashMap(ModuleSymbolData);
+const ModuleSymbols = std.ArrayHashMap(ModuleSymbol, ModuleSymbolData, ModuleSymbol.StringContext, true);
 const Scopes = std.ArrayList(Scope);
 const Visited = std.StringArrayHashMap(void);
 const ModuleScopes = std.StringHashMap(Scope);
+const RefCounts = std.AutoArrayHashMap(Node.IdentIndex, u32);
+const SymbolNames = std.AutoHashMap(Node.IdentIndex, void);
 
 allocator: Allocator,
 /// Outermost is module scope.
 scopes: Scopes,
-/// Symbols that each module exports
-symbols: Symbols,
-/// Global scope for each module, initialized first.
-module_scopes: ModuleScopes,
-/// Used to crawl modules
+/// To resolve imports
 modules: *const Modules,
+/// Symbols that each module exports
+module_symbols: ModuleSymbols,
+/// Global scope for each module
+module_scopes: ModuleScopes,
 /// Won't append comments with module names.
 minify: bool,
+/// When a clash occurs helps make unique symbols. Keys are indexes into builder.identifiers
+symbol_names: SymbolNames,
+/// Later useful for tree shaker
+refcounts: RefCounts,
 
-/// Accumulator since MUST be at top of WGSL file
+/// Accumulator since directives MUST be at top of WGSL file
 directives: Directives,
 /// The main event
 builder: AstBuilder,
@@ -66,49 +77,50 @@ const Directives = struct {
         self.diagnostics.deinit();
     }
 };
-const Symbol = struct {
+
+const ModuleSymbol = struct {
     module: []const u8,
     symbol: []const u8,
 
     pub const StringContext = struct {
-        pub fn hash(self: @This(), s: Symbol) u32 {
+        pub fn hash(self: @This(), s: ModuleSymbol) u32 {
             _ = self;
             var hasher = std.hash.Wyhash.init(0);
             hasher.update(s.module);
             hasher.update(s.symbol);
             return @truncate(hasher.final());
         }
-        pub fn eql(self: @This(), a: Symbol, b: Symbol, b_index: usize) bool {
+        pub fn eql(self: @This(), a: ModuleSymbol, b: ModuleSymbol, b_index: usize) bool {
             _ = self;
             _ = b_index;
             return std.mem.eql(u8, a.module, b.module) and std.mem.eql(u8, a.symbol, b.symbol);
         }
     };
 };
-const SymbolData = struct {
+const ModuleSymbolData = struct {
     ident: Node.IdentIndex,
     src_offset: Loc.Index,
+    referenced: bool = false,
 };
-/// Keys are indexes into builder.identifiers
-const SymbolNames = std.AutoHashMap(Node.IdentIndex, void);
 
 pub fn init(allocator: Allocator, modules: *const Modules, minify: bool) !Self {
     var res = Self{
         .allocator = allocator,
-        .symbols = Symbols.init(allocator),
+        .module_symbols = ModuleSymbols.init(allocator),
         .scopes = Scopes.init(allocator),
         .modules = modules,
         .module_scopes = ModuleScopes.init(allocator),
         .minify = minify,
+        .symbol_names = SymbolNames.init(allocator),
+        .refcounts = RefCounts.init(allocator),
         .directives = Directives.init(allocator),
         .builder = try AstBuilder.init(allocator),
     };
 
-    var symbol_names = SymbolNames.init(allocator);
-    defer symbol_names.deinit();
-
+    // First pass to gather all module symbols in order to resolve imports.
+    // Also create module scopes in order to resolve import renaming.
     for (modules.values()) |m| {
-        const scope = try res.moduleScope(&symbol_names, m);
+        const scope = try res.moduleScope(m);
         try res.module_scopes.put(m.path, scope);
     }
 
@@ -121,7 +133,9 @@ pub fn deinit(self: *Self) void {
     var iter = self.module_scopes.valueIterator();
     while (iter.next()) |s| s.deinit();
     self.module_scopes.deinit();
-    self.symbols.deinit();
+    self.module_symbols.deinit();
+    self.refcounts.deinit();
+    self.symbol_names.deinit();
     self.directives.deinit();
     self.builder.deinit(self.allocator);
     self.scratch.deinit(self.allocator);
@@ -130,27 +144,24 @@ pub fn deinit(self: *Self) void {
 
 fn putModuleSymbol(
     self: *Self,
-    symbol_names: *SymbolNames,
     scope: *Scope,
     module: []const u8,
     symbol: []const u8,
     src_offset: Loc.Index,
     alias: ?[]const u8,
 ) !void {
-    const key = Symbol{ .module = module, .symbol = symbol };
-    const symbol_gop = try self.symbols.getOrPut(key);
+    const key = ModuleSymbol{ .module = module, .symbol = symbol };
+    const symbol_gop = try self.module_symbols.getOrPut(key);
     if (!symbol_gop.found_existing) {
-        const ident = try self.uniqueIdent(symbol_names, symbol);
-        try symbol_names.putNoClobber(ident, {});
-        symbol_gop.value_ptr.* = SymbolData{
+        const ident = try self.uniqueIdent(symbol);
+        symbol_gop.value_ptr.* = ModuleSymbolData{
             .ident = ident,
             .src_offset = src_offset,
         };
         // std.debug.print("putSymbol {s} {s} = {d} ({s})\n", .{ module, symbol, ident, self.builder.identifiers.keys()[ident - 1] });
     }
 
-    const scope_ident = try self.builder.getOrPutIdent(self.allocator, alias orelse symbol);
-    const scope_gop = try scope.getOrPut(scope_ident);
+    const scope_gop = try scope.getOrPut(alias orelse symbol);
     if (scope_gop.found_existing) {
         const file = self.modules.get(module).?.file;
         try symbolAlreadyDecl(&self.builder, file, src_offset, scope_gop.value_ptr.*.src_offset);
@@ -160,48 +171,38 @@ fn putModuleSymbol(
     }
 }
 
-fn moduleScope(self: *Self, symbol_names: *SymbolNames, m: Module) !Scope {
+fn moduleScope(self: *Self, m: Module) !Scope {
     var scope = Scope.init(self.allocator);
     const tree = m.file.tree.?;
 
     for (tree.spanToList(0)) |n| {
         const node = tree.node(n);
-        const global_name = tree.globalName(n);
-        if (global_name.len > 0) {
-            try self.putModuleSymbol(
-                symbol_names,
-                &scope,
-                m.path,
-                global_name,
-                node.src_offset,
-                null,
-            );
-            continue;
-        }
-        if (node.tag != .import) continue;
-        const imp_mod_name = tree.identifier(node.rhs);
-        const resolved = try m.resolve(imp_mod_name);
-        defer self.allocator.free(resolved);
-        const imp_mod = self.modules.get(resolved).?;
-        for (tree.spanToList(node.lhs)) |a| {
-            const imp_alias = tree.node(a);
-            const name = tree.identifier(imp_alias.lhs);
-            const alias = if (imp_alias.rhs == 0) null else tree.identifier(imp_alias.rhs);
-            try self.putModuleSymbol(
-                symbol_names,
-                &scope,
-                imp_mod.path,
-                name,
-                imp_alias.src_offset,
-                alias,
-            );
+        switch (node.tag) {
+            // To avoid adding more syntax everything is an export.
+            .global_var, .override, .@"fn", .@"const", .type_alias, .@"struct" => {
+                const global_name = tree.globalName(n);
+                try self.putModuleSymbol(&scope, m.path, global_name, node.src_offset, null);
+            },
+            .import => {
+                const imp_mod_name = tree.identifier(node.rhs);
+                const resolved = try m.resolve(imp_mod_name);
+                defer self.allocator.free(resolved);
+                const imp_mod = self.modules.get(resolved).?;
+                for (tree.spanToList(node.lhs)) |a| {
+                    const imp_alias = tree.node(a);
+                    const name = tree.identifier(imp_alias.lhs);
+                    const alias = if (imp_alias.rhs == 0) null else tree.identifier(imp_alias.rhs);
+                    try self.putModuleSymbol(&scope, imp_mod.path, name, imp_alias.src_offset, alias);
+                }
+            },
+            else => {},
         }
     }
     return scope;
 }
 
 fn symbolAlreadyDecl(builder: *AstBuilder, file: File, dup: Loc.Index, prev: Loc.Index) !void {
-    const err_data = .{ .aliasing = .{ .tag = .symbol_already_declared } };
+    const err_data = .{ .linker = .{ .tag = .symbol_already_declared } };
     // TODO: get identifier tokens
     const err1 = file.makeError(dup, dup, err_data);
     var err2 = file.makeError(prev, prev, err_data);
@@ -209,12 +210,12 @@ fn symbolAlreadyDecl(builder: *AstBuilder, file: File, dup: Loc.Index, prev: Loc
     try builder.errors.appendSlice(file.allocator, &.{ err1, err2 });
 }
 
-fn aliasAllInner(self: *Self, visited: *Visited, module: Module) !void {
+fn linkCtx(self: *Self, visited: *Visited, module: Module) !void {
     const gop = try visited.getOrPut(module.path);
     if (gop.found_existing) return;
     for (module.import_table.keys()) |k| {
         const m = self.modules.get(k).?;
-        try self.aliasAllInner(visited, m);
+        try self.linkCtx(visited, m);
     }
     const tree = module.file.tree.?;
     if (!self.minify) try self.appendComment(module.path);
@@ -231,13 +232,13 @@ fn aliasAllInner(self: *Self, visited: *Visited, module: Module) !void {
     }
 }
 
-pub fn aliasAll(self: *Self, module: []const u8) !Ast {
+pub fn link(self: *Self, entry: []const u8) !Ast {
     // Only crawl if no errors on init
     if (self.builder.errors.items.len == 0) {
         var visited = Visited.init(self.allocator);
         defer visited.deinit();
-        const mod = self.modules.get(module).?;
-        try self.aliasAllInner(&visited, mod);
+        const mod = self.modules.get(entry).?;
+        try self.linkCtx(&visited, mod);
     }
     return try self.toOwnedAst();
 }
@@ -290,15 +291,12 @@ const IdentType = enum {
 
 /// Caller owns returned slice
 fn makeIdent(self: *Self, symbol: []const u8, count: usize) ![]const u8 {
+    if (self.minify) return try std.fmt.allocPrint(self.allocator, "v{d}", .{count});
     if (count == 1) return try self.allocator.dupe(u8, symbol);
     return try std.fmt.allocPrint(self.allocator, "{s}{d}", .{ symbol, count });
 }
 
-fn uniqueIdent(
-    self: *Self,
-    symbol_names: *SymbolNames,
-    symbol: []const u8,
-) !Node.IdentIndex {
+fn uniqueIdent(self: *Self, symbol: []const u8) !Node.IdentIndex {
     const allocator = self.allocator;
     var res: Node.IdentIndex = 0;
     var count: usize = 1;
@@ -306,28 +304,8 @@ fn uniqueIdent(
         const alias = try self.makeIdent(symbol, count);
         defer allocator.free(alias);
         res = try self.builder.getOrPutIdent(allocator, alias);
-        if (symbol_names.get(res) == null) break;
-    }
-
-    return res;
-}
-
-fn isUniqueIdent(self: *Self, ident: Node.IdentIndex) bool {
-    for (self.scopes.items) |s| {
-        if (s.get(ident) != null) return false;
-    }
-    return true;
-}
-
-fn uniqueScopedIdent(self: *Self, symbol: []const u8) !Node.IdentIndex {
-    const allocator = self.allocator;
-    var res: Node.IdentIndex = 0;
-    var count: usize = 1;
-    while (true) : (count += 1) {
-        const alias = try self.makeIdent(symbol, count);
-        defer allocator.free(alias);
-        res = try self.builder.getOrPutIdent(allocator, alias);
-        if (self.isUniqueIdent(res)) break;
+        const gop = try self.symbol_names.getOrPut(res);
+        if (!gop.found_existing) break;
     }
 
     return res;
@@ -343,23 +321,26 @@ fn getOrPutRef(
     symbol: []const u8,
     src_offset: Loc.Index,
 ) !Node.IdentIndex {
-    const ident = try self.builder.getOrPutIdent(self.allocator, symbol);
     for (0..self.scopes.items.len) |i| {
         const scope = self.scopes.items[self.scopes.items.len - i - 1];
-        if (scope.get(ident)) |sym| {
+        if (scope.get(symbol)) |sym| {
+            var gop = try self.refcounts.getOrPutValue(sym.ident, 0);
+            gop.value_ptr.* += 1;
             // std.debug.print("ref {s} index {d}\n", .{ symbol, sym.ident });
             return sym.ident;
         }
     }
-    if (self.minify and !builtins.has(symbol)) {
+    // From WGSL spec:
+    // > Non-module scope identifier declarations must precede their uses in the text.
+    if (!builtins.has(symbol)) {
         const len: Loc.Index = @intCast(symbol.len);
-        const err_data = .{ .aliasing = .{ .tag = .unresolved_ref } };
+        const err_data = .{ .linker = .{ .tag = .unresolved_ref } };
         var err = file.makeError(src_offset, src_offset + len, err_data);
-        err.severity = .warning;
         try self.builder.errors.append(self.allocator, err);
+        return Error.Aliasing;
     }
 
-    return ident;
+    return try self.builder.getOrPutIdent(self.allocator, symbol);
 }
 
 fn getOrPutDecl(
@@ -373,13 +354,13 @@ fn getOrPutDecl(
     if (scope_index == 0) return try self.getOrPutRef(file, symbol, src_offset);
 
     var scope: *Scope = &self.scopes.items[scope_index];
-    var ident = try self.builder.getOrPutIdent(self.allocator, symbol);
-    if (scope.get(ident)) |already_decl| {
+    if (scope.get(symbol)) |already_decl| {
         try symbolAlreadyDecl(&self.builder, file, src_offset, already_decl.src_offset);
         return Error.Aliasing;
     }
-    ident = try self.uniqueScopedIdent(symbol);
-    try scope.put(ident, SymbolData{ .ident = ident, .src_offset = src_offset });
+    const ident = try self.uniqueIdent(symbol);
+    // std.debug.print("scope {d} getOrPutDecl {s} = {d} ({s})\n", .{ scope_index, symbol, ident, self.builder.identifiers.keys()[ident - 1] });
+    try scope.put(symbol, ModuleSymbolData{ .ident = ident, .src_offset = src_offset });
 
     return ident;
 }
@@ -417,7 +398,7 @@ fn toOwnedAst(self: *Self) !Ast {
 
     const indices_list = [_][]Node.Index{ self.scratch.items, self.roots.items };
     try self.builder.finishRootSpan(self.allocator, &indices_list);
-    return try self.builder.toOwnedAst(self.allocator);
+    return try self.builder.toOwned(self.allocator);
 }
 
 fn diagnosticControl(
@@ -447,12 +428,9 @@ fn importAliases(
     for (tree.spanToList(index)) |i| {
         var node = tree.node(i);
         const identifier = tree.identifier(node.lhs);
-        if (self.symbols.get(.{ .module = imp_mod.path, .symbol = identifier }) == null) {
-            const err = mod.file.makeErrorAdvanced(
-                node.src_offset,
-                .ident,
-                .{ .aliasing = .{ .tag = .no_matching_export } },
-            );
+        if (self.module_symbols.get(.{ .module = imp_mod.path, .symbol = identifier }) == null) {
+            const err_data = .{ .linker = .{ .tag = .no_matching_export } };
+            const err = mod.file.makeErrorAdvanced(node.src_offset, .ident, err_data);
             try self.builder.errors.append(self.allocator, err);
             return Error.Aliasing;
         }
@@ -468,26 +446,6 @@ fn importAliases(
     return try self.listToSpan(self.scratch.items[scratch_top..]);
 }
 
-fn visitScopedDecl(self: *Self, mod: Module, index: Node.Index) !void {
-    const file = mod.file;
-    const tree = file.tree.?;
-    if (index == 0) return;
-    const node = tree.node(index);
-
-    switch (node.tag) {
-        .@"const", .let => {
-            const typed_ident = tree.extraData(Node.TypedIdent, node.lhs);
-            const symbol = tree.identifier(typed_ident.name);
-            _ = try self.getOrPutDecl(file, symbol, node.src_offset);
-        },
-        else => {},
-    }
-}
-
-fn visitScopedDecls(self: *Self, mod: Module, index: Node.Index) !void {
-    for (mod.file.tree.?.spanToList(index)) |i| try self.visitScopedDecl(mod, i);
-}
-
 fn visitCompound(self: *Self, mod: Module, index: Node.Index, comptime add_scope: bool) !Node.Index {
     const file = mod.file;
     const tree = file.tree.?;
@@ -497,7 +455,6 @@ fn visitCompound(self: *Self, mod: Module, index: Node.Index, comptime add_scope
     if (add_scope) try self.pushScope();
     defer if (add_scope) self.popScope();
     node.lhs = try self.visit(mod, node.lhs);
-    try self.visitScopedDecls(mod, node.rhs);
     node.rhs = try self.visit(mod, node.rhs);
     return try self.addNode(node);
 }
@@ -538,7 +495,8 @@ fn visit(self: *Self, mod: Module, index: Node.Index) (Error || Allocator.Error)
         .global_var, .@"var" => {
             var v = tree.extraData(Node.Var, node.lhs);
             v.attrs = try self.visit(mod, v.attrs);
-            v.name = try self.getOrPutDecl(file, tree.identifier(v.name), node.src_offset);
+            const sym = tree.identifier(v.name);
+            v.name = try self.getOrPutDecl(file, sym, node.src_offset);
             v.type = try self.visit(mod, v.type);
             node.lhs = try self.addExtra(v);
             node.rhs = try self.visit(mod, node.rhs);
@@ -583,8 +541,8 @@ fn visit(self: *Self, mod: Module, index: Node.Index) (Error || Allocator.Error)
         },
         .@"const", .let => {
             var typed_ident = tree.extraData(Node.TypedIdent, node.lhs);
-            // these have already been visited by `visitScopedDecls`
-            typed_ident.name = try self.getOrPutRef(file, tree.identifier(typed_ident.name), node.src_offset);
+            const sym = tree.identifier(typed_ident.name);
+            typed_ident.name = try self.getOrPutDecl(file, sym, node.src_offset);
             typed_ident.type = try self.visit(mod, typed_ident.type);
             node.lhs = try self.addExtra(typed_ident);
             node.rhs = try self.visit(mod, node.rhs);
@@ -593,7 +551,10 @@ fn visit(self: *Self, mod: Module, index: Node.Index) (Error || Allocator.Error)
             node.lhs = try self.getOrPutDecl(file, tree.identifier(node.lhs), node.src_offset);
             node.rhs = try self.visit(mod, node.rhs);
         },
-        .type, .ident => {
+        .type,
+        .ident,
+        .var_ref,
+        => {
             node.lhs = try self.getOrPutRef(file, tree.identifier(node.lhs), node.src_offset);
             node.rhs = try self.visit(mod, node.rhs);
         },
@@ -717,13 +678,7 @@ fn visit(self: *Self, mod: Module, index: Node.Index) (Error || Allocator.Error)
         },
         .@"break", .@"continue", .discard => {},
         .true, .false => {},
-        .abstract_int,
-        .i32,
-        .u32,
-        .abstract_float,
-        .f32,
-        .f16,
-        => {},
+        .abstract_int, .i32, .u32, .abstract_float, .f32, .f16 => {},
     }
 
     return try self.addNode(node);

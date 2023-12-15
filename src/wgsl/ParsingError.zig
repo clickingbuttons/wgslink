@@ -97,7 +97,7 @@ pub const Tag = enum(u8) {
             },
             .invalid_builtin => {
                 try writer.writeAll("invalid builtin");
-                try renderList(writer, Node.Builtin);
+                try renderList(writer, Node.Attribute.Builtin);
             },
             .invalid_interpolation_type => {
                 try writer.writeAll("invalid interpolation type");

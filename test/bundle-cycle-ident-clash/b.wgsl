@@ -4,11 +4,11 @@ const a = 1.0;
 
 // module symbols
 // ./c.wgsl c = 4
-// ./b.wgsl b = 1 SKIP
+// ./b.wgsl b = 1 HIT
 // ./b.wgsl a = 5
 
 // module scope
-// cc: 6
+// cc: 4
 // b: 1
 // a: 7
 

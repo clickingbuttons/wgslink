@@ -37,6 +37,7 @@ pub const Tag = enum(u8) {
     // Global declaration helpers
     attribute,
     ident,
+    var_ref,
     type,
     // Statements
     loop,
@@ -119,6 +120,22 @@ pub const Tag = enum(u8) {
 const Self = @This();
 
 pub const Attribute = enum(Loc.Index) {
+    /// https://www.w3.org/TR/WGSL/#builtin-inputs-outputs
+    pub const Builtin = enum(Loc.Index) {
+        vertex_index,
+        instance_index,
+        position,
+        fragment,
+        front_facing,
+        frag_depth,
+        sample_index,
+        sample_mask,
+        local_invocation_id,
+        local_invocation_index,
+        global_invocation_id,
+        workgroup_id,
+        num_workgroups,
+    };
     compute,
     @"const",
     fragment,
@@ -209,8 +226,9 @@ pub const Type = union(enum) {
 };
 
 pub const Var = struct {
-    /// Only global variables can have this.
+    /// Only global variables can have attributes.
     attrs: Index = 0,
+    /// After linking this is also a unique id.
     name: IdentIndex,
     address_space: AddressSpace,
     access_mode: AccessMode = .read,
@@ -266,23 +284,6 @@ pub const AddressSpace = enum {
     handle,
 };
 pub const AccessMode = enum { read, write, read_write };
-
-/// https://www.w3.org/TR/WGSL/#builtin-inputs-outputs
-pub const Builtin = enum {
-    vertex_index,
-    instance_index,
-    position,
-    fragment,
-    front_facing,
-    frag_depth,
-    sample_index,
-    sample_mask,
-    local_invocation_id,
-    local_invocation_index,
-    global_invocation_id,
-    workgroup_id,
-    num_workgroups,
-};
 
 pub const DiagnosticControl = struct {
     pub const Severity = enum { @"error", warning, info, off };

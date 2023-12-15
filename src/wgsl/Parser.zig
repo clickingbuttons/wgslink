@@ -66,7 +66,7 @@ pub fn parse(allocator: Allocator, path: ?[]const u8, source: [:0]const u8) Allo
     defer parser.deinit();
     try parser.parseTranslationUnit();
 
-    return parser.builder.toOwnedAst(allocator);
+    return parser.builder.toOwned(allocator);
 }
 
 fn listToSpan(
@@ -516,7 +516,7 @@ fn attribute(p: *Self) Error!?Node.Index {
         },
         .builtin => brk: {
             _ = try p.expectToken(.@"(");
-            const e = try p.expectEnum(Node.Builtin, .invalid_builtin);
+            const e = try p.expectEnum(Node.Attribute.Builtin, .invalid_builtin);
             try p.expectAttribEnd();
             break :brk @intFromEnum(e);
         },
@@ -1244,7 +1244,7 @@ fn expectExpression(p: *Self) Error!Node.Index {
 fn coreLhsExpression(p: *Self) Error!?Node.Index {
     if (p.eatToken(.ident)) |tok| {
         const name = try p.getOrPutIdent(tok);
-        return try p.addNode(tok, .ident, name, 0);
+        return try p.addNode(tok, .var_ref, name, 0);
     }
     if (p.eatToken(.@"(")) |_| {
         const expr = try p.expectLhsExpression();

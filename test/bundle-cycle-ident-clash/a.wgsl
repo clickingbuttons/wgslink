@@ -1,10 +1,9 @@
 // import { b } from './b.wgsl';
 const a = 1.0 + b;
 
-@vertex fn main() -> @location(0) vec4f {
-	var res = vec4f(out_of_order + a);
-	const out_of_order = 3.0;
-	return res;
+@vertex fn main() -> @builtin(position) vec4f {
+	const b = 2.0;
+	return vec4f(a + b);
 }
 
 // module symbols
@@ -18,6 +17,4 @@ const a = 1.0 + b;
 // main: 3
 
 // scope 1
-// res: 6
-// out_of_order: 7
-
+// b: 6

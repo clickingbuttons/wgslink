@@ -2,7 +2,7 @@ const std = @import("std");
 const Loc = @import("./Loc.zig");
 const WgslParsingError = @import("../wgsl/ParsingError.zig");
 const WgslToken = @import("../wgsl/Token.zig");
-const AliaserErrorTag = @import("../ast/Aliaser.zig").ErrorTag;
+const LinkerErrorTag = @import("../ast/Linker.zig").ErrorTag;
 
 const Self = @This();
 const Config = std.io.tty.Config;
@@ -50,8 +50,8 @@ pub const Data = union(enum) {
         errname: []const u8,
         mod_path: []const u8,
     },
-    aliasing: struct {
-        tag: AliaserErrorTag,
+    linker: struct {
+        tag: LinkerErrorTag,
     },
 };
 
@@ -115,7 +115,7 @@ pub fn write(self: Self, writer: anytype, term: std.io.tty.Config) !void {
         .unresolved_module => |e| {
             try writer.print("{s} when opening file {s}", .{ e.errname, e.mod_path });
         },
-        .aliasing => |a| switch (a.tag) {
+        .linker => |a| switch (a.tag) {
             .symbol_already_declared => {
                 const msg = switch (self.severity) {
                     .note => "symbol declared here",
@@ -127,7 +127,7 @@ pub fn write(self: Self, writer: anytype, term: std.io.tty.Config) !void {
                 try writer.writeAll("no matching export");
             },
             .unresolved_ref => {
-                try writer.writeAll("unresolved reference will not be minified");
+                try writer.writeAll("unresolved reference");
             },
         },
     }

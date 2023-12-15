@@ -4,6 +4,6 @@ fn foo() -> f32 {
 }
 const a = 1.0 + b + foo();
 
-@vertex fn main() -> @location(0) vec4f {
+@vertex fn main() -> @builtin(position) vec4f {
 	return vec4f(a);
 }

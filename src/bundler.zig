@@ -2,7 +2,7 @@ const std = @import("std");
 const Module = @import("module.zig");
 const TreeShaker = @import("./ast/TreeShaker.zig");
 const Ast = @import("./ast/Ast.zig");
-const Aliaser = @import("./ast/Aliaser.zig");
+const Linker = @import("./ast/Linker.zig");
 const FileError = @import("./file/Error.zig");
 const renderer = @import("./WgslRenderer.zig").renderer;
 const fail = @import("./main.zig").fail;
@@ -83,9 +83,10 @@ pub fn bundle(self: *Self, errwriter: anytype, errconfig: ErrConfig, fname: []co
     }
     if (has_unparsed) return error.UnparsedModule;
 
-    var aliaser = try Aliaser.init(self.allocator, &self.modules, self.opts.minify);
-    defer aliaser.deinit();
-    var tree = try aliaser.aliasAll(mod.path);
+    var linker = try Linker.init(self.allocator, &self.modules, self.opts.minify);
+    defer linker.deinit();
+    var tree = try linker.link(mod.path);
+    errdefer tree.deinit(self.allocator);
     if (tree.errors.len > 0) {
         var fatal = false;
         for (tree.errors) |e| {
@@ -174,18 +175,6 @@ fn writeFileOpenError(
     }
 }
 
-fn writeModuleAliasError(
-    self: Self,
-    aliaser: Aliaser,
-    errwriter: anytype,
-    errconfig: ErrConfig,
-    mod: *const Module,
-) !void {
-    const source = try mod.source();
-    defer self.allocator.free(source);
-    try aliaser.writeErrors(errwriter, errconfig, mod.file.tree.?, mod.path, source);
-}
-
 fn testBundle(comptime entry: []const u8, comptime expected: [:0]const u8) !void {
     const allocator = std.testing.allocator;
 
@@ -199,10 +188,9 @@ fn testBundle(comptime entry: []const u8, comptime expected: [:0]const u8) !void
     var buffer = std.ArrayList(u8).init(allocator);
     defer buffer.deinit();
 
-    var errbuf = std.ArrayList(u8).init(allocator);
-    defer errbuf.deinit();
-
-    var tree = try bundler.bundle(errbuf.writer(), .no_color, entry);
+    const stderr = std.io.getStdErr();
+    const errconfig = std.io.tty.detectConfig(stderr);
+    var tree = try bundler.bundle(stderr.writer(), errconfig, entry);
     defer tree.deinit(allocator);
 
     var wgsl = renderer(buffer.writer(), .{});
@@ -222,7 +210,7 @@ test "basic bundle" {
         \\  return 4.0;
         \\}
         \\const a = 1.0 + b + foo();
-        \\@vertex fn main() -> @location(0) vec4f {
+        \\@vertex fn main() -> @builtin(position) vec4f {
         \\  return vec4f(a);
         \\}
     );
@@ -236,7 +224,7 @@ test "cycle bundle" {
         \\const b = 2.0 + c;
         \\// test/bundle-cycle/a.wgsl
         \\const a = 1.0 + b;
-        \\@vertex fn main() -> @location(0) vec4f {
+        \\@vertex fn main() -> @builtin(position) vec4f {
         \\  return vec4f(a);
         \\}
     );
@@ -250,7 +238,7 @@ test "type alias bundle" {
         \\fn two_pi() -> single {
         \\  return single(2) * pi_approx;
         \\}
-        \\@vertex fn main() -> @location(0) vec4f {
+        \\@vertex fn main() -> @builtin(position) vec4f {
         \\  return vec4f(two_pi());
         \\}
     );
@@ -265,7 +253,7 @@ test "directive bundle" {
         \\// test/bundle-directive/b.wgsl
         \\const b: f32 = 0.0;
         \\// test/bundle-directive/a.wgsl
-        \\@vertex fn main() -> @location(0) vec4f {
+        \\@vertex fn main() -> @builtin(position) vec4f {
         \\  return vec4f(b);
         \\}
     );
@@ -278,8 +266,24 @@ test "ident clash bundle" {
         \\var b = a2 + 3.0;
         \\// test/bundle-ident-clash/a.wgsl
         \\var a = 1.0 + b;
-        \\@vertex fn main() -> @location(0) vec4f {
+        \\@vertex fn main() -> @builtin(position) vec4f {
         \\  return vec4f(a);
+        \\}
+    );
+}
+
+test "cycle ident clash bundle" {
+    try testBundle("./test/bundle-cycle-ident-clash/a.wgsl",
+        \\// test/bundle-cycle-ident-clash/c.wgsl
+        \\const c = 3.0;
+        \\// test/bundle-cycle-ident-clash/b.wgsl
+        \\const b = 2.0 + c + a2;
+        \\const a2 = 1.0;
+        \\// test/bundle-cycle-ident-clash/a.wgsl
+        \\const a = 1.0 + b;
+        \\@vertex fn main() -> @builtin(position) vec4f {
+        \\  const b3 = 2.0;
+        \\  return vec4f(a + b3);
         \\}
     );
 }

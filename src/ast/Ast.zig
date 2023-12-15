@@ -17,15 +17,15 @@ pub const Identifiers = std.MultiArrayList(std.StringArrayHashMapUnmanaged(void)
 /// Node 0 is a span of directives followed by declarations. Since there can be no
 /// references to this root node, 0 is available to indicate null
 nodes: NodeList.Slice,
-/// Nodes with identifers store indexes into here. They stored offset by +1 so that `0` is a null sentinel.
+/// Nodes with identifers store indexes into here. They stored offset by +1 so that `0` is a null sentinel
 /// For `var foo: u32 = baz();` this will store `foo`, `u32`, and `baz`
-/// Owns the strings so that `source` may be freed after parsing is finished.
+/// Owns the strings so that `source` may be freed after parsing is finished
 identifiers: Identifiers.Slice,
 /// For nodes with more data than @sizeOf(Node)
 extra: []align(@alignOf(Node.Index)) u8,
 /// Offsets of newlines for error messages
 newlines: []Loc.Index,
-/// No one's perfect...
+/// While most errors can fit in a Node, it's much easier to have a seperate list
 errors: []File.Error,
 
 pub fn deinit(self: *Self, allocator: Allocator) void {
@@ -103,26 +103,15 @@ pub fn getErrorLoc(
 
 pub fn globalIdent(self: Self, index: Node.Index) Node.IdentIndex {
     const n = self.node(index);
-    switch (n.tag) {
-        .global_var => {
-            const v = self.extraData(Node.Var, n.lhs);
-            return v.name;
-        },
-        .override => {
-            const override = self.extraData(Node.Override, n.lhs);
-            return override.name;
-        },
-        .@"fn" => {
-            const header = self.extraData(Node.FnHeader, n.lhs);
-            return header.name;
-        },
-        .@"const" => {
-            const typed_ident = self.extraData(Node.TypedIdent, n.lhs);
-            return typed_ident.name;
-        },
-        .type_alias, .@"struct" => return n.lhs,
-        else => return 0,
-    }
+    return switch (n.tag) {
+        .global_var => self.extraData(Node.Var, n.lhs).name,
+        .override => self.extraData(Node.Override, n.lhs).name,
+        .@"fn" => self.extraData(Node.FnHeader, n.lhs).name,
+        .@"const" => self.extraData(Node.TypedIdent, n.lhs).name,
+        .type_alias, .@"struct" => n.lhs,
+        .import_alias => if (n.rhs != 0) n.rhs else n.lhs,
+        else => 0,
+    };
 }
 
 pub fn globalName(self: Self, index: Node.Index) []const u8 {

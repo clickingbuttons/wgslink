@@ -10,17 +10,11 @@ const Allocator = std.mem.Allocator;
 const Loc = File.Loc;
 const Identifiers = std.StringArrayHashMapUnmanaged(void);
 
-/// Main data structure
+// See ./Ast.zig
 nodes: Ast.NodeList,
-/// Nodes with identifers store indexes into here.
-/// For `var foo: u32 = baz();` this will store `foo`, `u32`, and `baz`
-/// Owns the strings so that `source` may be freed after parsing is finished.
 identifiers: Identifiers = .{},
-/// For nodes with more data than @sizeOf(Node)
 extra: std.ArrayListAlignedUnmanaged(u8, @alignOf(Node.Index)) = .{},
-/// Offsets of newlines for error messages
 newlines: std.ArrayListUnmanaged(Loc.Index) = .{},
-/// While most errors can fit in a Node, it's much easier to have a seperate array
 errors: std.ArrayListUnmanaged(File.Error) = .{},
 
 pub fn init(allocator: Allocator) !Self {
@@ -83,7 +77,7 @@ pub fn addExtra(self: *Self, allocator: Allocator, extra: anytype) !Node.ExtraIn
     return index;
 }
 
-pub fn toOwnedAst(self: *Self, allocator: Allocator) !Ast {
+pub fn toOwned(self: *Self, allocator: Allocator) !Ast {
     return Ast{
         .nodes = self.nodes.toOwnedSlice(),
         .identifiers = self.identifiers.entries.toOwnedSlice(),
@@ -136,7 +130,7 @@ test "spans" {
     const indices = [_]Node.Index{ 2, 4, 6, 8 };
     try builder.finishRootSpan(allocator, &[_][]const Node.Index{&indices});
 
-    var ast = try builder.toOwnedAst(allocator);
+    var ast = try builder.toOwned(allocator);
     defer ast.deinit(allocator);
 
     try std.testing.expectEqualSlices(Node.Index, &indices, ast.spanToList(0));
