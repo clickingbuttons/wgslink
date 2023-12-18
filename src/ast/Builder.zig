@@ -8,11 +8,10 @@ const File = @import("../file/File.zig");
 const Self = @This();
 const Allocator = std.mem.Allocator;
 const Loc = File.Loc;
-const Identifiers = std.StringArrayHashMapUnmanaged(void);
 
 // See ./Ast.zig
 nodes: Ast.NodeList,
-identifiers: Identifiers = .{},
+identifiers: Ast.StringSet = .{},
 extra: std.ArrayListAlignedUnmanaged(u8, @alignOf(Node.Index)) = .{},
 newlines: std.ArrayListUnmanaged(Loc.Index) = .{},
 errors: std.ArrayListUnmanaged(File.Error) = .{},

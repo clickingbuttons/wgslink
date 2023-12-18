@@ -42,21 +42,16 @@ pub fn deinit(self: *Self) void {
     self.modules.deinit();
 }
 
-fn treeShake(self: *Self, root_tree: Ast, tree: *Ast) !void {
-    if (self.opts.tree_shake == false) return;
-    const entrypoints = self.opts.entrypoints;
-    const roots = if (entrypoints.len > 0) entrypoints else brk: {
-        var found = try TreeShaker.entrypoints(self.allocator, root_tree);
-        defer found.deinit();
+/// Caller owns returned slice but not its elements.
+fn getEntrypoints(self: *Self, root_tree: Ast) ![]const []const u8 {
+    if (self.opts.entrypoints.len > 0) return try self.allocator.dupe([]const u8, self.opts.entrypoints);
+    var found = try TreeShaker.entrypoints(self.allocator, root_tree);
+    defer found.deinit();
 
-        var all_symbols = std.ArrayList([]const u8).init(self.allocator);
-        defer all_symbols.deinit();
-        for (found.keys()) |k| try all_symbols.append(root_tree.identifier(k));
-        break :brk try all_symbols.toOwnedSlice();
-    };
-    defer if (entrypoints.len == 0) self.allocator.free(roots);
-
-    try TreeShaker.treeShake(self.allocator, tree, roots);
+    var res = std.ArrayList([]const u8).init(self.allocator);
+    defer res.deinit();
+    for (found.keys()) |k| try res.append(root_tree.identifier(k));
+    return try res.toOwnedSlice();
 }
 
 /// Caller owns returned tree allocated with self.allocator.
@@ -83,7 +78,10 @@ pub fn bundle(self: *Self, errwriter: anytype, errconfig: ErrConfig, fname: []co
     }
     if (has_unparsed) return error.UnparsedModule;
 
-    var linker = try Linker.init(self.allocator, &self.modules, self.opts.minify);
+    const entrypoints = try self.getEntrypoints(mod.*.file.tree.?);
+    defer self.allocator.free(entrypoints);
+
+    var linker = try Linker.init(self.allocator, &self.modules, self.opts.minify, entrypoints);
     defer linker.deinit();
     var tree = try linker.link(mod.path);
     errdefer tree.deinit(self.allocator);
@@ -96,7 +94,7 @@ pub fn bundle(self: *Self, errwriter: anytype, errconfig: ErrConfig, fname: []co
         if (fatal) return error.Aliasing;
     }
 
-    try self.treeShake(mod.file.tree.?, &tree);
+    if (self.opts.tree_shake) try TreeShaker.treeShake(self.allocator, &tree, entrypoints);
     return tree;
 }
 

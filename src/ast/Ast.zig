@@ -12,7 +12,7 @@ const Allocator = std.mem.Allocator;
 const Self = @This();
 const Loc = File.Loc;
 pub const NodeList = std.MultiArrayList(Node);
-pub const Identifiers = std.MultiArrayList(std.StringArrayHashMapUnmanaged(void).Data);
+pub const StringSet = std.StringArrayHashMapUnmanaged(void);
 
 /// Node 0 is a span of directives followed by declarations. Since there can be no
 /// references to this root node, 0 is available to indicate null
@@ -20,7 +20,7 @@ nodes: NodeList.Slice,
 /// Nodes with identifers store indexes into here. They stored offset by +1 so that `0` is a null sentinel
 /// For `var foo: u32 = baz();` this will store `foo`, `u32`, and `baz`
 /// Owns the strings so that `source` may be freed after parsing is finished
-identifiers: Identifiers.Slice,
+identifiers: std.MultiArrayList(StringSet.Data).Slice,
 /// For nodes with more data than @sizeOf(Node)
 extra: []align(@alignOf(Node.Index)) u8,
 /// Offsets of newlines for error messages

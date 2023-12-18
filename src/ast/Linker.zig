@@ -22,8 +22,7 @@ const ModuleSymbols = std.ArrayHashMap(ModuleSymbol, ModuleSymbolData, ModuleSym
 const Scopes = std.ArrayList(Scope);
 const Visited = std.StringArrayHashMap(void);
 const ModuleScopes = std.StringHashMap(Scope);
-const RefCounts = std.AutoArrayHashMap(Node.IdentIndex, u32);
-const SymbolNames = std.AutoHashMap(Node.IdentIndex, void);
+const SymbolNames = std.AutoHashMapUnmanaged(Node.IdentIndex, void);
 
 allocator: Allocator,
 /// Outermost is module scope.
@@ -36,15 +35,15 @@ module_symbols: ModuleSymbols,
 module_scopes: ModuleScopes,
 /// Won't append comments with module names.
 minify: bool,
-/// When a clash occurs helps make unique symbols. Keys are indexes into builder.identifiers
-symbol_names: SymbolNames,
-/// Later useful for tree shaker
-refcounts: RefCounts,
+/// Will not rename these symbols
+entrypoints: std.StringHashMapUnmanaged(void) = .{},
 
 /// Accumulator since directives MUST be at top of WGSL file
 directives: Directives,
 /// The main event
 builder: AstBuilder,
+/// When a clash occurs helps make unique symbols. Keys are indexes into builder.identifiers
+symbol_names: SymbolNames = .{},
 /// Used to build lists
 scratch: std.ArrayListUnmanaged(Node.Index) = .{},
 roots: std.ArrayListUnmanaged(Node.Index) = .{},
@@ -103,7 +102,7 @@ const ModuleSymbolData = struct {
     referenced: bool = false,
 };
 
-pub fn init(allocator: Allocator, modules: *const Modules, minify: bool) !Self {
+pub fn init(allocator: Allocator, modules: *const Modules, minify: bool, entrypoints: []const []const u8) !Self {
     var res = Self{
         .allocator = allocator,
         .module_symbols = ModuleSymbols.init(allocator),
@@ -111,11 +110,11 @@ pub fn init(allocator: Allocator, modules: *const Modules, minify: bool) !Self {
         .modules = modules,
         .module_scopes = ModuleScopes.init(allocator),
         .minify = minify,
-        .symbol_names = SymbolNames.init(allocator),
-        .refcounts = RefCounts.init(allocator),
         .directives = Directives.init(allocator),
         .builder = try AstBuilder.init(allocator),
     };
+
+    for (entrypoints) |e| try res.entrypoints.put(allocator, e, {});
 
     // First pass to gather all module symbols in order to resolve imports.
     // Also create module scopes in order to resolve import renaming.
@@ -134,9 +133,9 @@ pub fn deinit(self: *Self) void {
     while (iter.next()) |s| s.deinit();
     self.module_scopes.deinit();
     self.module_symbols.deinit();
-    self.refcounts.deinit();
-    self.symbol_names.deinit();
     self.directives.deinit();
+    self.entrypoints.deinit(self.allocator);
+    self.symbol_names.deinit(self.allocator);
     self.builder.deinit(self.allocator);
     self.scratch.deinit(self.allocator);
     self.roots.deinit(self.allocator);
@@ -249,16 +248,6 @@ fn appendComment(self: *Self, comment: []const u8) !void {
     try self.roots.append(self.allocator, node);
 }
 
-// For debugging
-fn printScopes(scopes: Scopes) void {
-    for (scopes.items, 0..) |s, i| {
-        for (s.keys()) |k| {
-            for (0..i) |_| std.debug.print("  ", .{});
-            std.debug.print("{s}\n", .{k});
-        }
-    }
-}
-
 fn listToSpan(self: *Self, list: []const Node.Index) !Node.Index {
     return try self.builder.listToSpan(self.allocator, 0, list);
 }
@@ -291,6 +280,10 @@ const IdentType = enum {
 
 /// Caller owns returned slice
 fn makeIdent(self: *Self, symbol: []const u8, count: usize) ![]const u8 {
+    // User probably doesn't want entrypoints renamed to save a few bytes.
+    // Also later need to tree shake these by name.
+    if (self.entrypoints.get(symbol)) |_| return self.allocator.dupe(u8, symbol);
+
     if (self.minify) return try std.fmt.allocPrint(self.allocator, "v{d}", .{count});
     if (count == 1) return try self.allocator.dupe(u8, symbol);
     return try std.fmt.allocPrint(self.allocator, "{s}{d}", .{ symbol, count });
@@ -304,7 +297,7 @@ fn uniqueIdent(self: *Self, symbol: []const u8) !Node.IdentIndex {
         const alias = try self.makeIdent(symbol, count);
         defer allocator.free(alias);
         res = try self.builder.getOrPutIdent(allocator, alias);
-        const gop = try self.symbol_names.getOrPut(res);
+        const gop = try self.symbol_names.getOrPut(allocator, res);
         if (!gop.found_existing) break;
     }
 
@@ -324,8 +317,6 @@ fn getOrPutRef(
     for (0..self.scopes.items.len) |i| {
         const scope = self.scopes.items[self.scopes.items.len - i - 1];
         if (scope.get(symbol)) |sym| {
-            var gop = try self.refcounts.getOrPutValue(sym.ident, 0);
-            gop.value_ptr.* += 1;
             // std.debug.print("ref {s} index {d}\n", .{ symbol, sym.ident });
             return sym.ident;
         }

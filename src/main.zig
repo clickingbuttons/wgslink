@@ -90,7 +90,7 @@ pub fn main() !void {
         \\-m, --minify           Remove whitespace.
         \\-l, --layout           Extract bind group and struct layouts to JSON file or stderr.
         \\-o, --outdir <str>     Output directory (otherwise will print to stdout).
-        \\-e, --entry <str>...   Symbols in entry files' global scope to NOT tree shake.
+        \\-e, --entry <str>...   Symbols in entry files' global scope to NOT tree shake. Entry point symbols will not be renamed.
         \\
         \\	If not specified will default to functions with @vertex, @fragment, or @compute attributes.
         \\
